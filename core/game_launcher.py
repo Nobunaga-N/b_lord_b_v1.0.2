@@ -36,9 +36,8 @@ class GameLauncher:
 
         Алгоритм:
         1. Запустить игру через ADB
-        2. Ждать пока пропадет загрузочный экран (до 60 сек)
-        3. Ждать 4 секунды для полной загрузки
-        4. Цикл поиска popup и карты мира (макс 10 попыток):
+        2. Ждать появления и исчезновения загрузочного экрана (с паузой 2 сек)
+        3. Цикл поиска popup и карты мира (макс 10 попыток):
            - Если popup → нажать ESC, ждать 2 сек
            - Если карта мира → готово
            - Иначе → ждать 2 сек, повторить
@@ -50,15 +49,12 @@ class GameLauncher:
         if not self._launch_game():
             return False
 
-        # ===== ШАГ 2: Ожидание пока пропадет загрузочный экран =====
+        # ===== ШАГ 2: Ожидание появления и исчезновения загрузочного экрана =====
+        # (внутри метода уже есть пауза 2 сек после исчезновения)
         if not self._wait_loading_screen_disappear():
             return False
 
-        # ===== ШАГ 3: Ждем 4 секунды для полной загрузки =====
-        logger.info(f"[{self.emulator_name}] Ожидание 4 секунды для загрузки...")
-        time.sleep(4)
-
-        # ===== ШАГ 4: Цикл поиска popup и карты мира =====
+        # ===== ШАГ 3: Цикл поиска popup и карты мира =====
         if not self._wait_for_world_map():
             return False
 
@@ -101,37 +97,85 @@ class GameLauncher:
 
     def _wait_loading_screen_disappear(self, timeout=60):
         """
-        Ожидает пока пропадет загрузочный экран
+        Ожидает появления и исчезновения загрузочного экрана
+
+        Алгоритм:
+        1. ФАЗА 1: Ждем появления загрузочного экрана (макс timeout секунд)
+           - Скриншот каждые 1.5 секунды
+           - Как только найден → переходим к фазе 2
+        2. ФАЗА 2: Ждем исчезновения загрузочного экрана (макс timeout секунд)
+           - Скриншот каждые 1.5 секунды
+           - Как только пропал → возвращаем True
+        3. Пауза 2 секунды после исчезновения
 
         Args:
-            timeout: максимальное время ожидания (по умолчанию 60 сек)
+            timeout: максимальное время ожидания для каждой фазы в секундах
 
         Returns:
-            bool: True если загрузочный экран пропал, False если таймаут
+            bool: True если экран появился и исчез, False если таймаут
         """
 
-        logger.info(f"[{self.emulator_name}] Ожидание загрузочного экрана...")
+        screen_check_interval = 1.5  # Интервал проверки в секундах
+
+        # ===== ФАЗА 1: Ожидание ПОЯВЛЕНИЯ загрузочного экрана =====
+        logger.info(f"[{self.emulator_name}] ФАЗА 1: Ожидание появления загрузочного экрана...")
         start_time = time.time()
+        loading_appeared = False
 
         while time.time() - start_time < timeout:
-            # Проверяем есть ли загрузочный экран
+            elapsed = int(time.time() - start_time)
+
+            # Проверяем наличие загрузочного экрана
             loading_found = find_image(
                 self.emulator,
                 self.LOADING_SCREEN_TEMPLATE,
-                threshold=0.8
+                threshold=0.8,
+                debug_name="loading_appear"
             )
 
             if loading_found:
-                # Загрузочный экран еще есть - ждем
-                logger.debug(f"[{self.emulator_name}] Загрузочный экран виден, ожидание...")
-                time.sleep(2)
+                logger.success(f"[{self.emulator_name}] ✓ Загрузочный экран появился ({elapsed}s)")
+                loading_appeared = True
+                break
+
+            logger.debug(f"[{self.emulator_name}] Загрузочный экран не виден, ожидание... ({elapsed}s/{timeout}s)")
+            time.sleep(screen_check_interval)
+
+        if not loading_appeared:
+            logger.error(f"[{self.emulator_name}] ✗ Таймаут: загрузочный экран не появился за {timeout}s")
+            logger.warning(f"[{self.emulator_name}] Возможно игра зависла, требуется перезапуск эмулятора")
+            return False
+
+        # ===== ФАЗА 2: Ожидание ИСЧЕЗНОВЕНИЯ загрузочного экрана =====
+        logger.info(f"[{self.emulator_name}] ФАЗА 2: Ожидание исчезновения загрузочного экрана...")
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            elapsed = int(time.time() - start_time)
+
+            # Проверяем наличие загрузочного экрана
+            loading_found = find_image(
+                self.emulator,
+                self.LOADING_SCREEN_TEMPLATE,
+                threshold=0.8,
+                debug_name="loading_disappear"
+            )
+
+            if loading_found:
+                logger.debug(f"[{self.emulator_name}] Загрузочный экран еще виден, ожидание... ({elapsed}s/{timeout}s)")
+                time.sleep(screen_check_interval)
             else:
-                # Загрузочный экран пропал
-                logger.info(f"[{self.emulator_name}] Загрузочный экран пропал")
+                logger.success(f"[{self.emulator_name}] ✓ Загрузочный экран исчез ({elapsed}s)")
+
+                # Пауза 2 секунды после исчезновения
+                logger.info(f"[{self.emulator_name}] Пауза 2 секунды после исчезновения экрана...")
+                time.sleep(2)
+
                 return True
 
-        # Таймаут
-        logger.error(f"[{self.emulator_name}] Таймаут ожидания загрузочного экрана ({timeout}s)")
+        # Таймаут фазы 2
+        logger.error(f"[{self.emulator_name}] ✗ Таймаут: загрузочный экран не исчез за {timeout}s")
+        logger.warning(f"[{self.emulator_name}] Возможно игра зависла, требуется перезапуск эмулятора")
         return False
 
     def _wait_for_world_map(self, max_attempts=10):
@@ -151,28 +195,36 @@ class GameLauncher:
             logger.debug(f"[{self.emulator_name}] Попытка {attempt}/{max_attempts}")
 
             # Проверяем popup и карту мира ОДНОВРЕМЕННО
-            popup_found = find_image(
+            popup_coords = find_image(
                 self.emulator,
                 self.POPUP_CLOSE_TEMPLATE,
-                threshold=0.8
+                threshold=0.8,
+                debug_name=f"popup_attempt{attempt}"
             )
 
-            map_found = find_image(
+            map_coords = find_image(
                 self.emulator,
                 self.WORLD_MAP_TEMPLATE,
-                threshold=0.8
+                threshold=0.95,  # Повышен порог для карты мира
+                debug_name=f"map_attempt{attempt}"
             )
 
-            # Если нашли popup - закрываем
-            if popup_found:
+            # Если нашли popup - кликаем по крестику
+            if popup_coords:
+                x, y = popup_coords
                 logger.warning(f"[{self.emulator_name}] Обнаружено всплывающее окно, закрываю...")
-                press_key(self.emulator, "ESC")
+                logger.debug(f"[{self.emulator_name}] Клик по крестику: ({x}, {y})")
+
+                # Импортируем tap здесь чтобы избежать циклических зависимостей
+                from utils.adb_controller import tap
+                tap(self.emulator, x, y)
+
                 time.sleep(2)
                 continue  # Повторяем цикл
 
             # Если нашли карту мира - готово
-            if map_found:
-                logger.success(f"[{self.emulator_name}] Карта мира обнаружена, игра готова")
+            if map_coords:
+                logger.success(f"[{self.emulator_name}] ✓ Карта мира обнаружена, игра готова")
                 return True
 
             # Ничего не найдено - ждем и повторяем
@@ -180,5 +232,5 @@ class GameLauncher:
             time.sleep(2)
 
         # Не нашли карту мира за max_attempts попыток
-        logger.error(f"[{self.emulator_name}] Не удалось дождаться карты мира за {max_attempts} попыток")
+        logger.error(f"[{self.emulator_name}] ✗ Не удалось дождаться карты мира за {max_attempts} попыток")
         return False

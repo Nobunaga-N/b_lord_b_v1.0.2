@@ -160,7 +160,8 @@ def press_key(emulator, key):
         logger.error(f"Некорректный объект эмулятора: {emulator}")
         return False
 
-    adb_address = f"127.0.0.1:{emulator['port']}"
+    # ИСПРАВЛЕНО: Используем get_adb_device() вместо жестко заданного адреса
+    adb_address = get_adb_device(emulator['port'])
 
     # Маппинг клавиш
     KEY_CODES = {
@@ -182,7 +183,7 @@ def press_key(emulator, key):
     result = execute_command(command)
 
     emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-    logger.debug(f"[{emulator_name}] Нажата клавиша: {key}")
+    logger.debug(f"[{emulator_name}] Нажата клавиша: {key} (устройство: {adb_address})")
 
     return True
 
@@ -209,14 +210,15 @@ def tap(emulator, x, y):
     if not (0 <= x <= 540) or not (0 <= y <= 960):
         logger.warning(f"Координаты вне экрана: ({x}, {y}). Разрешение: 540x960")
 
-    adb_address = f"127.0.0.1:{emulator['port']}"
+    # ИСПРАВЛЕНО: Используем get_adb_device() вместо жестко заданного адреса
+    adb_address = get_adb_device(emulator['port'])
 
     # Выполнить команду
     command = f"adb -s {adb_address} shell input tap {x} {y}"
     result = execute_command(command)
 
     emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-    logger.debug(f"[{emulator_name}] Тап по ({x}, {y})")
+    logger.debug(f"[{emulator_name}] Тап по ({x}, {y}) (устройство: {adb_address})")
 
     return True
 
@@ -257,7 +259,8 @@ def swipe(emulator, x1, y1, x2, y2, duration=300):
         logger.warning(f"Некорректная длительность: {duration}мс. Установлено 300мс")
         duration = 300
 
-    adb_address = f"127.0.0.1:{emulator['port']}"
+    # ИСПРАВЛЕНО: Используем get_adb_device() вместо жестко заданного адреса
+    adb_address = get_adb_device(emulator['port'])
 
     # Выполнить команду
     command = f"adb -s {adb_address} shell input swipe {x1} {y1} {x2} {y2} {duration}"
@@ -274,7 +277,7 @@ def swipe(emulator, x1, y1, x2, y2, duration=300):
         # Вертикальный свайп
         direction = "вниз" if y2 > y1 else "вверх"
 
-    logger.debug(f"[{emulator_name}] Свайп {direction}: ({x1},{y1}) → ({x2},{y2}), {duration}мс")
+    logger.debug(f"[{emulator_name}] Свайп {direction}: ({x1},{y1}) → ({x2},{y2}), {duration}мс (устройство: {adb_address})")
 
     return True
 
@@ -296,7 +299,8 @@ def launch_app(emulator, package_name, activity=None):
         logger.error(f"Некорректный объект эмулятора: {emulator}")
         return False
 
-    adb_address = f"127.0.0.1:{emulator['port']}"
+    # ИСПРАВЛЕНО: Используем get_adb_device() вместо жестко заданного адреса
+    adb_address = get_adb_device(emulator['port'])
     emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
     # Формирование команды
@@ -332,7 +336,8 @@ def is_app_running(emulator, package_name):
     if not isinstance(emulator, dict) or 'port' not in emulator:
         return False
 
-    adb_address = f"127.0.0.1:{emulator['port']}"
+    # ИСПРАВЛЕНО: Используем get_adb_device() вместо жестко заданного адреса
+    adb_address = get_adb_device(emulator['port'])
 
     # Получить список запущенных процессов
     command = f"adb -s {adb_address} shell ps"
