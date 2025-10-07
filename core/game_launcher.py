@@ -80,7 +80,7 @@ class GameLauncher:
         # Команда запуска с явным указанием Activity
         command = f"adb -s {adb_address} shell am start -n {self.PACKAGE_NAME}/.MainActivity"
 
-        logger.info(f"[{self.emulator_name}] Запуск игры: {command}")
+        logger.info(f"[{self.emulator_name}] Запуск игры...")
         result = execute_command(command)
 
         # Логируем результат команды
@@ -91,38 +91,13 @@ class GameLauncher:
             logger.error(f"[{self.emulator_name}] Ошибка при запуске игры: {result}")
             return False
 
-        # Ждём 10 секунд чтобы игра начала запускаться
-        logger.info(f"[{self.emulator_name}] Ожидание 10 секунд для запуска игры...")
-        time.sleep(10)
-
-        # Проверяем что игра действительно запустилась
-        check_command = f"adb -s {adb_address} shell dumpsys window | grep mCurrentFocus"
-        focus_result = execute_command(check_command)
-
-        logger.debug(f"[{self.emulator_name}] Текущий фокус: {focus_result.strip()}")
-
-        if self.PACKAGE_NAME in focus_result:
-            logger.success(f"[{self.emulator_name}] Игра запущена успешно")
+        # Проверка успешности запуска
+        if "Starting: Intent" in result:
+            logger.success(f"[{self.emulator_name}] Команда запуска выполнена успешно")
             return True
         else:
-            logger.warning(f"[{self.emulator_name}] Игра не запустилась (фокус не на игре)")
-
-            # Попытка 2: использовать monkey как fallback
-            logger.info(f"[{self.emulator_name}] Попытка 2: запуск через monkey...")
-            monkey_command = f"adb -s {adb_address} shell monkey -p {self.PACKAGE_NAME} -c android.intent.category.LAUNCHER 1"
-            execute_command(monkey_command)
-
-            # Ждём ещё 10 секунд
-            time.sleep(10)
-
-            # Проверяем снова
-            focus_result = execute_command(check_command)
-            if self.PACKAGE_NAME in focus_result:
-                logger.success(f"[{self.emulator_name}] Игра запущена (попытка 2)")
-                return True
-            else:
-                logger.error(f"[{self.emulator_name}] Не удалось запустить игру после 2 попыток")
-                return False
+            logger.error(f"[{self.emulator_name}] Неожиданный результат запуска игры")
+            return False
 
     def _wait_loading_screen_disappear(self, timeout=60):
         """
