@@ -5,6 +5,7 @@
 import time
 from utils.adb_controller import launch_app, press_key
 from utils.image_recognition import find_image
+from utils.logger import logger
 
 
 class GameLauncher:
@@ -43,7 +44,7 @@ class GameLauncher:
            - Иначе → ждать 2 сек, повторить
         """
 
-        print(f"[INFO] [{self.emulator_name}] Запуск игры Beast Lord...")
+        logger.info(f"[{self.emulator_name}] Запуск игры Beast Lord...")
 
         # ===== ШАГ 1: Запустить игру =====
         if not self._launch_game():
@@ -54,14 +55,14 @@ class GameLauncher:
             return False
 
         # ===== ШАГ 3: Ждем 4 секунды для полной загрузки =====
-        print(f"[INFO] [{self.emulator_name}] Ожидание 4 секунды для загрузки...")
+        logger.info(f"[{self.emulator_name}] Ожидание 4 секунды для загрузки...")
         time.sleep(4)
 
         # ===== ШАГ 4: Цикл поиска popup и карты мира =====
         if not self._wait_for_world_map():
             return False
 
-        print(f"[SUCCESS] [{self.emulator_name}] Игра загружена успешно!")
+        logger.success(f"[{self.emulator_name}] Игра загружена успешно!")
         return True
 
     def _launch_game(self):
@@ -74,10 +75,10 @@ class GameLauncher:
         success = launch_app(self.emulator, self.PACKAGE_NAME)
 
         if not success:
-            print(f"[ERROR] [{self.emulator_name}] Не удалось запустить игру")
+            logger.error(f"[{self.emulator_name}] Не удалось запустить игру")
             return False
 
-        print(f"[INFO] [{self.emulator_name}] Игра запущена")
+        logger.info(f"[{self.emulator_name}] Игра запущена")
         return True
 
     def _wait_loading_screen_disappear(self, timeout=60):
@@ -91,7 +92,7 @@ class GameLauncher:
             bool: True если загрузочный экран пропал, False если таймаут
         """
 
-        print(f"[INFO] [{self.emulator_name}] Ожидание загрузочного экрана...")
+        logger.info(f"[{self.emulator_name}] Ожидание загрузочного экрана...")
         start_time = time.time()
 
         while time.time() - start_time < timeout:
@@ -104,15 +105,15 @@ class GameLauncher:
 
             if loading_found:
                 # Загрузочный экран еще есть - ждем
-                print(f"[DEBUG] [{self.emulator_name}] Загрузочный экран виден, ожидание...")
+                logger.debug(f"[{self.emulator_name}] Загрузочный экран виден, ожидание...")
                 time.sleep(2)
             else:
                 # Загрузочный экран пропал
-                print(f"[INFO] [{self.emulator_name}] Загрузочный экран пропал")
+                logger.info(f"[{self.emulator_name}] Загрузочный экран пропал")
                 return True
 
         # Таймаут
-        print(f"[ERROR] [{self.emulator_name}] Таймаут ожидания загрузочного экрана ({timeout}s)")
+        logger.error(f"[{self.emulator_name}] Таймаут ожидания загрузочного экрана ({timeout}s)")
         return False
 
     def _wait_for_world_map(self, max_attempts=10):
@@ -126,10 +127,10 @@ class GameLauncher:
             bool: True если карта мира найдена, False если не найдена за max_attempts
         """
 
-        print(f"[INFO] [{self.emulator_name}] Поиск карты мира и popup окон...")
+        logger.info(f"[{self.emulator_name}] Поиск карты мира и popup окон...")
 
         for attempt in range(1, max_attempts + 1):
-            print(f"[DEBUG] [{self.emulator_name}] Попытка {attempt}/{max_attempts}")
+            logger.debug(f"[{self.emulator_name}] Попытка {attempt}/{max_attempts}")
 
             # Проверяем popup и карту мира ОДНОВРЕМЕННО
             popup_found = find_image(
@@ -146,20 +147,20 @@ class GameLauncher:
 
             # Если нашли popup - закрываем
             if popup_found:
-                print(f"[WARNING] [{self.emulator_name}] Обнаружено всплывающее окно, закрываю...")
+                logger.warning(f"[{self.emulator_name}] Обнаружено всплывающее окно, закрываю...")
                 press_key(self.emulator, "ESC")
                 time.sleep(2)
                 continue  # Повторяем цикл
 
             # Если нашли карту мира - готово
             if map_found:
-                print(f"[SUCCESS] [{self.emulator_name}] Карта мира обнаружена, игра готова")
+                logger.success(f"[{self.emulator_name}] Карта мира обнаружена, игра готова")
                 return True
 
             # Ничего не найдено - ждем и повторяем
-            print(f"[DEBUG] [{self.emulator_name}] Popup и карта не найдены, ожидание 2 сек...")
+            logger.debug(f"[{self.emulator_name}] Popup и карта не найдены, ожидание 2 сек...")
             time.sleep(2)
 
         # Не нашли карту мира за max_attempts попыток
-        print(f"[ERROR] [{self.emulator_name}] Не удалось дождаться карты мира за {max_attempts} попыток")
+        logger.error(f"[{self.emulator_name}] Не удалось дождаться карты мира за {max_attempts} попыток")
         return False

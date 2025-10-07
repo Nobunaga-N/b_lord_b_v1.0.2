@@ -2,6 +2,9 @@
 Базовый класс для всех игровых функций
 """
 
+from utils.logger import logger
+
+
 class BaseFunction:
     """
     Базовый класс для всех игровых функций
@@ -61,24 +64,23 @@ class BaseFunction:
         """
         # Проверка можно ли выполнять
         if not self.can_execute():
-            print(f"[DEBUG] [{self.emulator_name}] Функция {self.name} пропущена (не готова)")
+            logger.debug(f"[{self.emulator_name}] Функция {self.name} пропущена (не готова)")
             return False
 
         # Выполнение функции
-        print(f"[INFO] [{self.emulator_name}] Выполнение: {self.name}")
+        logger.info(f"[{self.emulator_name}] Выполнение: {self.name}")
 
         try:
             self.execute()
-            print(f"[SUCCESS] [{self.emulator_name}] Функция {self.name} завершена")
+            logger.success(f"[{self.emulator_name}] Функция {self.name} завершена")
             return True
 
         except NotImplementedError:
             # Если метод не реализован - это нормально на ЭТАПЕ 0
-            print(f"[DEBUG] [{self.emulator_name}] Функция {self.name} ещё не реализована (заглушка)")
+            logger.debug(f"[{self.emulator_name}] Функция {self.name} ещё не реализована (заглушка)")
             return True
 
         except Exception as e:
-            print(f"[ERROR] [{self.emulator_name}] Ошибка в {self.name}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"[{self.emulator_name}] Ошибка в {self.name}: {e}")
+            logger.exception(e)
             return False

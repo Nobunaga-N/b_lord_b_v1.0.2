@@ -3,6 +3,7 @@
 """
 
 from functions.base_function import BaseFunction
+from utils.logger import logger
 
 
 class ResearchFunction(BaseFunction):
@@ -18,5 +19,5 @@ class ResearchFunction(BaseFunction):
 
         На ЭТАПЕ 0 это заглушка
         """
-        print(f"[DEBUG] [{self.emulator_name}] TODO: Логика исследований (ЭТАП 2)")
+        logger.debug(f"[{self.emulator_name}] TODO: Логика исследований (ЭТАП 2)")
         pass

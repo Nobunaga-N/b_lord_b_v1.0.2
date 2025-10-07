@@ -4,6 +4,7 @@
 
 import subprocess
 import time
+from utils.logger import logger
 
 
 def execute_command(command):
@@ -29,10 +30,10 @@ def execute_command(command):
         return result.stdout
 
     except subprocess.TimeoutExpired:
-        print(f"[ERROR] Таймаут при выполнении команды: {command}")
+        logger.error(f"Таймаут при выполнении команды: {command}")
         return ""
     except Exception as e:
-        print(f"[ERROR] Ошибка выполнения команды: {e}")
+        logger.error(f"Ошибка выполнения команды: {e}")
         return ""
 
 
@@ -51,7 +52,7 @@ def wait_for_adb(port, timeout=90):
     adb_address = f"127.0.0.1:{port}"
     start_time = time.time()
 
-    print(f"[DEBUG] Ожидание ADB: {adb_address}, timeout={timeout}s")
+    logger.debug(f"Ожидание ADB: {adb_address}, timeout={timeout}s")
 
     while time.time() - start_time < timeout:
         try:
@@ -63,16 +64,16 @@ def wait_for_adb(port, timeout=90):
                 test_result = execute_command(f"adb -s {adb_address} shell echo 'ok'")
 
                 if "ok" in test_result:
-                    print(f"[DEBUG] ADB готов: {adb_address}")
+                    logger.debug(f"ADB готов: {adb_address}")
                     return True
 
         except Exception as e:
-            print(f"[DEBUG] ADB не готов: {e}")
+            logger.debug(f"ADB не готов: {e}")
 
         # Ждем 5 секунд перед следующей попыткой
         time.sleep(5)
 
-    print(f"[ERROR] ADB не готов после {timeout}s: {adb_address}")
+    logger.error(f"ADB не готов после {timeout}s: {adb_address}")
     return False
 
 
@@ -90,7 +91,7 @@ def press_key(emulator, key):
 
     # Валидация входных данных
     if not isinstance(emulator, dict) or 'port' not in emulator:
-        print(f"[ERROR] Некорректный объект эмулятора: {emulator}")
+        logger.error(f"Некорректный объект эмулятора: {emulator}")
         return False
 
     adb_address = f"127.0.0.1:{emulator['port']}"
@@ -105,7 +106,7 @@ def press_key(emulator, key):
 
     # Проверка существования клавиши
     if key not in KEY_CODES:
-        print(f"[ERROR] Неизвестная клавиша: {key}. Доступны: {list(KEY_CODES.keys())}")
+        logger.error(f"Неизвестная клавиша: {key}. Доступны: {list(KEY_CODES.keys())}")
         return False
 
     keycode = KEY_CODES[key]
@@ -115,7 +116,7 @@ def press_key(emulator, key):
     result = execute_command(command)
 
     emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-    print(f"[DEBUG] [{emulator_name}] Нажата клавиша: {key}")
+    logger.debug(f"[{emulator_name}] Нажата клавиша: {key}")
 
     return True
 
@@ -135,12 +136,12 @@ def tap(emulator, x, y):
 
     # Валидация входных данных
     if not isinstance(emulator, dict) or 'port' not in emulator:
-        print(f"[ERROR] Некорректный объект эмулятора: {emulator}")
+        logger.error(f"Некорректный объект эмулятора: {emulator}")
         return False
 
     # Валидация координат (разрешение 540x960)
     if not (0 <= x <= 540) or not (0 <= y <= 960):
-        print(f"[WARNING] Координаты вне экрана: ({x}, {y}). Разрешение: 540x960")
+        logger.warning(f"Координаты вне экрана: ({x}, {y}). Разрешение: 540x960")
 
     adb_address = f"127.0.0.1:{emulator['port']}"
 
@@ -149,7 +150,7 @@ def tap(emulator, x, y):
     result = execute_command(command)
 
     emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-    print(f"[DEBUG] [{emulator_name}] Тап по ({x}, {y})")
+    logger.debug(f"[{emulator_name}] Тап по ({x}, {y})")
 
     return True
 
@@ -172,22 +173,22 @@ def swipe(emulator, x1, y1, x2, y2, duration=300):
 
     # Валидация входных данных
     if not isinstance(emulator, dict) or 'port' not in emulator:
-        print(f"[ERROR] Некорректный объект эмулятора: {emulator}")
+        logger.error(f"Некорректный объект эмулятора: {emulator}")
         return False
 
     # Валидация координат (разрешение 540x960)
     coords_valid = True
     if not (0 <= x1 <= 540) or not (0 <= y1 <= 960):
-        print(f"[WARNING] Начальные координаты вне экрана: ({x1}, {y1}). Разрешение: 540x960")
+        logger.warning(f"Начальные координаты вне экрана: ({x1}, {y1}). Разрешение: 540x960")
         coords_valid = False
 
     if not (0 <= x2 <= 540) or not (0 <= y2 <= 960):
-        print(f"[WARNING] Конечные координаты вне экрана: ({x2}, {y2}). Разрешение: 540x960")
+        logger.warning(f"Конечные координаты вне экрана: ({x2}, {y2}). Разрешение: 540x960")
         coords_valid = False
 
     # Валидация длительности
     if duration < 0:
-        print(f"[WARNING] Некорректная длительность: {duration}мс. Установлено 300мс")
+        logger.warning(f"Некорректная длительность: {duration}мс. Установлено 300мс")
         duration = 300
 
     adb_address = f"127.0.0.1:{emulator['port']}"
@@ -207,7 +208,7 @@ def swipe(emulator, x1, y1, x2, y2, duration=300):
         # Вертикальный свайп
         direction = "вниз" if y2 > y1 else "вверх"
 
-    print(f"[DEBUG] [{emulator_name}] Свайп {direction}: ({x1},{y1}) → ({x2},{y2}), {duration}мс")
+    logger.debug(f"[{emulator_name}] Свайп {direction}: ({x1},{y1}) → ({x2},{y2}), {duration}мс")
 
     return True
 
@@ -226,7 +227,7 @@ def launch_app(emulator, package_name, activity=None):
     """
 
     if not isinstance(emulator, dict) or 'port' not in emulator:
-        print(f"[ERROR] Некорректный объект эмулятора: {emulator}")
+        logger.error(f"Некорректный объект эмулятора: {emulator}")
         return False
 
     adb_address = f"127.0.0.1:{emulator['port']}"
@@ -239,12 +240,12 @@ def launch_app(emulator, package_name, activity=None):
         # Запуск главной активности
         command = f"adb -s {adb_address} shell monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
 
-    print(f"[INFO] [{emulator_name}] Запуск приложения: {package_name}")
+    logger.info(f"[{emulator_name}] Запуск приложения: {package_name}")
     result = execute_command(command)
 
     # Проверка успешности
     if "Error" in result or "error" in result:
-        print(f"[ERROR] [{emulator_name}] Ошибка запуска приложения: {result}")
+        logger.error(f"[{emulator_name}] Ошибка запуска приложения: {result}")
         return False
 
     return True
