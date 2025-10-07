@@ -7,6 +7,7 @@ from gui.emulator_panel import EmulatorPanel
 from gui.status_panel import StatusPanel
 from gui.settings_window import SettingsWindow
 from gui.functions_window import FunctionsWindow
+from gui.bot_controller import BotController
 
 
 class MainWindow(ctk.CTk):
@@ -24,8 +25,24 @@ class MainWindow(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
+        # Контроллер бота (будет инициализирован после создания панелей)
+        self.bot_controller = None
+
+        # Кнопки (для управления состоянием)
+        self.btn_start = None
+        self.btn_stop = None
+
         # Создание структуры окна
         self._create_layout()
+
+        # Инициализация контроллера бота (после создания status_panel)
+        self.bot_controller = BotController(gui_callback=self.status_panel.update_bot_state)
+
+        # Установить начальное состояние кнопок
+        self._update_button_states()
+
+        # Запустить периодическое обновление кнопок
+        self._start_periodic_update()
 
     def _create_layout(self):
         """Создаёт базовую структуру окна"""
@@ -54,7 +71,7 @@ class MainWindow(ctk.CTk):
         btn_header.pack(pady=(15, 10))
 
         # Кнопка "Запустить"
-        btn_start = ctk.CTkButton(
+        self.btn_start = ctk.CTkButton(
             buttons_frame,
             text="▶ Запустить",
             width=150,
@@ -62,10 +79,10 @@ class MainWindow(ctk.CTk):
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self._on_start
         )
-        btn_start.pack(pady=5, padx=15)
+        self.btn_start.pack(pady=5, padx=15)
 
         # Кнопка "Остановить"
-        btn_stop = ctk.CTkButton(
+        self.btn_stop = ctk.CTkButton(
             buttons_frame,
             text="⏹ Остановить",
             width=150,
@@ -75,7 +92,7 @@ class MainWindow(ctk.CTk):
             hover_color="#b71c1c",
             command=self._on_stop
         )
-        btn_stop.pack(pady=5, padx=15)
+        self.btn_stop.pack(pady=5, padx=15)
 
         # Кнопка "Настройки"
         btn_settings = ctk.CTkButton(
@@ -104,14 +121,35 @@ class MainWindow(ctk.CTk):
         self.status_panel.pack(fill="both", expand=True, **padding)
 
     def _on_start(self):
-        """Обработчик кнопки 'Запустить' (пока заглушка)"""
+        """Обработчик кнопки 'Запустить'"""
         print("\n[INFO] Кнопка 'Запустить' нажата")
-        print("[INFO] TODO: Реализовать запуск бота на следующих этапах\n")
+
+        # Запустить бота
+        success = self.bot_controller.start()
+
+        if success:
+            print("[SUCCESS] Бот запущен")
+        else:
+            print("[ERROR] Не удалось запустить бота")
+            # TODO: Показать диалог с ошибкой
+
+        # Обновить состояние кнопок
+        self._update_button_states()
 
     def _on_stop(self):
-        """Обработчик кнопки 'Остановить' (пока заглушка)"""
+        """Обработчик кнопки 'Остановить'"""
         print("\n[INFO] Кнопка 'Остановить' нажата")
-        print("[INFO] TODO: Реализовать остановку бота на следующих этапах\n")
+
+        # Остановить бота
+        success = self.bot_controller.stop()
+
+        if success:
+            print("[SUCCESS] Бот остановлен")
+        else:
+            print("[ERROR] Не удалось остановить бота")
+
+        # Обновить состояние кнопок
+        self._update_button_states()
 
     def _on_settings(self):
         """Открывает окно настроек"""
@@ -120,3 +158,31 @@ class MainWindow(ctk.CTk):
     def _on_functions(self):
         """Открывает окно функций"""
         FunctionsWindow(self)
+
+    def _update_button_states(self):
+        """Обновляет состояние кнопок в зависимости от статуса бота"""
+
+        if not self.bot_controller:
+            return
+
+        is_running = self.bot_controller.is_running()
+
+        if is_running:
+            # Бот запущен
+            self.btn_start.configure(state="disabled")
+            self.btn_stop.configure(state="normal")
+        else:
+            # Бот остановлен
+            self.btn_start.configure(state="normal")
+            self.btn_stop.configure(state="disabled")
+
+    def _start_periodic_update(self):
+        """Запускает периодическое обновление состояния кнопок"""
+        self._periodic_update()
+
+    def _periodic_update(self):
+        """Периодически обновляет состояние кнопок (каждую 1 секунду)"""
+        self._update_button_states()
+
+        # Повторить через 1 секунду
+        self.after(1000, self._periodic_update)
