@@ -4,8 +4,9 @@
 
 import customtkinter as ctk
 from gui.emulator_panel import EmulatorPanel
-from gui.functions_panel import FunctionsPanel
-from gui.settings_panel import SettingsPanel
+from gui.status_panel import StatusPanel
+from gui.settings_window import SettingsWindow
+from gui.functions_window import FunctionsWindow
 
 
 class MainWindow(ctk.CTk):
@@ -16,8 +17,8 @@ class MainWindow(ctk.CTk):
 
         # Настройка окна
         self.title("Beast Lord Bot v3.0")
-        self.geometry("700x950")  # ← БЫЛО 900, СТАЛО 950
-        self.resizable(False, False)  # Фиксированный размер
+        self.geometry("700x700")
+        self.resizable(False, False)
 
         # Установка темы
         ctk.set_appearance_mode("dark")
@@ -27,80 +28,95 @@ class MainWindow(ctk.CTk):
         self._create_layout()
 
     def _create_layout(self):
-        """Создаёт базовую структуру с 5 панелями"""
+        """Создаёт базовую структуру окна"""
 
-        # Отступы для всех панелей
+        # Отступы
         padding = {"padx": 10, "pady": 10}
 
-        # ============ Панель 1: Эмуляторы ============
-        self.emulator_panel = EmulatorPanel(self)
-        self.emulator_panel.pack(fill="both", **padding)  # ← УБРАЛИ expand=True
+        # ============ Верхняя часть: Эмуляторы + Кнопки ============
+        top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        top_frame.pack(fill="both", expand=True, **padding)
 
-        # ============ Панель 2: Функции ============
-        self.functions_panel = FunctionsPanel(self)
-        self.functions_panel.pack(fill="x", **padding)
+        # === Левая часть: Эмуляторы ===
+        self.emulator_panel = EmulatorPanel(top_frame)
+        self.emulator_panel.pack(side="left", fill="both", expand=True, padx=(0, 5))
 
-        # ============ Панель 3: Настройки ============
-        self.settings_panel = SettingsPanel(self)
-        self.settings_panel.pack(fill="x", **padding)
+        # === Правая часть: Кнопки ===
+        buttons_frame = ctk.CTkFrame(top_frame, corner_radius=10)
+        buttons_frame.pack(side="left", fill="y", padx=(5, 0))
 
-        # ============ Панель 4: Статус ============
-        self.status_frame = ctk.CTkFrame(self, corner_radius=10)
-        self.status_frame.pack(fill="x", **padding)
-
-        status_label = ctk.CTkLabel(
-            self.status_frame,
-            text="Статус",
-            font=ctk.CTkFont(size=16, weight="bold")
+        # Заголовок кнопок
+        btn_header = ctk.CTkLabel(
+            buttons_frame,
+            text="Управление",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        status_label.pack(anchor="w", padx=15, pady=(10, 5))
+        btn_header.pack(pady=(15, 10))
 
-        # Временная заглушка для статуса
-        status_content = ctk.CTkLabel(
-            self.status_frame,
-            text="Состояние: 🔴 Остановлен\nАктивных эмуляторов: 0 / 0\nОчередь: 0",
-            font=ctk.CTkFont(size=13),
-            justify="left"
-        )
-        status_content.pack(anchor="w", padx=15, pady=(5, 15))
-
-        # ============ Панель 5: Кнопки управления ============
-        self.control_frame = ctk.CTkFrame(self, corner_radius=10)
-        self.control_frame.pack(fill="x", **padding)
-
-        # Кнопки управления (только Запустить и Остановить)
+        # Кнопка "Запустить"
         btn_start = ctk.CTkButton(
-            self.control_frame,
+            buttons_frame,
             text="▶ Запустить",
-            width=180,
+            width=150,
             height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
             command=self._on_start
         )
-        btn_start.pack(side="left", padx=15, pady=15)
+        btn_start.pack(pady=5, padx=15)
 
+        # Кнопка "Остановить"
         btn_stop = ctk.CTkButton(
-            self.control_frame,
+            buttons_frame,
             text="⏹ Остановить",
-            width=180,
+            width=150,
             height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#d32f2f",
             hover_color="#b71c1c",
             command=self._on_stop
         )
-        btn_stop.pack(side="left", padx=5, pady=15)
+        btn_stop.pack(pady=5, padx=15)
+
+        # Кнопка "Настройки"
+        btn_settings = ctk.CTkButton(
+            buttons_frame,
+            text="⚙️ Настройки",
+            width=150,
+            height=40,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._on_settings
+        )
+        btn_settings.pack(pady=5, padx=15)
+
+        # Кнопка "Функции"
+        btn_functions = ctk.CTkButton(
+            buttons_frame,
+            text="📋 Функции",
+            width=150,
+            height=40,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._on_functions
+        )
+        btn_functions.pack(pady=(5, 15), padx=15)
+
+        # ============ Панель 2: Статус ============
+        self.status_panel = StatusPanel(self)
+        self.status_panel.pack(fill="both", expand=True, **padding)
 
     def _on_start(self):
         """Обработчик кнопки 'Запустить' (пока заглушка)"""
         print("\n[INFO] Кнопка 'Запустить' нажата")
-        print(f"  - Выбрано эмуляторов: {len(self.emulator_panel.get_selected_emulator_ids())}")
-        print(f"  - ID эмуляторов: {self.emulator_panel.get_selected_emulator_ids()}")
-        print(f"  - Активных функций: {self.functions_panel.get_active_functions()}")
-        print(f"  - Max concurrent: {self.settings_panel.get_max_concurrent()}")
         print("[INFO] TODO: Реализовать запуск бота на следующих этапах\n")
 
     def _on_stop(self):
         """Обработчик кнопки 'Остановить' (пока заглушка)"""
         print("\n[INFO] Кнопка 'Остановить' нажата")
         print("[INFO] TODO: Реализовать остановку бота на следующих этапах\n")
+
+    def _on_settings(self):
+        """Открывает окно настроек"""
+        SettingsWindow(self)
+
+    def _on_functions(self):
+        """Открывает окно функций"""
+        FunctionsWindow(self)
