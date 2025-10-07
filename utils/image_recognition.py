@@ -78,11 +78,14 @@ def get_screenshot(emulator):
         numpy.ndarray: Скриншот в формате OpenCV (BGR) или None при ошибке
     """
 
+    # Импортируем здесь чтобы избежать циклических зависимостей
+    from utils.adb_controller import execute_command, get_adb_device
+
     # Создать папку для скриншотов если не существует
     os.makedirs("data/screenshots", exist_ok=True)
 
-    # ADB адрес эмулятора
-    adb_address = f"127.0.0.1:{emulator['port']}"
+    # Получить правильный ADB адрес
+    adb_address = get_adb_device(emulator['port'])
 
     # Путь для сохранения скриншота
     screenshot_path = f"data/screenshots/{emulator['id']}.png"

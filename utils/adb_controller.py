@@ -36,6 +36,34 @@ def execute_command(command):
         logger.error(f"Ошибка выполнения команды: {e}")
         return ""
 
+def get_adb_device(port):
+    """
+    Определяет правильный ADB адрес устройства для данного порта
+
+    LDPlayer эмуляторы обычно отображаются как emulator-5554, emulator-5556 и т.д.
+    Эта функция проверяет какой адрес использовать.
+
+    Args:
+        port: порт эмулятора (5554, 5556, ...)
+
+    Returns:
+        str: ADB адрес устройства (например "emulator-5556" или "127.0.0.1:5556")
+    """
+    # Возможные адреса
+    emulator_address = f"emulator-{port}"
+    tcp_address = f"127.0.0.1:{port}"
+
+    # Проверить adb devices
+    devices_result = execute_command("adb devices")
+
+    # Проверяем оба формата
+    if emulator_address in devices_result and "device" in devices_result:
+        return emulator_address
+    elif tcp_address in devices_result and "device" in devices_result:
+        return tcp_address
+    else:
+        # По умолчанию возвращаем emulator-адрес (для LDPlayer)
+        return emulator_address
 
 def wait_for_adb(port, timeout=90):
     """
@@ -49,31 +77,69 @@ def wait_for_adb(port, timeout=90):
         bool: True если ADB готов, False если таймаут
     """
 
-    adb_address = f"127.0.0.1:{port}"
-    start_time = time.time()
+    # Возможные адреса устройства
+    tcp_address = f"127.0.0.1:{port}"
+    emulator_address = f"emulator-{port}"  # LDPlayer использует такой формат
 
-    logger.debug(f"Ожидание ADB: {adb_address}, timeout={timeout}s")
+    start_time = time.time()
+    attempt = 0
+
+    logger.info(f"Ожидание ADB для порта {port} (проверю: {tcp_address} и {emulator_address})")
 
     while time.time() - start_time < timeout:
-        try:
-            # Попытка подключения к ADB
-            result = execute_command(f"adb connect {adb_address}")
+        attempt += 1
+        elapsed = int(time.time() - start_time)
 
-            if "connected" in result.lower() or "already connected" in result.lower():
-                # Дополнительная проверка - можем ли выполнять команды
-                test_result = execute_command(f"adb -s {adb_address} shell echo 'ok'")
+        try:
+            logger.debug(f"[port:{port}] Попытка {attempt} (прошло {elapsed}s)")
+
+            # ШАГ 1: Проверить список подключенных устройств
+            devices_result = execute_command("adb devices")
+            logger.debug(f"[port:{port}] adb devices:\n{devices_result.strip()}")
+
+            # Проверяем оба формата адреса
+            device_found = None
+
+            if emulator_address in devices_result and "device" in devices_result:
+                device_found = emulator_address
+                logger.debug(f"[port:{port}] Найдено устройство: {device_found}")
+            elif tcp_address in devices_result and "device" in devices_result:
+                device_found = tcp_address
+                logger.debug(f"[port:{port}] Найдено устройство: {device_found}")
+
+            # ШАГ 2: Если устройство найдено - проверить команды
+            if device_found:
+                logger.debug(f"[port:{port}] Устройство {device_found} найдено, проверяю команды...")
+
+                test_result = execute_command(f"adb -s {device_found} shell echo 'ok'")
+                logger.debug(f"[port:{port}] adb shell echo вернул: '{test_result.strip()}'")
 
                 if "ok" in test_result:
-                    logger.debug(f"ADB готов: {adb_address}")
+                    logger.success(f"ADB готов: {device_found} (попытка {attempt}, {elapsed}s)")
                     return True
+                else:
+                    logger.debug(f"[port:{port}] Shell команда не работает, ожидание...")
+
+            # ШАГ 3: Если устройство не найдено - попробовать adb connect
+            else:
+                logger.debug(f"[port:{port}] Устройство не найдено в adb devices, пробую adb connect...")
+                connect_result = execute_command(f"adb connect {tcp_address}")
+                logger.debug(f"[port:{port}] adb connect вернул: {connect_result.strip()[:100]}")
+
+                if "connected" in connect_result.lower() or "already connected" in connect_result.lower():
+                    logger.debug(f"[port:{port}] Подключение через connect установлено")
+                    # Проверим на следующей итерации
+                else:
+                    logger.debug(f"[port:{port}] Подключение не установлено, ожидание...")
 
         except Exception as e:
-            logger.debug(f"ADB не готов: {e}")
+            logger.debug(f"[port:{port}] Ошибка на попытке {attempt}: {e}")
 
         # Ждем 5 секунд перед следующей попыткой
+        logger.debug(f"[port:{port}] Ожидание 5 секунд перед следующей попыткой...")
         time.sleep(5)
 
-    logger.error(f"ADB не готов после {timeout}s: {adb_address}")
+    logger.error(f"ADB не готов после {timeout}s ({attempt} попыток) для порта {port}")
     return False
 
 

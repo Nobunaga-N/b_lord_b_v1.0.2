@@ -81,17 +81,12 @@ def open_log_terminal():
 
     try:
         # Попытка 1: Windows Terminal (wt.exe)
-        command = [
-            "wt.exe",
-            "powershell",
-            "-NoExit",
-            "-Command",
-            f"Get-Content -Path '{log_path}' -Wait -Tail 50"
-        ]
+        # Используем shell=True для корректной работы wt.exe
+        command = f'wt.exe powershell -NoExit -Command "Get-Content -Path \'{log_path}\' -Wait -Tail 50"'
 
         subprocess.Popen(
             command,
-            creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS
+            shell=True
         )
 
         logger.success("Windows Terminal открыт с логами")
@@ -102,17 +97,9 @@ def open_log_terminal():
         logger.warning("Windows Terminal не найден, использую CMD")
 
         try:
-            command = [
-                "cmd.exe",
-                "/c",
-                "start",
-                "powershell",
-                "-NoExit",
-                "-Command",
-                f"Get-Content -Path '{log_path}' -Wait -Tail 50"
-            ]
+            command = f'start powershell -NoExit -Command "Get-Content -Path \'{log_path}\' -Wait -Tail 50"'
 
-            subprocess.Popen(command)
+            subprocess.Popen(command, shell=True)
             logger.success("CMD с PowerShell открыт с логами")
             return True
 
@@ -122,7 +109,17 @@ def open_log_terminal():
 
     except Exception as e:
         logger.error(f"Ошибка при открытии Windows Terminal: {e}")
-        return False
+
+        # Попытка fallback на CMD
+        logger.warning("Пробую fallback на CMD...")
+        try:
+            command = f'start powershell -NoExit -Command "Get-Content -Path \'{log_path}\' -Wait -Tail 50"'
+            subprocess.Popen(command, shell=True)
+            logger.success("CMD с PowerShell открыт с логами")
+            return True
+        except Exception as e2:
+            logger.error(f"Не удалось открыть терминал с логами: {e2}")
+            return False
 
 
 def get_logger():
