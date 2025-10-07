@@ -4,6 +4,7 @@
 
 import os
 import yaml
+from utils.logger import logger
 
 
 def load_config(config_path, silent=False):
@@ -23,7 +24,7 @@ def load_config(config_path, silent=False):
 
     if not os.path.exists(config_path):
         if not silent:
-            print(f"[WARNING] Файл конфига не найден: {config_path}")
+            logger.warning(f"Файл конфига не найден: {config_path}")
         return {}
 
     try:
@@ -34,12 +35,12 @@ def load_config(config_path, silent=False):
             return {}
 
         if not silent:
-            print(f"[INFO] Конфиг загружен: {config_path}")
+            logger.info(f"Конфиг загружен: {config_path}")
         return data
 
     except Exception as e:
         if not silent:
-            print(f"[ERROR] Ошибка при загрузке конфига {config_path}: {e}")
+            logger.error(f"Ошибка при загрузке конфига {config_path}: {e}")
         return {}
 
 
@@ -61,8 +62,8 @@ def save_config(config_path, config_data, silent=False):
             yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
 
         if not silent:
-            print(f"[INFO] Конфиг сохранён: {config_path}")
+            logger.info(f"Конфиг сохранён: {config_path}")
 
     except Exception as e:
         if not silent:
-            print(f"[ERROR] Ошибка при сохранении конфига {config_path}: {e}")
+            logger.error(f"Ошибка при сохранении конфига {config_path}: {e}")

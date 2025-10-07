@@ -4,6 +4,7 @@
 
 import os
 import subprocess
+from utils.logger import logger
 
 
 def find_ldconsole():
@@ -23,10 +24,10 @@ def find_ldconsole():
 
     for path in possible_paths:
         if os.path.exists(path):
-            print(f"[INFO] ldconsole.exe найден: {path}")
+            logger.info(f"ldconsole.exe найден: {path}")
             return path
 
-    print("[ERROR] ldconsole.exe не найден на дисках C:\\, D:\\, E:\\")
+    logger.error("ldconsole.exe не найден на дисках C:\\, D:\\, E\\")
     return None
 
 
@@ -44,7 +45,7 @@ def scan_emulators(ldconsole_path):
     """
 
     if not ldconsole_path or not os.path.exists(ldconsole_path):
-        print("[ERROR] Некорректный путь к ldconsole.exe")
+        logger.error("Некорректный путь к ldconsole.exe")
         return []
 
     try:
@@ -82,14 +83,14 @@ def scan_emulators(ldconsole_path):
                     # Пропускаем строки с некорректным форматом
                     continue
 
-        print(f"[INFO] Найдено эмуляторов: {len(emulators)}")
+        logger.info(f"Найдено эмуляторов: {len(emulators)}")
         return emulators
 
     except subprocess.TimeoutExpired:
-        print("[ERROR] Таймаут при выполнении ldconsole list2")
+        logger.error("Таймаут при выполнении ldconsole list2")
         return []
     except Exception as e:
-        print(f"[ERROR] Ошибка при сканировании эмуляторов: {e}")
+        logger.error(f"Ошибка при сканировании эмуляторов: {e}")
         return []
 
 
@@ -103,7 +104,7 @@ def start_emulator(ldconsole_path, emulator_id):
     """
     command = f'"{ldconsole_path}" launch --index {emulator_id}'
     subprocess.run(command, shell=True)
-    print(f"[INFO] Запуск эмулятора id={emulator_id}")
+    logger.info(f"Запуск эмулятора id={emulator_id}")
 
 
 def stop_emulator(ldconsole_path, emulator_id):
@@ -116,4 +117,4 @@ def stop_emulator(ldconsole_path, emulator_id):
     """
     command = f'"{ldconsole_path}" quit --index {emulator_id}'
     subprocess.run(command, shell=True)
-    print(f"[INFO] Остановка эмулятора id={emulator_id}")
+    logger.info(f"Остановка эмулятора id={emulator_id}")
