@@ -209,16 +209,10 @@ class GameLauncher:
                 debug_name=f"map_attempt{attempt}"
             )
 
-            # Если нашли popup - кликаем по крестику
+            # Если нашли popup - закрываем через ESC
             if popup_coords:
-                x, y = popup_coords
-                logger.warning(f"[{self.emulator_name}] Обнаружено всплывающее окно, закрываю...")
-                logger.debug(f"[{self.emulator_name}] Клик по крестику: ({x}, {y})")
-
-                # Импортируем tap здесь чтобы избежать циклических зависимостей
-                from utils.adb_controller import tap
-                tap(self.emulator, x, y)
-
+                logger.warning(f"[{self.emulator_name}] Обнаружено всплывающее окно, закрываю через ESC...")
+                press_key(self.emulator, "ESC")
                 time.sleep(2)
                 continue  # Повторяем цикл
 

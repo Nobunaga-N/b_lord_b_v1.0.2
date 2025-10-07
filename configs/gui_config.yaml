@@ -1,6 +1,8 @@
 emulators:
   enabled:
   - 1
+  - 2
+  - 3
 functions:
   building: true
   coop: false
@@ -11,4 +13,4 @@ functions:
   tiles: false
   wilds: false
 settings:
-  max_concurrent: 1
+  max_concurrent: 2
