@@ -77,12 +77,30 @@ def open_log_terminal():
     if not os.path.exists(log_path):
         # Создать пустой файл
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        open(log_path, 'a').close()
+        open(log_path, 'a', encoding='utf-8').close()
+
+    # Создаём временный PowerShell скрипт (это самый надёжный способ)
+    script_path = os.path.abspath("data/logs/tail_logs.ps1")
+
+    # Создаём PowerShell скрипт с правильной кодировкой
+    ps_script_content = f"""# Установка кодировки UTF-8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Вывод логов в режиме tail
+Get-Content -Path "{log_path}" -Wait -Tail 50 -Encoding UTF8
+"""
+
+    try:
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(ps_script_content)
+    except Exception as e:
+        logger.error(f"Не удалось создать PowerShell скрипт: {e}")
+        return False
 
     try:
         # Попытка 1: Windows Terminal (wt.exe)
-        # Используем shell=True для корректной работы wt.exe
-        command = f'wt.exe powershell -NoExit -Command "Get-Content -Path \'{log_path}\' -Wait -Tail 50"'
+        command = f'wt.exe powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
 
         subprocess.Popen(
             command,
@@ -97,7 +115,7 @@ def open_log_terminal():
         logger.warning("Windows Terminal не найден, использую CMD")
 
         try:
-            command = f'start powershell -NoExit -Command "Get-Content -Path \'{log_path}\' -Wait -Tail 50"'
+            command = f'start powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
 
             subprocess.Popen(command, shell=True)
             logger.success("CMD с PowerShell открыт с логами")
@@ -113,7 +131,7 @@ def open_log_terminal():
         # Попытка fallback на CMD
         logger.warning("Пробую fallback на CMD...")
         try:
-            command = f'start powershell -NoExit -Command "Get-Content -Path \'{log_path}\' -Wait -Tail 50"'
+            command = f'start powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
             subprocess.Popen(command, shell=True)
             logger.success("CMD с PowerShell открыт с логами")
             return True
