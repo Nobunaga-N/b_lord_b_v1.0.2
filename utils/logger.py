@@ -64,8 +64,11 @@ def open_log_terminal():
     """
     Открывает Windows Terminal с логами в режиме tail -f
 
-    Пытается использовать Windows Terminal (wt.exe),
-    если не найден - использует cmd.exe как fallback
+    Приоритет:
+    1. Windows Terminal + PowerShell 7+ (pwsh)
+    2. Windows Terminal + PowerShell 5 (powershell)
+    3. PowerShell 7+ отдельное окно (pwsh)
+    4. PowerShell 5 отдельное окно (powershell)
 
     Returns:
         bool: True если терминал открыт успешно
@@ -79,16 +82,25 @@ def open_log_terminal():
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         open(log_path, 'a', encoding='utf-8').close()
 
-    # Создаём временный PowerShell скрипт (это самый надёжный способ)
+    # Создаём временный PowerShell скрипт
     script_path = os.path.abspath("data/logs/tail_logs.ps1")
 
-    # Создаём PowerShell скрипт с правильной кодировкой
+    # PowerShell скрипт с правильной кодировкой
     ps_script_content = f"""# Установка кодировки UTF-8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Вывод логов в режиме tail
-Get-Content -Path "{log_path}" -Wait -Tail 50 -Encoding UTF8
+# Красивый разделитель с временем запуска
+$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+Write-Host ""
+Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "    🚀 Beast Lord Bot - Логи в реальном времени" -ForegroundColor Green
+Write-Host "    📅 Запуск терминала: $timestamp" -ForegroundColor Yellow
+Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host ""
+
+# Вывод ТОЛЬКО новых логов (без старых)
+Get-Content -Path "{log_path}" -Wait -Tail 0 -Encoding UTF8
 """
 
     try:
@@ -98,46 +110,58 @@ Get-Content -Path "{log_path}" -Wait -Tail 50 -Encoding UTF8
         logger.error(f"Не удалось создать PowerShell скрипт: {e}")
         return False
 
+    # ===== ПОПЫТКА 1: Windows Terminal + PowerShell 7+ =====
     try:
-        # Попытка 1: Windows Terminal (wt.exe)
-        command = f'wt.exe powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
+        command = f'wt.exe pwsh -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
 
-        subprocess.Popen(
-            command,
-            shell=True
-        )
-
-        logger.success("Windows Terminal открыт с логами")
+        subprocess.Popen(command, shell=True)
+        logger.success("Windows Terminal с PowerShell 7+ открыт")
         return True
 
     except FileNotFoundError:
-        # Fallback: CMD с PowerShell
-        logger.warning("Windows Terminal не найден, использую CMD")
+        logger.debug("Windows Terminal не найден или PowerShell 7+ не установлен")
+    except Exception as e:
+        logger.debug(f"Не удалось запустить wt.exe + pwsh: {e}")
 
-        try:
-            command = f'start powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
+    # ===== ПОПЫТКА 2: Windows Terminal + PowerShell 5 =====
+    try:
+        command = f'wt.exe powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
 
-            subprocess.Popen(command, shell=True)
-            logger.success("CMD с PowerShell открыт с логами")
-            return True
+        subprocess.Popen(command, shell=True)
+        logger.success("Windows Terminal с PowerShell 5 открыт")
+        logger.warning("Используется PowerShell 5 (установите PowerShell 7+ для лучшей производительности)")
+        return True
 
-        except Exception as e:
-            logger.error(f"Не удалось открыть терминал с логами: {e}")
-            return False
+    except FileNotFoundError:
+        logger.debug("Windows Terminal не найден")
+    except Exception as e:
+        logger.debug(f"Не удалось запустить wt.exe + powershell: {e}")
+
+    # ===== ПОПЫТКА 3: PowerShell 7+ отдельное окно =====
+    try:
+        command = f'start pwsh -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
+
+        subprocess.Popen(command, shell=True)
+        logger.success("PowerShell 7+ открыт (отдельное окно)")
+        return True
+
+    except FileNotFoundError:
+        logger.debug("PowerShell 7+ (pwsh) не установлен")
+    except Exception as e:
+        logger.debug(f"Не удалось запустить pwsh: {e}")
+
+    # ===== ПОПЫТКА 4: PowerShell 5 отдельное окно (fallback) =====
+    try:
+        command = f'start powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
+
+        subprocess.Popen(command, shell=True)
+        logger.success("PowerShell 5 открыт (отдельное окно)")
+        logger.warning("Используется PowerShell 5 (установите PowerShell 7+ и Windows Terminal для лучшей производительности)")
+        return True
 
     except Exception as e:
-        logger.error(f"Ошибка при открытии Windows Terminal: {e}")
-
-        # Попытка fallback на CMD
-        logger.warning("Пробую fallback на CMD...")
-        try:
-            command = f'start powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
-            subprocess.Popen(command, shell=True)
-            logger.success("CMD с PowerShell открыт с логами")
-            return True
-        except Exception as e2:
-            logger.error(f"Не удалось открыть терминал с логами: {e2}")
-            return False
+        logger.error(f"Не удалось открыть терминал с логами (все попытки провалились): {e}")
+        return False
 
 
 def get_logger():
