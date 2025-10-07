@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.pyd
+
+# Виртуальное окружение
+venv/
+env/
+ENV/
+
+# Данные
+data/logs/*.log
+!data/logs/.gitkeep
+data/screenshots/*.png
+!data/screenshots/.gitkeep
+data/*.db
+
+# Конфиги (автогенерируемые)
+configs/emulators.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temp
+*.tmp
+temp/

@@ -1,0 +1,18 @@
+# Настройки GUI и функций
+# Сохраняется при нажатии кнопки "Сохранить настройки"
+
+emulators:
+  enabled: []  # ID включенных эмуляторов (например: [0, 1, 7])
+
+functions:
+  building: false          # Строительство
+  research: false          # Исследования
+  wilds: false             # Дикие
+  coop: false              # Кооперации
+  tiles: false             # Сбор с плиток
+  prime_times: false       # Прайм таймы
+  shield: false            # Щит
+  mail_rewards: false      # Награды с почты
+
+settings:
+  max_concurrent: 3        # Максимум одновременных эмуляторов (1-10)
