@@ -1,4 +1,4 @@
-# Beast Lord Bot v3.0
+# B Lord Bot v3.0
 
 Автоматизированный бот для игры Beast Lord: The New Land
 
