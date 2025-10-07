@@ -4,6 +4,8 @@
 
 import customtkinter as ctk
 from gui.emulator_panel import EmulatorPanel
+from gui.functions_panel import FunctionsPanel
+from gui.settings_panel import SettingsPanel
 
 
 class MainWindow(ctk.CTk):
@@ -14,7 +16,7 @@ class MainWindow(ctk.CTk):
 
         # Настройка окна
         self.title("Beast Lord Bot v3.0")
-        self.geometry("700x900")
+        self.geometry("700x950")  # ← БЫЛО 900, СТАЛО 950
         self.resizable(False, False)  # Фиксированный размер
 
         # Установка темы
@@ -32,29 +34,15 @@ class MainWindow(ctk.CTk):
 
         # ============ Панель 1: Эмуляторы ============
         self.emulator_panel = EmulatorPanel(self)
-        self.emulator_panel.pack(fill="both", expand=True, **padding)
+        self.emulator_panel.pack(fill="both", **padding)  # ← УБРАЛИ expand=True
 
         # ============ Панель 2: Функции ============
-        self.functions_frame = ctk.CTkFrame(self, corner_radius=10)
-        self.functions_frame.pack(fill="x", **padding)
-
-        functions_label = ctk.CTkLabel(
-            self.functions_frame,
-            text="Функции (изолированное тестирование)",
-            font=ctk.CTkFont(size=16, weight="bold")
-        )
-        functions_label.pack(anchor="w", padx=15, pady=(10, 5))
+        self.functions_panel = FunctionsPanel(self)
+        self.functions_panel.pack(fill="x", **padding)
 
         # ============ Панель 3: Настройки ============
-        self.settings_frame = ctk.CTkFrame(self, corner_radius=10)
-        self.settings_frame.pack(fill="x", **padding)
-
-        settings_label = ctk.CTkLabel(
-            self.settings_frame,
-            text="Настройки",
-            font=ctk.CTkFont(size=16, weight="bold")
-        )
-        settings_label.pack(anchor="w", padx=15, pady=(10, 5))
+        self.settings_panel = SettingsPanel(self)
+        self.settings_panel.pack(fill="x", **padding)
 
         # ============ Панель 4: Статус ============
         self.status_frame = ctk.CTkFrame(self, corner_radius=10)
@@ -67,17 +55,27 @@ class MainWindow(ctk.CTk):
         )
         status_label.pack(anchor="w", padx=15, pady=(10, 5))
 
+        # Временная заглушка для статуса
+        status_content = ctk.CTkLabel(
+            self.status_frame,
+            text="Состояние: 🔴 Остановлен\nАктивных эмуляторов: 0 / 0\nОчередь: 0",
+            font=ctk.CTkFont(size=13),
+            justify="left"
+        )
+        status_content.pack(anchor="w", padx=15, pady=(5, 15))
+
         # ============ Панель 5: Кнопки управления ============
         self.control_frame = ctk.CTkFrame(self, corner_radius=10)
         self.control_frame.pack(fill="x", **padding)
 
-        # Временные кнопки (пока без функционала)
+        # Кнопки управления (только Запустить и Остановить)
         btn_start = ctk.CTkButton(
             self.control_frame,
             text="▶ Запустить",
             width=180,
             height=40,
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._on_start
         )
         btn_start.pack(side="left", padx=15, pady=15)
 
@@ -88,17 +86,21 @@ class MainWindow(ctk.CTk):
             height=40,
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color="#d32f2f",
-            hover_color="#b71c1c"
+            hover_color="#b71c1c",
+            command=self._on_stop
         )
         btn_stop.pack(side="left", padx=5, pady=15)
 
-        btn_save = ctk.CTkButton(
-            self.control_frame,
-            text="💾 Сохранить настройки",
-            width=220,
-            height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color="#388e3c",
-            hover_color="#2e7d32"
-        )
-        btn_save.pack(side="left", padx=5, pady=15)
+    def _on_start(self):
+        """Обработчик кнопки 'Запустить' (пока заглушка)"""
+        print("\n[INFO] Кнопка 'Запустить' нажата")
+        print(f"  - Выбрано эмуляторов: {len(self.emulator_panel.get_selected_emulator_ids())}")
+        print(f"  - ID эмуляторов: {self.emulator_panel.get_selected_emulator_ids()}")
+        print(f"  - Активных функций: {self.functions_panel.get_active_functions()}")
+        print(f"  - Max concurrent: {self.settings_panel.get_max_concurrent()}")
+        print("[INFO] TODO: Реализовать запуск бота на следующих этапах\n")
+
+    def _on_stop(self):
+        """Обработчик кнопки 'Остановить' (пока заглушка)"""
+        print("\n[INFO] Кнопка 'Остановить' нажата")
+        print("[INFO] TODO: Реализовать остановку бота на следующих этапах\n")

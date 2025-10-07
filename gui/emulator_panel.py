@@ -39,7 +39,7 @@ class EmulatorPanel(ctk.CTkFrame):
         # Прокручиваемая область для чекбоксов
         self.scroll_frame = ctk.CTkScrollableFrame(
             self,
-            height=300,
+            height=250,
             fg_color="transparent"
         )
         self.scroll_frame.pack(fill="both", expand=True, padx=15, pady=10)
@@ -232,8 +232,8 @@ class EmulatorPanel(ctk.CTkFrame):
         # Получить текущий выбор
         selected_ids = self.get_selected_emulator_ids()
 
-        # Загрузить существующий конфиг (если есть)
-        gui_config = load_config("configs/gui_config.yaml")
+        # Загрузить существующий конфиг (БЕЗ вывода в консоль)
+        gui_config = load_config("configs/gui_config.yaml", silent=True)
 
         # Если конфиг пустой - создать базовую структуру
         if not gui_config:
@@ -257,5 +257,5 @@ class EmulatorPanel(ctk.CTkFrame):
             gui_config["emulators"] = {}
         gui_config["emulators"]["enabled"] = selected_ids
 
-        # Сохранить
-        save_config("configs/gui_config.yaml", gui_config)
+        # Сохранить (БЕЗ вывода в консоль)
+        save_config("configs/gui_config.yaml", gui_config, silent=True)
