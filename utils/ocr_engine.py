@@ -81,44 +81,157 @@ class OCREngine:
                 x1, y1, x2, y2 = region
                 image = image[y1:y2, x1:x2]
 
-            # OCR распознавание (без параметра cls для совместимости)
+            # OCR распознавание
             result = self.ocr.ocr(image)
 
             # Debug: вывести структуру результата
             logger.debug(f"OCR result type: {type(result)}")
             logger.debug(f"OCR result length: {len(result) if result else 0}")
-            if result and len(result) > 0:
-                logger.debug(f"OCR result[0] type: {type(result[0])}")
-                logger.debug(f"OCR result[0] length: {len(result[0]) if result[0] else 0}")
-                if result[0] and len(result[0]) > 0:
-                    logger.debug(f"OCR first line structure: {result[0][0]}")
 
             if not result or not result[0]:
                 logger.debug("OCR не распознал текст на изображении")
                 return []
 
-            # Форматирование результатов (с защитой от разных форматов)
-            elements = []
-            for line in result[0]:
-                try:
-                    # Попытка 1: Стандартный формат [bbox, (text, confidence)]
-                    bbox = line[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            logger.debug(f"OCR result[0] type: {type(result[0])}")
 
-                    # Проверка формата второго элемента
-                    if isinstance(line[1], (list, tuple)) and len(line[1]) >= 2:
-                        text = line[1][0]
-                        confidence = line[1][1]
-                    elif isinstance(line[1], str):
-                        # Возможно только текст, без confidence
-                        text = line[1]
-                        confidence = 1.0  # По умолчанию
+            # ИСПРАВЛЕНИЕ: Обработка нового формата PaddleX OCRResult
+            ocr_data = result[0]
+
+            # Попытка получить данные через property json
+            lines = None
+
+            if hasattr(ocr_data, 'json'):
+                logger.debug("OCR: найден атрибут json")
+                json_data = ocr_data.json  # Property, не метод!
+                logger.debug(f"OCR json type: {type(json_data)}")
+
+                if isinstance(json_data, dict):
+                    logger.debug(f"OCR json keys: {list(json_data.keys())[:10]}")  # Первые 10 ключей
+
+                    # Ищем данные OCR в словаре
+                    # Обычно структура: {'ocr_res': [{'rec_text': ..., 'det_poly': ..., 'rec_score': ...}]}
+                    # или {'rec_texts': [...], 'det_polys': [...], 'rec_scores': [...]}
+
+                    # Вариант 1: Есть ключ 'ocr_res'
+                    if 'ocr_res' in json_data:
+                        logger.debug("OCR: найден ключ 'ocr_res'")
+                        ocr_res = json_data['ocr_res']
+                        logger.debug(
+                            f"OCR ocr_res type: {type(ocr_res)}, length: {len(ocr_res) if hasattr(ocr_res, '__len__') else 'N/A'}")
+
+                        if isinstance(ocr_res, list) and ocr_res:
+                            logger.debug(
+                                f"OCR первый элемент ocr_res: {ocr_res[0].keys() if isinstance(ocr_res[0], dict) else type(ocr_res[0])}")
+                            lines = ocr_res
+
+                    # Вариант 2: Есть ключи 'rec_texts' и 'det_polys'
+                    elif 'rec_texts' in json_data and 'det_polys' in json_data:
+                        logger.debug("OCR: найдены ключи 'rec_texts' и 'det_polys'")
+                        texts = json_data['rec_texts']
+                        polys = json_data['det_polys']
+                        scores = json_data.get('rec_scores', [1.0] * len(texts))
+
+                        logger.debug(f"OCR texts: {len(texts)}, polys: {len(polys)}, scores: {len(scores)}")
+
+                        lines = []
+                        for i in range(len(texts)):
+                            lines.append({
+                                'rec_text': texts[i],
+                                'det_poly': polys[i],
+                                'rec_score': scores[i] if i < len(scores) else 1.0
+                            })
+
+                    # Вариант 3: Прямой поиск по всем ключам
                     else:
-                        logger.warning(f"Неожиданный формат line[1]: {line[1]}")
+                        logger.debug("OCR: анализ всех ключей словаря")
+                        # Вывести все ключи и первые значения
+                        for key, value in list(json_data.items())[:20]:  # Первые 20 ключей
+                            value_info = f"type={type(value).__name__}"
+                            if hasattr(value, '__len__') and not isinstance(value, str):
+                                value_info += f", len={len(value)}"
+                            if isinstance(value, dict):
+                                value_info += f", keys={list(value.keys())[:5]}"
+                            logger.debug(f"  {key}: {value_info}")
+
+            # Если не нашли через json, пробуем прямые атрибуты
+            if lines is None:
+                logger.debug("OCR: поиск прямых атрибутов")
+
+                # Список возможных названий атрибутов
+                text_attrs = ['rec_texts', 'texts', 'text']
+                poly_attrs = ['det_polys', 'boxes', 'bboxes', 'polygons']
+                score_attrs = ['rec_scores', 'scores', 'confidences']
+
+                texts = None
+                polys = None
+                scores = None
+
+                for attr in text_attrs:
+                    if hasattr(ocr_data, attr):
+                        texts = getattr(ocr_data, attr)
+                        logger.debug(
+                            f"OCR: найден атрибут {attr}, тип={type(texts)}, длина={len(texts) if hasattr(texts, '__len__') else 'N/A'}")
+                        break
+
+                for attr in poly_attrs:
+                    if hasattr(ocr_data, attr):
+                        polys = getattr(ocr_data, attr)
+                        logger.debug(
+                            f"OCR: найден атрибут {attr}, тип={type(polys)}, длина={len(polys) if hasattr(polys, '__len__') else 'N/A'}")
+                        break
+
+                for attr in score_attrs:
+                    if hasattr(ocr_data, attr):
+                        scores = getattr(ocr_data, attr)
+                        logger.debug(
+                            f"OCR: найден атрибут {attr}, тип={type(scores)}, длина={len(scores) if hasattr(scores, '__len__') else 'N/A'}")
+                        break
+
+                if texts and polys:
+                    if scores is None:
+                        scores = [1.0] * len(texts)
+
+                    lines = []
+                    for i in range(len(texts)):
+                        lines.append({
+                            'text': texts[i],
+                            'bbox': polys[i],
+                            'score': scores[i] if i < len(scores) else 1.0
+                        })
+
+            # Если все еще не нашли - последняя попытка через dir()
+            if lines is None:
+                logger.warning("OCR: не удалось найти данные стандартными способами")
+                all_attrs = [attr for attr in dir(ocr_data) if not attr.startswith('_')]
+                logger.debug(f"OCR доступные публичные атрибуты: {all_attrs}")
+                return []
+
+            logger.debug(f"OCR извлечено строк: {len(lines)}")
+
+            # Форматирование результатов
+            elements = []
+            for line in lines:
+                try:
+                    # Универсальное извлечение данных из разных форматов
+                    if isinstance(line, dict):
+                        text = line.get('rec_text') or line.get('text', '')
+                        bbox = line.get('det_poly') or line.get('bbox') or line.get('det_polygon')
+                        confidence = line.get('rec_score') or line.get('score') or line.get('confidence', 1.0)
+                    else:
+                        logger.warning(f"OCR неожиданный тип строки: {type(line)}")
                         continue
 
                     # Фильтр по confidence
                     if confidence < min_confidence:
                         continue
+
+                    # Преобразовать bbox в нужный формат
+                    if isinstance(bbox, np.ndarray):
+                        bbox = bbox.tolist()
+
+                    if isinstance(bbox[0], (int, float)):
+                        # Плоский список - преобразовать в список точек
+                        bbox = [[bbox[i], bbox[i + 1]] for i in range(0, len(bbox), 2)]
 
                     # Вычислить центр bbox
                     x_center = int((bbox[0][0] + bbox[2][0]) / 2)
