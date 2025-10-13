@@ -64,16 +64,6 @@ class OCREngine:
 
         Returns:
             list: Список распознанных элементов
-            [
-                {
-                    'text': 'Ферма Грунта',
-                    'confidence': 0.98,
-                    'bbox': [[x1,y1], [x2,y2], [x3,y3], [x4,y4]],
-                    'x': x_center,
-                    'y': y_center
-                },
-                ...
-            ]
         """
         try:
             # Обрезать регион если указан
@@ -84,7 +74,6 @@ class OCREngine:
             # OCR распознавание
             result = self.ocr.ocr(image)
 
-            # Debug: вывести структуру результата
             logger.debug(f"OCR result type: {type(result)}")
             logger.debug(f"OCR result length: {len(result) if result else 0}")
 
@@ -92,46 +81,62 @@ class OCREngine:
                 logger.debug("OCR не распознал текст на изображении")
                 return []
 
-            logger.debug(f"OCR result[0] type: {type(result[0])}")
-
-            # ИСПРАВЛЕНИЕ: Обработка нового формата PaddleX OCRResult
+            # Получить OCRResult объект
             ocr_data = result[0]
+            logger.debug(f"OCR result[0] type: {type(ocr_data)}")
 
-            # Попытка получить данные через property json
+            # Извлечение данных из PaddleX OCRResult
             lines = None
 
             if hasattr(ocr_data, 'json'):
-                logger.debug("OCR: найден атрибут json")
-                json_data = ocr_data.json  # Property, не метод!
+                json_data = ocr_data.json
                 logger.debug(f"OCR json type: {type(json_data)}")
 
                 if isinstance(json_data, dict):
-                    logger.debug(f"OCR json keys: {list(json_data.keys())[:10]}")  # Первые 10 ключей
+                    logger.debug(f"OCR json keys: {list(json_data.keys())}")
 
-                    # Ищем данные OCR в словаре
-                    # Обычно структура: {'ocr_res': [{'rec_text': ..., 'det_poly': ..., 'rec_score': ...}]}
-                    # или {'rec_texts': [...], 'det_polys': [...], 'rec_scores': [...]}
-
-                    # Вариант 1: Есть ключ 'ocr_res'
-                    if 'ocr_res' in json_data:
-                        logger.debug("OCR: найден ключ 'ocr_res'")
-                        ocr_res = json_data['ocr_res']
+                    # ============================================
+                    # ИСПРАВЛЕНИЕ: Проверяем ключ 'res'
+                    # ============================================
+                    if 'res' in json_data:
+                        logger.debug("OCR: найден ключ 'res'")
+                        res_data = json_data['res']
                         logger.debug(
-                            f"OCR ocr_res type: {type(ocr_res)}, length: {len(ocr_res) if hasattr(ocr_res, '__len__') else 'N/A'}")
+                            f"OCR res keys: {list(res_data.keys()) if isinstance(res_data, dict) else 'not a dict'}")
 
-                        if isinstance(ocr_res, list) and ocr_res:
+                        if isinstance(res_data, dict):
+                            # Извлекаем данные из res_data
+                            texts = res_data.get('rec_texts')
+                            polys = res_data.get('dt_polys')
+                            scores = res_data.get('rec_scores')
+
                             logger.debug(
-                                f"OCR первый элемент ocr_res: {ocr_res[0].keys() if isinstance(ocr_res[0], dict) else type(ocr_res[0])}")
-                            lines = ocr_res
+                                f"OCR extracted: texts={type(texts)}, polys={type(polys)}, scores={type(scores)}")
 
-                    # Вариант 2: Есть ключи 'rec_texts' и 'det_polys'
+                            if texts and polys:
+                                if scores is None:
+                                    scores = [1.0] * len(texts)
+
+                                lines = []
+                                for i in range(len(texts)):
+                                    lines.append({
+                                        'rec_text': texts[i],
+                                        'det_poly': polys[i],
+                                        'rec_score': scores[i] if i < len(scores) else 1.0
+                                    })
+
+                                logger.debug(f"OCR: извлечено {len(lines)} строк из 'res'")
+
+                    # Fallback на старые варианты
+                    elif 'ocr_res' in json_data:
+                        logger.debug("OCR: найден ключ 'ocr_res'")
+                        lines = json_data['ocr_res']
+
                     elif 'rec_texts' in json_data and 'det_polys' in json_data:
                         logger.debug("OCR: найдены ключи 'rec_texts' и 'det_polys'")
                         texts = json_data['rec_texts']
                         polys = json_data['det_polys']
                         scores = json_data.get('rec_scores', [1.0] * len(texts))
-
-                        logger.debug(f"OCR texts: {len(texts)}, polys: {len(polys)}, scores: {len(scores)}")
 
                         lines = []
                         for i in range(len(texts)):
@@ -141,23 +146,10 @@ class OCREngine:
                                 'rec_score': scores[i] if i < len(scores) else 1.0
                             })
 
-                    # Вариант 3: Прямой поиск по всем ключам
-                    else:
-                        logger.debug("OCR: анализ всех ключей словаря")
-                        # Вывести все ключи и первые значения
-                        for key, value in list(json_data.items())[:20]:  # Первые 20 ключей
-                            value_info = f"type={type(value).__name__}"
-                            if hasattr(value, '__len__') and not isinstance(value, str):
-                                value_info += f", len={len(value)}"
-                            if isinstance(value, dict):
-                                value_info += f", keys={list(value.keys())[:5]}"
-                            logger.debug(f"  {key}: {value_info}")
-
             # Если не нашли через json, пробуем прямые атрибуты
             if lines is None:
                 logger.debug("OCR: поиск прямых атрибутов")
 
-                # Список возможных названий атрибутов
                 text_attrs = ['rec_texts', 'texts', 'text']
                 poly_attrs = ['det_polys', 'boxes', 'bboxes', 'polygons']
                 score_attrs = ['rec_scores', 'scores', 'confidences']
@@ -169,22 +161,19 @@ class OCREngine:
                 for attr in text_attrs:
                     if hasattr(ocr_data, attr):
                         texts = getattr(ocr_data, attr)
-                        logger.debug(
-                            f"OCR: найден атрибут {attr}, тип={type(texts)}, длина={len(texts) if hasattr(texts, '__len__') else 'N/A'}")
+                        logger.debug(f"OCR: найден атрибут {attr}")
                         break
 
                 for attr in poly_attrs:
                     if hasattr(ocr_data, attr):
                         polys = getattr(ocr_data, attr)
-                        logger.debug(
-                            f"OCR: найден атрибут {attr}, тип={type(polys)}, длина={len(polys) if hasattr(polys, '__len__') else 'N/A'}")
+                        logger.debug(f"OCR: найден атрибут {attr}")
                         break
 
                 for attr in score_attrs:
                     if hasattr(ocr_data, attr):
                         scores = getattr(ocr_data, attr)
-                        logger.debug(
-                            f"OCR: найден атрибут {attr}, тип={type(scores)}, длина={len(scores) if hasattr(scores, '__len__') else 'N/A'}")
+                        logger.debug(f"OCR: найден атрибут {attr}")
                         break
 
                 if texts and polys:
@@ -194,16 +183,15 @@ class OCREngine:
                     lines = []
                     for i in range(len(texts)):
                         lines.append({
-                            'text': texts[i],
-                            'bbox': polys[i],
-                            'score': scores[i] if i < len(scores) else 1.0
+                            'rec_text': texts[i],
+                            'det_poly': polys[i],
+                            'rec_score': scores[i] if i < len(scores) else 1.0
                         })
 
-            # Если все еще не нашли - последняя попытка через dir()
+            # Если все еще не нашли
             if lines is None:
-                logger.warning("OCR: не удалось найти данные стандартными способами")
-                all_attrs = [attr for attr in dir(ocr_data) if not attr.startswith('_')]
-                logger.debug(f"OCR доступные публичные атрибуты: {all_attrs}")
+                logger.warning("OCR: не удалось найти данные")
+                logger.debug(f"OCR доступные атрибуты: {[attr for attr in dir(ocr_data) if not attr.startswith('_')]}")
                 return []
 
             logger.debug(f"OCR извлечено строк: {len(lines)}")
@@ -212,14 +200,10 @@ class OCREngine:
             elements = []
             for line in lines:
                 try:
-                    # Универсальное извлечение данных из разных форматов
-                    if isinstance(line, dict):
-                        text = line.get('rec_text') or line.get('text', '')
-                        bbox = line.get('det_poly') or line.get('bbox') or line.get('det_polygon')
-                        confidence = line.get('rec_score') or line.get('score') or line.get('confidence', 1.0)
-                    else:
-                        logger.warning(f"OCR неожиданный тип строки: {type(line)}")
-                        continue
+                    # Извлечение данных
+                    text = line.get('rec_text') or line.get('text', '')
+                    bbox = line.get('det_poly') or line.get('bbox') or line.get('det_polygon')
+                    confidence = line.get('rec_score') or line.get('score') or line.get('confidence', 1.0)
 
                     # Фильтр по confidence
                     if confidence < min_confidence:
@@ -229,8 +213,8 @@ class OCREngine:
                     if isinstance(bbox, np.ndarray):
                         bbox = bbox.tolist()
 
+                    # Если bbox - плоский список [x1,y1,x2,y2,x3,y3,x4,y4]
                     if isinstance(bbox[0], (int, float)):
-                        # Плоский список - преобразовать в список точек
                         bbox = [[bbox[i], bbox[i + 1]] for i in range(0, len(bbox), 2)]
 
                     # Вычислить центр bbox
@@ -241,7 +225,6 @@ class OCREngine:
                     if region:
                         x_center += region[0]
                         y_center += region[1]
-                        # Обновить bbox с учетом смещения
                         bbox = [[p[0] + region[0], p[1] + region[1]] for p in bbox]
 
                     elements.append({
@@ -254,7 +237,6 @@ class OCREngine:
 
                 except Exception as e:
                     logger.warning(f"Ошибка обработки OCR строки: {e}")
-                    logger.debug(f"Проблемная строка: {line}")
                     continue
 
             logger.debug(f"OCR распознал {len(elements)} элементов (порог: {min_confidence})")
@@ -388,12 +370,13 @@ class OCREngine:
 
     def parse_building_name(self, text):
         """
-        Очищает название здания от 'Lv.X' и лишнего текста
+        Очищает название здания от 'Lv.X', 'Перейти' и лишнего текста
 
         Примеры:
             'Ферма Грунта Lv.1' → 'Ферма Грунта'
             '  Склад Грунта  Lv.7  ' → 'Склад Грунта'
             'Ферма\nГрунта Lv.5' → 'Ферма Грунта'
+            'Ферма Грунта Lv.1 Перейти' → 'Ферма Грунта'
 
         Args:
             text: строка для очистки
@@ -403,6 +386,9 @@ class OCREngine:
         """
         # Удалить ' Lv.X' (с пробелом перед)
         text = re.sub(r'\s+L\s*v\s*\.\s*\d+', '', text, flags=re.IGNORECASE)
+
+        # Удалить 'Перейти' (в любом месте, с учетом пробелов)
+        text = re.sub(r'\s*Перейти\s*', '', text, flags=re.IGNORECASE)
 
         # Заменить переносы строк на пробел
         text = text.replace('\n', ' ')
