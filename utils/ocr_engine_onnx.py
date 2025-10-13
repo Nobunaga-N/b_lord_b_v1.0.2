@@ -36,18 +36,30 @@ class OCREngineONNX:
     Singleton: используйте get_ocr_engine_onnx() для получения экземпляра
     """
 
-    def __init__(self, model_dir='data/models/onnx'):
+    def __init__(self, model_dir=None):
         """
         Инициализация ONNX Runtime OCR
 
         Args:
-            model_dir: папка с .onnx моделями
+            model_dir: папка с .onnx моделями (по умолчанию: data/models/onnx в корне проекта)
         """
         try:
             import onnxruntime as ort
+            from pathlib import Path
 
-            self.model_dir = model_dir
+            # ИСПРАВЛЕНИЕ: Определить корень проекта относительно текущего файла
+            if model_dir is None:
+                # Текущий файл: utils/ocr_engine_onnx.py
+                # Корень проекта: на 1 уровень выше
+                current_file = Path(__file__)
+                project_root = current_file.parent.parent
+                model_dir = project_root / "data" / "models" / "onnx"
+
+            # Конвертировать в строку
+            self.model_dir = str(model_dir)
             self.debug_mode = False
+
+            logger.debug(f"Путь к моделям ONNX: {self.model_dir}")
 
             # 1. Определить доступные провайдеры
             self.providers = self._detect_providers(ort)
