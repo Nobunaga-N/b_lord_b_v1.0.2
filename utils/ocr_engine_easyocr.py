@@ -62,9 +62,9 @@ class OCREngineEasyOCR:
         """
         Распознает текст на изображении
 
-        ИЗМЕНЕНИЯ v1.1:
-        - Добавлен детальный debug лог
-        - Показывает ЧТО именно распознано
+        ИЗМЕНЕНИЯ v1.2:
+        - Добавлен детальный debug лог с Y-координатами
+        - Показывает отфильтрованные элементы
         """
         try:
             # Обрезать регион если указан
@@ -79,11 +79,23 @@ class OCREngineEasyOCR:
                 logger.debug("EasyOCR не распознал текст на изображении")
                 return []
 
-            # ===== ДОБАВЛЕНО: Детальный лог =====
-            logger.debug(f"EasyOCR raw результаты:")
+            # ===== ДЕТАЛЬНЫЙ ЛОГ (ВСЕ элементы с Y-координатами) =====
+            logger.debug(f"EasyOCR raw результаты (всего {len(results)}):")
+            filtered_count = 0
+
             for i, (bbox, text, conf) in enumerate(results, 1):
-                logger.debug(f"  {i}. '{text}' (conf: {conf:.2f})")
-            # ====================================
+                # Вычислить Y-координату
+                y_center = int((bbox[0][1] + bbox[2][1]) / 2)
+
+                if conf >= min_confidence:
+                    logger.debug(f"  {i:2}. '{text}' (conf: {conf:.2f}, y: {y_center:3}) ✅")
+                else:
+                    logger.debug(f"  {i:2}. '{text}' (conf: {conf:.2f}, y: {y_center:3}) ❌ ОТФИЛЬТРОВАНО")
+                    filtered_count += 1
+
+            if filtered_count > 0:
+                logger.warning(f"Отфильтровано {filtered_count} элементов из-за порога {min_confidence}")
+            # ==========================================================
 
             # Конвертировать в наш формат
             elements = []
