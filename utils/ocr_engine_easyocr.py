@@ -5,6 +5,10 @@
 - Работает с CUDA 13.0
 - Поддержка русского из коробки
 - Быстрый на GPU (~0.5-1 сек)
+
+ПРОБЛЕМЫ:
+- Путает точку с запятой: Lv.9 → Ly,9 или L,9
+- Путает буквы: Перейти → Псрейти
 """
 
 import os
@@ -62,9 +66,13 @@ class OCREngineEasyOCR:
         """
         Распознает текст на изображении
 
-        ИЗМЕНЕНИЯ v1.2:
-        - Добавлен детальный debug лог с Y-координатами
-        - Показывает отфильтрованные элементы
+        Args:
+            image: numpy.ndarray (BGR формат OpenCV)
+            region: tuple (x1, y1, x2, y2) - область для OCR (опционально)
+            min_confidence: минимальный порог уверенности (0.0-1.0)
+
+        Returns:
+            list: Список распознанных элементов
         """
         try:
             # Обрезать регион если указан
@@ -79,12 +87,11 @@ class OCREngineEasyOCR:
                 logger.debug("EasyOCR не распознал текст на изображении")
                 return []
 
-            # ===== ДЕТАЛЬНЫЙ ЛОГ (ВСЕ элементы с Y-координатами) =====
+            # Детальный лог
             logger.debug(f"EasyOCR raw результаты (всего {len(results)}):")
             filtered_count = 0
 
             for i, (bbox, text, conf) in enumerate(results, 1):
-                # Вычислить Y-координату
                 y_center = int((bbox[0][1] + bbox[2][1]) / 2)
 
                 if conf >= min_confidence:
@@ -95,7 +102,6 @@ class OCREngineEasyOCR:
 
             if filtered_count > 0:
                 logger.warning(f"Отфильтровано {filtered_count} элементов из-за порога {min_confidence}")
-            # ==========================================================
 
             # Конвертировать в наш формат
             elements = []
@@ -129,8 +135,6 @@ class OCREngineEasyOCR:
             logger.error(f"Ошибка OCR распознавания: {e}")
             logger.exception(e)
             return []
-
-    # ===== МЕТОДЫ ПАРСИНГА (КОПИРУЕМ ИЗ ocr_engine.py) =====
 
     def group_by_rows(self, elements, y_threshold=20):
         """Группирует элементы по строкам"""
@@ -166,10 +170,11 @@ class OCREngineEasyOCR:
         Поддерживаемые форматы:
         - "Lv.10" → стандарт (PaddleOCR)
         - "L10"   → EasyOCR (без точки и "v")
+        - "L 4"   → EasyOCR (с пробелом)
+        - "L,9"   → EasyOCR (ЗАПЯТАЯ вместо точки!) ⭐ КРИТИЧНО
+        - "Ly,9"  → EasyOCR (y + запятая)
         - "L.10"  → EasyOCR (без "v")
         - "Lv 10" → EasyOCR (без точки, пробел)
-        - "L .10" → EasyOCR (пробел перед точкой)
-        - "L.g"   → EasyOCR (ошибка распознавания)
 
         Args:
             text: строка для парсинга
@@ -177,45 +182,55 @@ class OCREngineEasyOCR:
         Returns:
             int или None
         """
-        # Паттерн 1: L + цифры (без точки и "v") - "L10"
-        pattern1 = r'\bL(\d+)\b'
-        match = re.search(pattern1, text, re.IGNORECASE)
+        # ===== ПРИОРИТЕТ 1: Запятая вместо точки (частая ошибка EasyOCR) =====
+
+        # Паттерн 1: "L,9" или "Ly,9" (запятая вместо точки)
+        pattern_comma = r'\bL[yvY]?\s*,\s*(\d+)\b'
+        match = re.search(pattern_comma, text, re.IGNORECASE)
+        if match:
+            level = int(match.group(1))
+            logger.debug(f"Распознан уровень (паттерн L,## / Ly,##): {level} из '{text}'")
+            return level
+
+        # ===== ПРИОРИТЕТ 2: Стандартные паттерны =====
+
+        # Паттерн 2: "L10", "L 4" (с пробелами или без)
+        pattern2 = r'\bL\s*(\d+)\b'
+        match = re.search(pattern2, text, re.IGNORECASE)
         if match:
             level = int(match.group(1))
             logger.debug(f"Распознан уровень (паттерн L##): {level} из '{text}'")
             return level
 
-        # Паттерн 2: L + точка + цифры (без "v") - "L.10"
-        pattern2 = r'\bL\s*\.\s*(\d+)\b'
-        match = re.search(pattern2, text, re.IGNORECASE)
+        # Паттерн 3: "L.10", "L. 4" (точка без "v")
+        pattern3 = r'\bL\s*\.\s*(\d+)\b'
+        match = re.search(pattern3, text, re.IGNORECASE)
         if match:
             level = int(match.group(1))
             logger.debug(f"Распознан уровень (паттерн L.##): {level} из '{text}'")
             return level
 
-        # Паттерн 3: Lv + пробел + цифры - "Lv 10"
-        pattern3 = r'\bL\s*v\s+(\d+)\b'
-        match = re.search(pattern3, text, re.IGNORECASE)
+        # Паттерн 4: "Lv 10" (пробел вместо точки)
+        pattern4 = r'\bL\s*v\s+(\d+)\b'
+        match = re.search(pattern4, text, re.IGNORECASE)
         if match:
             level = int(match.group(1))
             logger.debug(f"Распознан уровень (паттерн Lv ##): {level} из '{text}'")
             return level
 
-        # Паттерн 4: Стандартный Lv.X - "Lv.10"
-        pattern4 = r'\bL\s*v\s*\.\s*(\d+)\b'
-        match = re.search(pattern4, text, re.IGNORECASE)
+        # Паттерн 5: "Lv.10" (стандарт PaddleOCR)
+        pattern5 = r'\bL\s*v\s*\.\s*(\d+)\b'
+        match = re.search(pattern5, text, re.IGNORECASE)
         if match:
             level = int(match.group(1))
             logger.debug(f"Распознан уровень (паттерн Lv.##): {level} из '{text}'")
             return level
 
-        # Паттерн 5: Ошибки OCR - "L.g" вместо "Lv.9"
-        # Проверяем есть ли "L." и что-то похожее на цифру
-        pattern5 = r'\bL\s*\.\s*([g9qo])\b'  # g→9, q→9, o→0
-        match = re.search(pattern5, text, re.IGNORECASE)
+        # Паттерн 6: Ошибки OCR - "L.g" вместо "Lv.9"
+        pattern6 = r'\bL\s*\.\s*([g9qo])\b'
+        match = re.search(pattern6, text, re.IGNORECASE)
         if match:
             char = match.group(1).lower()
-            # Маппинг ошибок распознавания
             error_map = {'g': 9, 'q': 9, 'o': 0}
             level = error_map.get(char)
             if level is not None:
@@ -245,11 +260,7 @@ class OCREngineEasyOCR:
 
     def parse_building_name(self, text):
         """
-        Очищает название здания от 'Lv.X', 'L10', 'Перейти' и лишнего текста
-
-        ИЗМЕНЕНИЯ v1.2:
-        - Добавлена поддержка формата "L10" (без точки и "v")
-        - Добавлена поддержка "L.10" (без "v")
+        Очищает название здания от 'Lv.X', 'L10', 'L,9', 'Перейти' и лишнего текста
 
         Args:
             text: строка для очистки
@@ -258,15 +269,17 @@ class OCREngineEasyOCR:
             str: очищенное название
         """
         # Удалить все варианты уровней
-        text = re.sub(r'\bL\s*v\s*\.\s*\d+\b', '', text, flags=re.IGNORECASE)  # Lv.10
-        text = re.sub(r'\bL\s*v\s+\d+\b', '', text, flags=re.IGNORECASE)  # Lv 10
-        text = re.sub(r'\bL\s*\.\s*\d+\b', '', text, flags=re.IGNORECASE)  # L.10
-        text = re.sub(r'\bL\d+\b', '', text, flags=re.IGNORECASE)  # L10
-        text = re.sub(r'\bL\s*\.\s*[g9qo]\b', '', text, flags=re.IGNORECASE)  # L.g
+        text = re.sub(r'\bL[yvY]?\s*,\s*\d+\b', '', text, flags=re.IGNORECASE)  # L,9 / Ly,9
+        text = re.sub(r'\bL\s*v\s*\.\s*\d+\b', '', text, flags=re.IGNORECASE)   # Lv.10
+        text = re.sub(r'\bL\s*v\s+\d+\b', '', text, flags=re.IGNORECASE)        # Lv 10
+        text = re.sub(r'\bL\s*\.\s*\d+\b', '', text, flags=re.IGNORECASE)       # L.10
+        text = re.sub(r'\bL\s*\d+\b', '', text, flags=re.IGNORECASE)            # L10, L 4
+        text = re.sub(r'\bL\s*\.\s*[g9qo]\b', '', text, flags=re.IGNORECASE)    # L.g
 
-        # Удалить "Перейти" и варианты
+        # Удалить "Перейти" и варианты ошибок
         text = re.sub(r'\bПерейти\b', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'\bПерсйти\b', '', text, flags=re.IGNORECASE)  # Ошибка OCR
+        text = re.sub(r'\bПерсйти\b', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bПсрейти\b', '', text, flags=re.IGNORECASE)  # EasyOCR ошибка
 
         # Заменить переносы строк на пробел
         text = text.replace('\n', ' ')
@@ -274,17 +287,22 @@ class OCREngineEasyOCR:
         # Убрать лишние пробелы
         text = re.sub(r'\s+', ' ', text)
 
-        # Strip
         return text.strip()
 
     def parse_navigation_panel(self, screenshot, emulator_id=None):
         """
         Парсит панель навигации
 
-        ИЗМЕНЕНИЯ v1.4:
-        - Двухпроходное распознавание (высокий + низкий confidence)
-        - Debug скриншот ПОСЛЕ добавления всех элементов
-        - Детальное логирование
+        Двухпроходное распознавание:
+        - Проход 1: высокий confidence (0.5)
+        - Проход 2: низкий confidence (0.25) для пропущенных уровней
+
+        Args:
+            screenshot: numpy.ndarray (BGR формат)
+            emulator_id: int (для debug, опционально)
+
+        Returns:
+            list: Список зданий
         """
         logger.info("Парсинг панели навигации...")
 
@@ -315,7 +333,8 @@ class OCREngineEasyOCR:
 
             # Проверить похоже ли на уровень
             text_upper = text.upper()
-            level_patterns = ['LV', 'L.', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L0', 'LG', 'LQ', 'LO']
+            # Добавлены паттерны с запятой
+            level_patterns = ['LV', 'L.', 'L,', 'LY,', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L0', 'LG', 'LQ', 'LO']
 
             is_level = any(pattern in text_upper for pattern in level_patterns)
 
@@ -331,7 +350,7 @@ class OCREngineEasyOCR:
             logger.warning("OCR не распознал элементы на панели навигации")
             return []
 
-        # ===== DEBUG РЕЖИМ =====
+        # Debug режим
         if self.debug_mode and emulator_id is not None:
             logger.debug("Сохранение debug скриншота...")
             try:
