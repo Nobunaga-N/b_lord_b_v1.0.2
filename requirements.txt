@@ -18,3 +18,9 @@ rapidocr-onnxruntime>=1.2.3
 scipy>=1.10.0            # Для постпроцессинга
 shapely>=2.0.0           # Для работы с полигонами (bbox)
 pyclipper>=1.3.0         # Для обработки контуров текста
+
+
+# OCR - EasyOCR (GPU)
+easyocr>=1.7.0
+torch>=2.0.0
+torchvision>=0.15.0
