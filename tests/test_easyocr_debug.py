@@ -42,15 +42,18 @@ def test_easyocr_debug():
 
     print(f"✅ Скриншот: {screenshot.shape[1]}x{screenshot.shape[0]}\n")
 
-    # 3. Инициализация OCR
     print("🔍 Инициализация EasyOCR...")
     ocr = get_ocr_engine_easyocr()
+    ocr.set_debug_mode(True)  # ← ДОБАВЬ ЭТУ СТРОКУ
     print()
 
     # 4. RAW распознавание (без парсинга)
     print("=" * 70)
     print("📝 RAW РАСПОЗНАВАНИЕ (что видит EasyOCR)")
     print("=" * 70 + "\n")
+
+    # ДОБАВИТЬ ЭТУ СТРОКУ:
+    ocr.set_debug_mode(True)
 
     elements = ocr.recognize_text(screenshot, min_confidence=0.5)
 

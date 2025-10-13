@@ -269,21 +269,64 @@ class OCREngineEasyOCR:
         """
         Парсит панель навигации
 
-        Returns:
-            list: Список зданий [{'name': ..., 'level': ..., 'index': ..., ...}, ...]
+        ИЗМЕНЕНИЯ v1.4:
+        - Двухпроходное распознавание (высокий + низкий confidence)
+        - Debug скриншот ПОСЛЕ добавления всех элементов
+        - Детальное логирование
         """
         logger.info("Парсинг панели навигации...")
 
-        # OCR распознавание
-        elements = self.recognize_text(screenshot, min_confidence=0.5)
+        # ===== ПРОХОД 1: Высокий confidence (0.5) =====
+        logger.debug("OCR Проход 1: min_confidence=0.5")
+        elements_high = self.recognize_text(screenshot, min_confidence=0.5)
+        logger.debug(f"OCR Проход 1: распознано {len(elements_high)} элементов")
 
-        # Debug режим
-        if self.debug_mode and emulator_id is not None:
-            self._save_debug_image(screenshot, elements, emulator_id, "navigation")
+        # ===== ПРОХОД 2: Низкий confidence (0.25) для уровней =====
+        logger.debug("OCR Проход 2: min_confidence=0.25 (поиск пропущенных уровней)")
+        elements_low = self.recognize_text(screenshot, min_confidence=0.25)
+        logger.debug(f"OCR Проход 2: всего распознано {len(elements_low)} элементов")
+
+        # Объединить: берем все из прохода 1, добавляем новые уровни из прохода 2
+        elements = elements_high.copy()
+
+        # Собрать уже существующие (текст, Y) для проверки дубликатов
+        existing_data = {(elem['text'], elem['y']) for elem in elements}
+
+        added_count = 0
+        for elem in elements_low:
+            text = elem['text']
+            y_coord = elem['y']
+
+            # Пропустить дубликаты
+            if (text, y_coord) in existing_data:
+                continue
+
+            # Проверить похоже ли на уровень
+            text_upper = text.upper()
+            level_patterns = ['LV', 'L.', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L0', 'LG', 'LQ', 'LO']
+
+            is_level = any(pattern in text_upper for pattern in level_patterns)
+
+            if is_level:
+                elements.append(elem)
+                added_count += 1
+                logger.debug(f"  + Добавлен низкоконф уровень: '{text}' (conf: {elem['confidence']:.2f}, y: {y_coord})")
+
+        logger.info(f"OCR Проход 2: добавлено {added_count} низкоконфиденс уровней")
+        logger.info(f"OCR Итого элементов: {len(elements)}")
 
         if not elements:
-            logger.warning("OCR не распознал элементы")
+            logger.warning("OCR не распознал элементы на панели навигации")
             return []
+
+        # ===== DEBUG РЕЖИМ =====
+        if self.debug_mode and emulator_id is not None:
+            logger.debug("Сохранение debug скриншота...")
+            try:
+                self._save_debug_image(screenshot, elements, emulator_id, "navigation")
+            except Exception as e:
+                logger.error(f"Ошибка сохранения debug скриншота: {e}")
+                logger.exception(e)
 
         # Группировка по строкам
         rows = self.group_by_rows(elements, y_threshold=20)
@@ -292,11 +335,14 @@ class OCREngineEasyOCR:
         buildings = []
         building_counters = {}
 
-        for row in rows:
+        for i, row in enumerate(rows, 1):
             full_text = ' '.join([elem['text'] for elem in row])
 
             level = self.parse_level(full_text)
             building_name = self.parse_building_name(full_text)
+
+            # Диагностика каждой строки
+            logger.debug(f"Строка {i}: name='{building_name}', level={level}, raw='{full_text}'")
 
             if not building_name or level is None or len(building_name) < 3:
                 continue
