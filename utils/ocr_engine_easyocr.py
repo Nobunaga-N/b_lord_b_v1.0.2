@@ -64,24 +64,19 @@ class OCREngineEasyOCR:
 
     def recognize_text(self, image, region=None, min_confidence=0.5):
         """
-        Распознает текст на изображении
-
-        Args:
-            image: numpy.ndarray (BGR формат OpenCV)
-            region: tuple (x1, y1, x2, y2) - область для OCR (опционально)
-            min_confidence: минимальный порог уверенности (0.0-1.0)
-
-        Returns:
-            list: Список распознанных элементов
+        Распознает текст с предобработкой
         """
         try:
-            # Обрезать регион если указан
+            # Обрезать регион
             if region:
                 x1, y1, x2, y2 = region
                 image = image[y1:y2, x1:x2].copy()
 
-            # EasyOCR распознавание
-            results = self.reader.readtext(image)
+            # ⭐ ПРЕДОБРАБОТКА для улучшения распознавания
+            processed_image = self._preprocess_image(image)
+
+            # EasyOCR распознавание НА ОБРАБОТАННОМ изображении
+            results = self.reader.readtext(processed_image)
 
             if not results:
                 logger.debug("EasyOCR не распознал текст на изображении")
@@ -165,49 +160,64 @@ class OCREngineEasyOCR:
 
     def parse_level(self, text):
         """
-        Извлекает уровень из 'Lv.X' с учетом ошибок распознавания EasyOCR
+        Извлекает уровень с учетом ВСЕХ ошибок EasyOCR
 
         Поддерживаемые форматы:
-        - "Lv.10" → стандарт (PaddleOCR)
-        - "L10"   → EasyOCR (без точки и "v")
-        - "L 4"   → EasyOCR (с пробелом)
-        - "L,9"   → EasyOCR (ЗАПЯТАЯ вместо точки!) ⭐ КРИТИЧНО
-        - "Ly,9"  → EasyOCR (y + запятая)
-        - "L.10"  → EasyOCR (без "v")
-        - "Lv 10" → EasyOCR (без точки, пробел)
-
-        Args:
-            text: строка для парсинга
-
-        Returns:
-            int или None
+        - "Lv.10" → 10 (стандарт)
+        - "L10" → 10
+        - "L 10" → 10
+        - "Lu 9" → 9 ⭐ (u вместо v)
+        - "Lu g" → 9 ⭐ (u вместо v, g вместо 9)
+        - "Ly 9" → 9 ⭐ (y вместо v)
+        - "L,9" → 9 ⭐ (запятая вместо точки)
         """
-        # ===== ПРИОРИТЕТ 1: Запятая вместо точки (частая ошибка EasyOCR) =====
 
-        # Паттерн 1: "L,9" или "Ly,9" (запятая вместо точки)
-        pattern_comma = r'\bL[yvY]?\s*,\s*(\d+)\b'
+        # ===== ПРИОРИТЕТ 1: Ошибки EasyOCR с буквой "u" =====
+
+        # Паттерн: "Lu 9", "Lu9", "Lu.9", "Lu,9"
+        pattern_u = r'\bL[uU]\s*[.,]?\s*(\d+)\b'
+        match = re.search(pattern_u, text, re.IGNORECASE)
+        if match:
+            level = int(match.group(1))
+            logger.debug(f"Распознан уровень (паттерн Lu##): {level} из '{text}'")
+            return level
+
+        # Паттерн: "Lu g" → 9 (ошибка распознавания цифры)
+        pattern_u_g = r'\bL[uU]\s*[.,]?\s*([g9qo])\b'
+        match = re.search(pattern_u_g, text, re.IGNORECASE)
+        if match:
+            char = match.group(1).lower()
+            # Маппинг частых ошибок OCR
+            error_map = {
+                'g': 9,  # g выглядит как 9
+                'q': 9,  # q выглядит как 9
+                'o': 0,  # o выглядит как 0
+                's': 5,  # s выглядит как 5 (редко)
+                'b': 8,  # b выглядит как 8 (редко)
+            }
+            level = error_map.get(char)
+            if level is not None:
+                logger.debug(f"Распознан уровень (паттерн Lu{char}→{level}): {level} из '{text}'")
+                return level
+
+        # ===== ПРИОРИТЕТ 2: Ошибки с "y" =====
+
+        # Паттерн: "Ly 9", "Ly,9"
+        pattern_y = r'\bL[yY]\s*[.,]?\s*(\d+)\b'
+        match = re.search(pattern_y, text, re.IGNORECASE)
+        if match:
+            level = int(match.group(1))
+            logger.debug(f"Распознан уровень (паттерн Ly##): {level} из '{text}'")
+            return level
+
+        # ===== ПРИОРИТЕТ 3: Запятая вместо точки =====
+
+        # Паттерн: "L,9", "Lv,9"
+        pattern_comma = r'\bL[vV]?\s*,\s*(\d+)\b'
         match = re.search(pattern_comma, text, re.IGNORECASE)
         if match:
             level = int(match.group(1))
-            logger.debug(f"Распознан уровень (паттерн L,## / Ly,##): {level} из '{text}'")
-            return level
-
-        # ===== ПРИОРИТЕТ 2: Стандартные паттерны =====
-
-        # Паттерн 2: "L10", "L 4" (с пробелами или без)
-        pattern2 = r'\bL\s*(\d+)\b'
-        match = re.search(pattern2, text, re.IGNORECASE)
-        if match:
-            level = int(match.group(1))
-            logger.debug(f"Распознан уровень (паттерн L##): {level} из '{text}'")
-            return level
-
-        # Паттерн 3: "L.10", "L. 4" (точка без "v")
-        pattern3 = r'\bL\s*\.\s*(\d+)\b'
-        match = re.search(pattern3, text, re.IGNORECASE)
-        if match:
-            level = int(match.group(1))
-            logger.debug(f"Распознан уровень (паттерн L.##): {level} из '{text}'")
+            logger.debug(f"Распознан уровень (паттерн L,##): {level} из '{text}'")
             return level
 
         # Паттерн 4: "Lv 10" (пробел вместо точки)
@@ -268,6 +278,12 @@ class OCREngineEasyOCR:
         Returns:
             str: очищенное название
         """
+        # Удалить "Lu 9", "Lu g", "Ly 9"
+        text = re.sub(r'\bL[uvyUVY]\s*[.,]?\s*\d+\b', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bL[uvyUVY]\s*[.,]?\s*[g9qosb]\b', '', text, flags=re.IGNORECASE)
+
+        # Удалить "L,9", "L.9", "L10"
+        text = re.sub(r'\bL\s*[.,]?\s*\d+\b', '', text, flags=re.IGNORECASE)
         # Удалить все варианты уровней
         text = re.sub(r'\bL[yvY]?\s*,\s*\d+\b', '', text, flags=re.IGNORECASE)  # L,9 / Ly,9
         text = re.sub(r'\bL\s*v\s*\.\s*\d+\b', '', text, flags=re.IGNORECASE)   # Lv.10
@@ -288,6 +304,46 @@ class OCREngineEasyOCR:
         text = re.sub(r'\s+', ' ', text)
 
         return text.strip()
+
+    def _preprocess_image(self, image):
+        """
+        Предобработка изображения для улучшения распознавания EasyOCR
+
+        Применяет:
+        - Увеличение контраста (CLAHE)
+        - Увеличение резкости
+        - Уменьшение шума
+
+        Args:
+            image: numpy.ndarray (BGR)
+
+        Returns:
+            numpy.ndarray: обработанное изображение
+        """
+        import cv2
+
+        # 1. Конвертировать в LAB для CLAHE
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+
+        # 2. CLAHE (адаптивное выравнивание гистограммы) - увеличивает контраст
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+
+        # 3. Собрать обратно
+        lab = cv2.merge([l, a, b])
+        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+        # 4. Увеличить резкость (kernel sharpening)
+        kernel = np.array([[-1, -1, -1],
+                           [-1, 9, -1],
+                           [-1, -1, -1]])
+        sharpened = cv2.filter2D(enhanced, -1, kernel)
+
+        # 5. Денойзинг (уменьшение шума)
+        denoised = cv2.fastNlMeansDenoisingColored(sharpened, None, 10, 10, 7, 21)
+
+        return denoised
 
     def parse_navigation_panel(self, screenshot, emulator_id=None):
         """
