@@ -1,7 +1,6 @@
 emulators:
   enabled:
   - 1
-  - 2
 functions:
   building: true
   coop: false
