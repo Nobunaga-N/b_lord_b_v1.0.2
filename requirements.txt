@@ -1,17 +1,27 @@
+# ===== GUI =====
 customtkinter>=5.2.0
+
+# ===== ADB =====
 pure-python-adb>=0.3.0.dev0
+
+# ===== Распознавание изображений =====
 opencv-python>=4.8.0
 Pillow>=10.0.0
+
+# ===== OCR (только PaddleOCR) =====
+#paddlepaddle>=2.5.0
+paddlepaddle-gpu==2.6.1.post120 #gpu версия
+paddleocr>=2.7.0
+
+# ===== Утилиты =====
 loguru>=0.7.0
 PyYAML>=6.0
 
-# OCR - PaddleOCR (текущая версия, оставляем для сравнения)
-paddlepaddle>=2.5.0
-paddleocr>=2.7.0
+# ===== База данных =====
+# sqlite3 - встроен в Python, не требует установки
 
-# OCR - ONNX Runtime (новая версия)
 numpy>=1.24.0            # Для работы с массивами
 
-# Дополнительные зависимости для ONNX
+
 
 
