@@ -10,17 +10,8 @@ paddlepaddle>=2.5.0
 paddleocr>=2.7.0
 
 # OCR - ONNX Runtime (новая версия)
-onnxruntime-gpu>=1.16.0  # Поддержка CUDA (NVIDIA), DirectML (AMD/Intel), CPU
 numpy>=1.24.0            # Для работы с массивами
-rapidocr-onnxruntime>=1.2.3
 
 # Дополнительные зависимости для ONNX
-scipy>=1.10.0            # Для постпроцессинга
-shapely>=2.0.0           # Для работы с полигонами (bbox)
-pyclipper>=1.3.0         # Для обработки контуров текста
 
 
-# OCR - EasyOCR (GPU)
-easyocr>=1.7.0
-torch>=2.0.0
-torchvision>=0.15.0
