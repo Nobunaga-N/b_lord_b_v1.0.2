@@ -328,7 +328,7 @@ class OCREngine:
 
     def parse_building_name(self, text: str) -> str:
         """
-        Парсинг названия здания (убирает уровни, кнопки, римские цифры)
+        Парсинг названия здания (убирает уровни и кнопки, но сохраняет римские цифры)
 
         Args:
             text: Текст для парсинга
@@ -338,9 +338,9 @@ class OCREngine:
 
         Examples:
             >>> parse_building_name("Жилище Лемуров I Lv.10 Перейти")
-            "Жилище Лемуров"
-            >>> parse_building_name("Логово Хищников II Ly.5")
-            "Логово Хищников"
+            "Жилище Лемуров I"
+            >>> parse_building_name("Логово Хищников II Ly.5 Перейти")
+            "Логово Хищников II"
         """
         # Убираем уровни (Lv.X, Ly.X и т.д.)
         text = re.sub(r'[LlЛл][vVуУyYвВ]\.?\s*\d+', '', text, flags=re.IGNORECASE)
@@ -348,8 +348,8 @@ class OCREngine:
         # Убираем "Перейти" и его варианты
         text = re.sub(r'[ПпPp][еeЕE][рpРP][еeЕE][йиĭІі][тtТT][иiІі]', '', text, flags=re.IGNORECASE)
 
-        # Убираем римские цифры в конце (I, II, III, IV, V)
-        text = re.sub(r'\s+[IVXivx]+\s*$', '', text)
+        # НЕ убираем римские цифры - они часть названия здания!
+        # Они отличают разные экземпляры одного типа (Жилище I, Жилище II, и т.д.)
 
         # Убираем лишние пробелы
         text = ' '.join(text.split())
