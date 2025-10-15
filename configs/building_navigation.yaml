@@ -224,9 +224,9 @@ navigation:
           scroll_to_subsection:
             - direction: "down"
               start_x: 155
-              start_y: 296
+              start_y: 714
               end_x: 155
-              end_y: 714
+              end_y: 296
               duration: 300
           buildings:
 
@@ -266,9 +266,9 @@ navigation:
           scroll_to_subsection:
             - direction: "down"
               start_x: 155
-              start_y: 296
+              start_y: 714
               end_x: 155
-              end_y: 714
+              end_y: 296
               duration: 300
           buildings:
 
@@ -317,9 +317,9 @@ navigation:
           scroll_to_subsection:
             - direction: "down"
               start_x: 155
-              start_y: 296
+              start_y: 714
               end_x: 155
-              end_y: 714
+              end_y: 296
               duration: 300
           buildings:
 
