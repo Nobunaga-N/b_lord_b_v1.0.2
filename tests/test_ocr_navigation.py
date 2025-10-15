@@ -1,5 +1,5 @@
 """
-Тест OCR на панели навигации
+Тест OCR на панели навигации (PaddleX 3.2.x)
 
 Проверяет:
 - Инициализацию OCR с GPU
@@ -12,7 +12,8 @@
 1. Запустить эмулятор LDPlayer (любой порт)
 2. Открыть игру Beast Lord
 3. Открыть панель навигации → вкладка "Список зданий"
-4. python tests/test_ocr_navigation.py
+4. Развернуть любой раздел (например, "Битва")
+5. python tests/test_ocr_navigation.py
 """
 
 import sys
@@ -83,6 +84,8 @@ def test_with_emulator():
 
     # Получить скриншот
     logger.info("\n📸 Получение скриншота...")
+    logger.info(f"Скриншот получен: {emulator['name']} (540x960)")
+
     screenshot = get_screenshot(emulator)
 
     if screenshot is None:
@@ -94,12 +97,17 @@ def test_with_emulator():
     # Бенчмарк: 3 прогона
     logger.info("\n⚡ БЕНЧМАРК (3 прогона):")
     times = []
+    all_buildings = []
 
     for i in range(3):
         start_time = time.time()
         buildings = ocr.parse_navigation_panel(screenshot, emulator_id=1)
         elapsed = (time.time() - start_time) * 1000  # в миллисекундах
         times.append(elapsed)
+
+        if i == 0:
+            all_buildings = buildings  # Сохранить результаты первого прогона
+
         logger.info(f"   Прогон {i+1}: {elapsed:.0f} мс")
 
     avg_time = sum(times) / len(times)
@@ -117,11 +125,11 @@ def test_with_emulator():
 
     # Результаты распознавания
     logger.info("\n📊 РЕЗУЛЬТАТЫ РАСПОЗНАВАНИЯ:")
-    logger.info(f"   Найдено зданий: {len(buildings)}")
+    logger.info(f"   Найдено зданий: {len(all_buildings)}")
 
-    if buildings:
+    if all_buildings:
         logger.info("\n   Список зданий:")
-        for i, building in enumerate(buildings, 1):
+        for i, building in enumerate(all_buildings, 1):
             logger.info(
                 f"   {i}. {building['name']:30} "
                 f"Lv.{building['level']:2} "
@@ -129,7 +137,7 @@ def test_with_emulator():
             )
 
         # Сохранить результаты в файл
-        save_results_to_file(buildings)
+        save_results_to_file(all_buildings)
     else:
         logger.warning("   ⚠️ Здания не распознаны!")
         logger.info("   💡 Убедитесь что:")
@@ -187,6 +195,9 @@ def test_with_sample_image():
             )
 
         save_results_to_file(buildings)
+    else:
+        logger.warning("   ⚠️ Здания не распознаны!")
+        logger.info("   💡 Проверьте скриншот и убедитесь что на нём видна панель навигации")
 
     return True
 
@@ -220,7 +231,7 @@ def main():
     logger.add(
         sys.stderr,
         format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>",
-        level="DEBUG"  # Изменено с INFO на DEBUG для детального логирования
+        level="DEBUG"
     )
 
     # Выбор режима теста
