@@ -1,0 +1,548 @@
+# Конфигурация панели навигации для зданий Beast Lord Bot v3.0
+#
+# Структура:
+# - navigation: основная навигация через "Список зданий"
+# - tasks_tab: специальные здания через "Список дел"
+# - new_buildings: здания требующие постройки (не тестируются пока)
+#
+# Координаты панели навигации:
+# - Иконка панели: (29, 481)
+# - Вкладка "Список дел": (95, 252)
+# - Вкладка "Список зданий": (291, 250)
+# - Кнопка "Перейти": X=330, Y=координата_здания
+
+# =====================================================
+# НАВИГАЦИЯ ЧЕРЕЗ "СПИСОК ЗДАНИЙ"
+# =====================================================
+
+navigation:
+  # Разделы панели навигации (всего 7)
+  sections:
+
+    # =============== РАЗДЕЛ 1: ВОЖАК ===============
+    Вожак:
+      requires_scroll: false  # Не требует свайпа для доступа к разделу
+      has_subsections: false
+      buildings: []  # Пока нет зданий для прокачки
+
+    # =============== РАЗДЕЛ 2: МЕГАЗВЕРЬ ===============
+    Мегазверь:
+      requires_scroll: false
+      has_subsections: false
+      buildings: []  # Пока нет зданий для прокачки
+
+    # =============== РАЗДЕЛ 3: БИТВА ===============
+    Битва:
+      requires_scroll: true  # Требует свайпа для доступа к разделу
+      scroll_to_section:
+        - direction: "down"
+          start_x: 138
+          start_y: 239
+          end_x: 138
+          end_y: 787
+          duration: 300
+      has_subsections: false
+      buildings: []  # Центр Сбора II/III строятся отдельно
+
+    # =============== РАЗДЕЛ 4: РАЗВИТИЕ ===============
+    Развитие:
+      requires_scroll: true
+      scroll_to_section:
+        - direction: "down"
+          start_x: 138
+          start_y: 239
+          end_x: 138
+          end_y: 787
+          duration: 300
+      has_subsections: false
+      buildings:
+
+        - name: "Флора Эволюции"
+          ocr_pattern: "Флора Эволюции"  # Что ищем через OCR
+          multiple: false
+          count: 1
+          max_level: 25
+          testable: true
+          scroll_in_section: []  # Видно сразу после открытия раздела
+          notes: "Видно сразу после открытия раздела Развитие"
+
+        - name: "Жилище Детенышей"
+          ocr_pattern: "Жилище Детенышей"
+          multiple: true
+          count: 4  # Изначально 4, на 14 ур Лорда строится 5-е
+          max_level: 25
+          testable: true
+          scroll_in_section:
+            - direction: "down"
+              start_x: 100
+              start_y: 682
+              end_x: 100
+              end_y: 330
+              duration: 300
+          notes: "Требует свайп вниз после открытия раздела. Изначально 4 шт, на 14 ур Лорда строится 5-е"
+
+    # =============== РАЗДЕЛ 5: АЛЬЯНС ===============
+    Альянс:
+      requires_scroll: false
+      has_subsections: false
+      buildings:
+
+        - name: "Центр Альянса"
+          ocr_pattern: "Центр Альянса"
+          multiple: false
+          count: 1
+          max_level: 25
+          testable: true
+          scroll_in_section: []
+          notes: "Видно сразу после открытия раздела Альянс"
+
+    # =============== РАЗДЕЛ 6: РЕСУРСЫ ===============
+    Ресурсы:
+      requires_scroll: true
+      scroll_to_section:
+        - direction: "down"
+          start_x: 106
+          start_y: 700
+          end_x: 106
+          end_y: 547
+          duration: 300
+      has_subsections: true
+
+      # Подвкладки раздела Ресурсы
+      subsections:
+
+        # ----------- ПОДВКЛАДКА: ФРУКТЫ -----------
+        Фрукты:
+          requires_scroll: false  # Видна сразу
+          buildings:
+
+            - name: "Фруктовый Сад"
+              ocr_pattern: "Фруктовый Сад"
+              multiple: true
+              count: 4
+              max_level: 25
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 136
+                  start_y: 707
+                  end_x: 136
+                  end_y: 476
+                  duration: 300
+              notes: "Требует свайп вниз после открытия подвкладки"
+
+            - name: "Склад Фруктов"
+              ocr_pattern: "Склад Фруктов"
+              multiple: false
+              count: 1
+              max_level: 10  # После 10 ур строится Склад Фруктов II
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 136
+                  start_y: 707
+                  end_x: 136
+                  end_y: 476
+                  duration: 300
+              notes: "Находится под Фруктовыми Садами, требует тот же свайп"
+
+        # ----------- ПОДВКЛАДКА: ТРАВА -----------
+        Трава:
+          requires_scroll: false
+          buildings:
+
+            - name: "Ферма Травы"
+              ocr_pattern: "Ферма Травы"
+              multiple: true
+              count: 4
+              max_level: 25
+              testable: false  # Не используется в текущей прокачке
+              scroll_in_subsection: []
+              notes: "Не используется в текущей прокачке"
+
+            - name: "Склад Травы"
+              ocr_pattern: "Склад Травы"
+              multiple: false
+              count: 1
+              max_level: 10
+              testable: false
+              scroll_in_subsection: []
+              notes: "Не используется в текущей прокачке"
+
+        # ----------- ПОДВКЛАДКА: ЛИСТЬЯ -----------
+        Листья:
+          requires_scroll: false
+          buildings:
+
+            - name: "Куст"
+              ocr_pattern: "Куст"
+              multiple: true
+              count: 4
+              max_level: 25
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 92
+                  start_y: 650
+                  end_x: 92
+                  end_y: 350
+                  duration: 300
+              notes: "Требует свайп вниз после открытия подвкладки"
+
+            - name: "Склад Листьев"
+              ocr_pattern: "Склад Листьев"
+              multiple: false
+              count: 1
+              max_level: 10
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 92
+                  start_y: 650
+                  end_x: 92
+                  end_y: 350
+                  duration: 300
+              notes: "Находится под Кустами, требует тот же свайп"
+
+        # ----------- ПОДВКЛАДКА: ГРУНТ -----------
+        Грунт:
+          requires_scroll: false
+          buildings:
+
+            - name: "Ферма Грунта"
+              ocr_pattern: "Ферма Грунта"
+              multiple: true
+              count: 4
+              max_level: 25
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 118
+                  start_y: 695
+                  end_x: 118
+                  end_y: 359
+                  duration: 300
+              notes: "Требует свайп вниз после открытия подвкладки"
+
+            - name: "Склад Грунта"
+              ocr_pattern: "Склад Грунта"
+              multiple: false
+              count: 1
+              max_level: 10
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 118
+                  start_y: 695
+                  end_x: 118
+                  end_y: 359
+                  duration: 300
+              notes: "Находится под Фермами Грунта, требует тот же свайп"
+
+        # ----------- ПОДВКЛАДКА: ПЕСОК -----------
+        Песок:
+          requires_scroll: true  # Подвкладка видна только после свайпа в Ресурсах
+          scroll_to_subsection:
+            - direction: "down"
+              start_x: 106
+              start_y: 700
+              end_x: 106
+              end_y: 547
+              duration: 300
+          buildings:
+
+            - name: "Ферма Песка"
+              ocr_pattern: "Ферма Песка"
+              multiple: true
+              count: 4
+              max_level: 25
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 114
+                  start_y: 586
+                  end_x: 114
+                  end_y: 321
+                  duration: 300
+              notes: "Требует свайп вниз после открытия подвкладки"
+
+            - name: "Склад Песка"
+              ocr_pattern: "Склад Песка"
+              multiple: false
+              count: 1
+              max_level: 10
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 114
+                  start_y: 586
+                  end_x: 114
+                  end_y: 321
+                  duration: 300
+              notes: "Находится под Фермами Песка, требует тот же свайп"
+
+        # ----------- ПОДВКЛАДКА: ВОДА -----------
+        Вода:
+          requires_scroll: true
+          scroll_to_subsection:
+            - direction: "down"
+              start_x: 110
+              start_y: 700
+              end_x: 110
+              end_y: 433
+              duration: 300
+          buildings:
+
+            - name: "Источник"
+              ocr_pattern: "Источник"
+              multiple: false
+              count: 1
+              max_level: 25
+              testable: false  # Не используется в текущей прокачке
+              scroll_in_subsection: []
+              notes: "Видно сразу после открытия подвкладки, но не используется"
+
+            - name: "Пруд"
+              ocr_pattern: "Пруд"
+              multiple: true
+              count: 4
+              max_level: 25
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 110
+                  start_y: 714
+                  end_x: 110
+                  end_y: 440
+                  duration: 300
+              notes: "Требует свайп вниз после открытия подвкладки"
+
+            - name: "Водохранилище"
+              ocr_pattern: "Водохранилище"
+              multiple: false
+              count: 1
+              max_level: 10
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 110
+                  start_y: 714
+                  end_x: 110
+                  end_y: 440
+                  duration: 300
+              notes: "Находится под Прудами, требует тот же свайп"
+
+        # ----------- ПОДВКЛАДКА: МЕД -----------
+        Мед:
+          requires_scroll: true  # Подвкладка видна только после свайпа в Ресурсах
+          scroll_to_subsection:
+            - direction: "down"
+              start_x: 106
+              start_y: 700
+              end_x: 106
+              end_y: 547
+              duration: 300
+          buildings:
+
+            - name: "Улей"
+              ocr_pattern: "Улей"
+              multiple: true
+              count: 3
+              max_level: 25
+              testable: true
+              scroll_in_subsection:
+                - direction: "down"
+                  start_x: 106
+                  start_y: 705
+                  end_x: 106
+                  end_y: 414
+                  duration: 300
+              notes: "Требует свайп вниз после открытия подвкладки"
+
+    # =============== РАЗДЕЛ 7: ДРУГИЕ ===============
+    Другие:
+      requires_scroll: false
+      has_subsections: false
+      buildings:
+
+        - name: "Лорд"
+          ocr_pattern: "Лорд"
+          multiple: false
+          count: 1
+          max_level: 25
+          testable: true
+          scroll_in_section: []
+          notes: "Видно сразу после открытия раздела Другие. Начальный уровень всегда 10"
+
+# =====================================================
+# НАВИГАЦИЯ ЧЕРЕЗ "СПИСОК ДЕЛ"
+# =====================================================
+
+tasks_tab:
+  # Специальные здания доступные через вкладку "Список дел"
+
+  buildings:
+
+    - name: "Логово Всеядных"
+      ocr_pattern: "Обучите Всеядных"  # Текст задания в списке дел
+      button_coords:
+        x: 330
+        y: 390
+      multiple: false
+      count: 1
+      max_level: 25
+      testable: true
+      notes: "Доступно через 'Список дел' → кнопка 'Перейти' напротив 'Обучите Всеядных'"
+
+    - name: "Логово Плотоядных"
+      ocr_pattern: "Обучите Плотоядных"
+      button_coords:
+        x: 330
+        y: 437
+      multiple: false
+      count: 1
+      max_level: 25
+      testable: true
+      notes: "Доступно через 'Список дел' → кнопка 'Перейти' напротив 'Обучите Плотоядных'"
+
+# =====================================================
+# ЗДАНИЯ ТРЕБУЮЩИЕ ПОСТРОЙКИ (НЕ ТЕСТИРУЮТСЯ ПОКА)
+# =====================================================
+
+new_buildings:
+  # Здания которые нужно строить через иконку лопаты (497, 768)
+  # Эти здания пока не тестируются, т.к. нет подходящего аккаунта
+
+  buildings:
+
+    - name: "Жилище Лемуров IV"
+      category: "Развитие"
+      category_coords:
+        x: 158
+        y: 515
+      required_lord_level: 13
+      unlock_condition: "Открывает 4-ю очередь строительства"
+      max_level: 1  # Не требует улучшений
+      testable: false
+      notes: "Строится один раз на 13 ур Лорда, не требует дальнейших улучшений"
+
+    - name: "Центр Сбора II"
+      category: "Битва"
+      category_coords:
+        x: 271
+        y: 513
+      required_lord_level: 13
+      max_level: 25
+      testable: false
+      notes: "Строится на 13 ур Лорда"
+
+    - name: "Центр Сбора III"
+      category: "Битва"
+      category_coords:
+        x: 271
+        y: 513
+      required_lord_level: 18
+      max_level: 25
+      testable: false
+      notes: "Строится на 18 ур Лорда"
+
+    - name: "Склад Фруктов II"
+      category: "Фрукты"
+      category_coords:
+        x: 155
+        y: 174
+      required_lord_level: 13
+      unlock_condition: "Склад Фруктов достиг 10 уровня"
+      max_level: 25
+      testable: false
+      notes: "Открывается после того как Склад Фруктов достигает 10 ур"
+
+    - name: "Склад Травы II"
+      category: "Трава"
+      category_coords:
+        x: 272
+        y: 174
+      required_lord_level: 13
+      unlock_condition: "Склад Травы достиг 10 уровня"
+      max_level: 25
+      testable: false
+      notes: "Открывается после того как Склад Травы достигает 10 ур"
+
+    - name: "Склад Листьев II"
+      category: "Листья"
+      category_coords:
+        x: 376
+        y: 174
+      required_lord_level: 13
+      unlock_condition: "Склад Листьев достиг 10 уровня"
+      max_level: 25
+      testable: false
+      notes: "Открывается после того как Склад Листьев достигает 10 ур"
+
+    - name: "Склад Грунта II"
+      category: "Грунт"
+      category_coords:
+        x: 160
+        y: 291
+      required_lord_level: 13
+      unlock_condition: "Склад Грунта достиг 10 уровня"
+      max_level: 25
+      testable: false
+      notes: "Открывается после того как Склад Грунта достигает 10 ур"
+
+    - name: "Склад Песка II"
+      category: "Песок"
+      category_coords:
+        x: 160
+        y: 272
+      required_lord_level: 13
+      unlock_condition: "Склад Песка достиг 10 уровня"
+      max_level: 25
+      testable: false
+      notes: "Открывается после того как Склад Песка достигает 10 ур"
+
+    - name: "Жилище Детенышей"  # 5-е
+      category: "Популяция Стаи"
+      category_coords:
+        x: 155
+        y: 400
+      required_lord_level: 14
+      max_level: 25
+      testable: false
+      notes: "5-е Жилище строится на 14 ур Лорда"
+
+# =====================================================
+# СЛУЖЕБНАЯ ИНФОРМАЦИЯ
+# =====================================================
+
+metadata:
+  version: "1.0.0"
+  last_updated: "2025-01-07"
+  author: "Beast Lord Bot v3.0"
+
+  # Важные координаты
+  coordinates:
+    panel_icon: [29, 481]
+    tab_tasks: [95, 252]
+    tab_buildings: [291, 250]
+    button_go_x: 330  # X координата всегда 330, Y берется из OCR
+    building_center: [268, 517]  # Центр здания после "Перейти"
+    construction_shovel: [497, 768]  # Иконка лопаты для постройки
+
+  # Свайп для возврата в начало списка разделов
+  scroll_to_top:
+    - direction: "up"
+      start_x: 138
+      start_y: 239
+      end_x: 138
+      end_y: 787
+      duration: 300
+      repeat: 2  # Делать 2 раза
+
+  # Важные заметки
+  notes:
+    - "После клика 'Перейти' вкладки остаются открытыми"
+    - "Здания НЕ меняются местами при повышении уровня, только при постройке новых"
+    - "Лорд всегда начинается с 10 уровня"
+    - "По умолчанию 3 строителя, после Жилища Лемуров IV - 4 строителя"
+    - "Для зданий с multiple=true всегда качаем здание с максимальным уровнем"
