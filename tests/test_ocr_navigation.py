@@ -1,19 +1,5 @@
 """
 Тест OCR на панели навигации (PaddleX 3.2.x)
-
-Проверяет:
-- Инициализацию OCR с GPU
-- Получение скриншота с эмулятора
-- Парсинг панели навигации
-- Производительность (бенчмарк)
-- Сохранение debug скриншотов с bbox
-
-Как запустить:
-1. Запустить эмулятор LDPlayer (любой порт)
-2. Открыть игру Beast Lord
-3. Открыть панель навигации → вкладка "Список зданий"
-4. Развернуть любой раздел (например, "Битва")
-5. python tests/test_ocr_navigation.py
 """
 
 import sys
@@ -21,19 +7,50 @@ import time
 from pathlib import Path
 from datetime import datetime
 
+print("🔍 ОТЛАДКА: Скрипт запущен")
+
+# Настройка UTF-8 для Windows ПЕРЕД любыми импортами
+if sys.platform == 'win32':
+    try:
+        import os
+        os.system('chcp 65001 > nul 2>&1')
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8')
+    except Exception as e:
+        print(f"⚠️ Ошибка настройки UTF-8: {e}")
+
 # Добавить корневую директорию в path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+print("🔍 ОТЛАДКА: Начало импортов...")
+
 from loguru import logger
-from utils.ocr_engine import OCREngine
+
+print("🔍 ОТЛАДКА: logger импортирован")
+
+try:
+    from utils.ocr_engine import OCREngine
+    print("🔍 ОТЛАДКА: OCREngine импортирован")
+except Exception as e:
+    print(f"❌ ОШИБКА импорта OCREngine: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+print("🔍 ОТЛАДКА: Проверка ADB...")
 
 try:
     from utils.image_recognition import get_screenshot
     from utils.adb_controller import execute_command
     ADB_AVAILABLE = True
-except ImportError:
-    logger.warning("⚠️ ADB утилиты не найдены, используем тестовое изображение")
+    print("🔍 ОТЛАДКА: ADB доступен")
+except ImportError as e:
+    logger.warning(f"⚠️ ADB утилиты не найдены: {e}")
     ADB_AVAILABLE = False
+
+print(f"🔍 ОТЛАДКА: ADB_AVAILABLE = {ADB_AVAILABLE}")
 
 
 def get_first_connected_emulator():
@@ -41,12 +58,11 @@ def get_first_connected_emulator():
     result = execute_command("adb devices")
     lines = result.strip().split('\n')
 
-    for line in lines[1:]:  # Пропустить заголовок
+    for line in lines[1:]:
         if 'device' in line:
             parts = line.split()
             if len(parts) >= 2:
                 device = parts[0]
-                # Извлечь порт
                 if 'emulator-' in device:
                     port = int(device.split('-')[1])
                 elif ':' in device:
@@ -68,7 +84,6 @@ def test_with_emulator():
     logger.info("🧪 ТЕСТ OCR НА ЭМУЛЯТОРЕ")
     logger.info("=" * 60)
 
-    # Найти первый доступный эмулятор
     emulator = get_first_connected_emulator()
     if not emulator:
         logger.error("❌ Нет подключенных эмуляторов!")
@@ -80,12 +95,10 @@ def test_with_emulator():
     # Инициализация OCR
     logger.info("\n🔧 Инициализация OCR...")
     ocr = OCREngine(lang='ru', force_cpu=False)
-    ocr.set_debug_mode(True)  # Включить debug режим
+    ocr.set_debug_mode(True)
 
     # Получить скриншот
     logger.info("\n📸 Получение скриншота...")
-    logger.info(f"Скриншот получен: {emulator['name']} (540x960)")
-
     screenshot = get_screenshot(emulator)
 
     if screenshot is None:
@@ -102,18 +115,17 @@ def test_with_emulator():
     for i in range(3):
         start_time = time.time()
         buildings = ocr.parse_navigation_panel(screenshot, emulator_id=1)
-        elapsed = (time.time() - start_time) * 1000  # в миллисекундах
+        elapsed = (time.time() - start_time) * 1000
         times.append(elapsed)
 
         if i == 0:
-            all_buildings = buildings  # Сохранить результаты первого прогона
+            all_buildings = buildings
 
         logger.info(f"   Прогон {i+1}: {elapsed:.0f} мс")
 
     avg_time = sum(times) / len(times)
     logger.info(f"\n   📊 Среднее время: {avg_time:.0f} мс")
 
-    # Оценка производительности
     if avg_time < 200:
         logger.success("   🏆 ОТЛИЧНО! GPU работает на полную!")
     elif avg_time < 500:
@@ -123,7 +135,7 @@ def test_with_emulator():
     else:
         logger.error("   ❌ МЕДЛЕННО! GPU точно не работает")
 
-    # Результаты распознавания
+    # Результаты
     logger.info("\n📊 РЕЗУЛЬТАТЫ РАСПОЗНАВАНИЯ:")
     logger.info(f"   Найдено зданий: {len(all_buildings)}")
 
@@ -135,26 +147,19 @@ def test_with_emulator():
                 f"Lv.{building['level']:2} "
                 f"(Y: {building['y_coord']:3})"
             )
-
-        # Сохранить результаты в файл
         save_results_to_file(all_buildings)
     else:
         logger.warning("   ⚠️ Здания не распознаны!")
-        logger.info("   💡 Убедитесь что:")
-        logger.info("      - Открыта панель навигации")
-        logger.info("      - Выбрана вкладка 'Список зданий'")
-        logger.info("      - Один из разделов развёрнут")
 
     return True
 
 
 def test_with_sample_image():
-    """Тест на тестовом изображении (если нет эмулятора)"""
+    """Тест на тестовом изображении"""
     logger.info("=" * 60)
     logger.info("🧪 ТЕСТ OCR НА ТЕСТОВОМ ИЗОБРАЖЕНИИ")
     logger.info("=" * 60)
 
-    # Проверить наличие тестового изображения
     sample_path = Path("data/screenshots/debug/navigation_sample.png")
 
     if not sample_path.exists():
@@ -171,12 +176,10 @@ def test_with_sample_image():
 
     logger.success(f"✅ Изображение загружено: {screenshot.shape}")
 
-    # Инициализация OCR
     logger.info("\n🔧 Инициализация OCR...")
     ocr = OCREngine(lang='ru', force_cpu=False)
     ocr.set_debug_mode(True)
 
-    # Парсинг
     logger.info("\n📊 Парсинг панели навигации...")
     start_time = time.time()
     buildings = ocr.parse_navigation_panel(screenshot, emulator_id=99)
@@ -193,17 +196,15 @@ def test_with_sample_image():
                 f"Lv.{building['level']:2} "
                 f"(Y: {building['y_coord']:3})"
             )
-
         save_results_to_file(buildings)
     else:
         logger.warning("   ⚠️ Здания не распознаны!")
-        logger.info("   💡 Проверьте скриншот и убедитесь что на нём видна панель навигации")
 
     return True
 
 
 def save_results_to_file(buildings: list):
-    """Сохранить результаты в текстовый файл"""
+    """Сохранить результаты в файл"""
     results_dir = Path("data/screenshots/debug/ocr")
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,29 +213,30 @@ def save_results_to_file(buildings: list):
 
     with open(filename, 'w', encoding='utf-8') as f:
         f.write("=" * 60 + "\n")
-        f.write("РЕЗУЛЬТАТЫ РАСПОЗНАВАНИЯ ПАНЕЛИ НАВИГАЦИИ\n")
+        f.write("РЕЗУЛЬТАТЫ РАСПОЗНАВАНИЯ\n")
         f.write("=" * 60 + "\n")
         f.write(f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Найдено зданий: {len(buildings)}\n\n")
 
         for i, building in enumerate(buildings, 1):
             f.write(f"{i}. {building['name']} - Lv.{building['level']}\n")
-            f.write(f"   Y-координата: {building['y_coord']}\n")
-            f.write(f"   Кнопка 'Перейти': {building['button_coord']}\n\n")
+            f.write(f"   Y: {building['y_coord']}, Кнопка: {building['button_coord']}\n\n")
 
     logger.success(f"💾 Результаты сохранены: {filename}")
 
 
 def main():
     """Главная функция теста"""
-    logger.remove()  # Удалить стандартный handler
+    print("🔍 ОТЛАДКА: main() вызвана!")
+
+    logger.remove()
     logger.add(
         sys.stderr,
         format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>",
         level="DEBUG"
     )
 
-    # Выбор режима теста
+    # Выбор режима
     if ADB_AVAILABLE:
         success = test_with_emulator()
     else:
@@ -244,13 +246,17 @@ def main():
     logger.info("\n" + "=" * 60)
     if success:
         logger.success("✅ ТЕСТ ЗАВЕРШЁН УСПЕШНО!")
-        logger.info("\n💡 Debug скриншоты сохранены в: data/screenshots/debug/ocr/")
-        logger.info("   Проверьте их чтобы увидеть bbox и распознанный текст")
+        logger.info("\n💡 Debug скриншоты: data/screenshots/debug/ocr/")
     else:
         logger.error("❌ ТЕСТ ЗАВЕРШЁН С ОШИБКАМИ")
-
     logger.info("=" * 60)
 
 
+print("🔍 ОТЛАДКА: Проверка __name__...")
+print(f"🔍 ОТЛАДКА: __name__ = '{__name__}'")
+
 if __name__ == "__main__":
+    print("🔍 ОТЛАДКА: Условие __name__ == '__main__' выполнено!")
     main()
+else:
+    print(f"🔍 ОТЛАДКА: Условие НЕ выполнено! __name__ = '{__name__}'")

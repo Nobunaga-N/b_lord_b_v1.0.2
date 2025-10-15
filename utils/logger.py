@@ -21,6 +21,21 @@ def setup_logger():
     - DEBUG: синий
     """
 
+    # ⚠️ КРИТИЧНО: Настройка UTF-8 для Windows консоли
+    if sys.platform == 'win32':
+        try:
+            # Попытка установить UTF-8 кодировку для консоли
+            import os
+            os.system('chcp 65001 > nul 2>&1')
+
+            # Перенастроить stdout/stderr на UTF-8
+            if hasattr(sys.stdout, 'reconfigure'):
+                sys.stdout.reconfigure(encoding='utf-8')
+            if hasattr(sys.stderr, 'reconfigure'):
+                sys.stderr.reconfigure(encoding='utf-8')
+        except Exception as e:
+            print(f"⚠️ Не удалось настроить UTF-8: {e}")
+
     # Удаляем дефолтный обработчик
     logger.remove()
 
