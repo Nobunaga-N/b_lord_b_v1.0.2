@@ -1,0 +1,386 @@
+# ============================================================================
+# КОНФИГУРАЦИЯ НАВИГАЦИИ К ЗДАНИЯМ
+# ============================================================================
+# Статические данные навигации - КАК найти каждое здание в панели
+# Эти данные НЕ меняются в процессе игры
+#
+# Формат:
+#   "Название Здания":
+#     section: "Раздел"                    # Главный раздел
+#     subsection: "Подраздел" | null       # Подраздел (только для Ресурсов)
+#     scroll_section: true/false           # Нужен ли свайп чтобы увидеть раздел
+#     scroll_subsection: true/false        # Нужен ли свайп чтобы увидеть подраздел
+#     scroll_buildings: true/false         # Нужен ли свайп в списке зданий
+#     count: число                         # Количество экземпляров здания
+#     testable: true/false                 # Можно ли протестировать сейчас
+# ============================================================================
+
+buildings:
+  # ==========================================================================
+  # РАЗДЕЛ: ДРУГИЕ
+  # ==========================================================================
+
+  "Лорд":
+    section: "Другие"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    notes: "Главное здание, определяет уровень игрока"
+
+  # ==========================================================================
+  # РАЗДЕЛ: РАЗВИТИЕ
+  # ==========================================================================
+
+  "Флора Эволюции":
+    section: "Развитие"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    notes: "Здание эволюции флоры"
+
+  "Жилище Детенышей":
+    section: "Развитие"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: true  # ТРЕБУЕТ СВАЙП в списке зданий
+    count: 4  # Изначально 4шт, на 14 ур лорда строим 5-е
+    testable: true
+    notes: "4 экземпляра, нужен свайп вниз чтобы увидеть все"
+
+  # ==========================================================================
+  # РАЗДЕЛ: АЛЬЯНС
+  # ==========================================================================
+
+  "Центр Альянса":
+    section: "Альянс"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    notes: "Центр альянса"
+
+  # ==========================================================================
+  # РАЗДЕЛ: РЕСУРСЫ → ПОДРАЗДЕЛ: ФРУКТЫ
+  # ==========================================================================
+
+  "Фруктовый Сад":
+    section: "Ресурсы"
+    subsection: "Фрукты"
+    scroll_section: false  # Фрукты первые, видны сразу
+    scroll_subsection: false
+    scroll_buildings: true  # Свайп чтобы увидеть все сады
+    scroll_buildings_coords:
+      - {x1: 136, y1: 707, x2: 136, y2: 476, duration: 300}
+    count: 4
+    testable: true
+    notes: "4 экземпляра, свайп 136:707 → 136:476"
+
+  "Склад Фруктов":
+    section: "Ресурсы"
+    subsection: "Фрукты"
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false  # Под садами, виден без свайпа
+    count: 1
+    testable: true
+    notes: "Основной склад (не путать со Склад Фруктов I)"
+
+  # ==========================================================================
+  # РАЗДЕЛ: РЕСУРСЫ → ПОДРАЗДЕЛ: ЛИСТЬЯ
+  # ==========================================================================
+
+  "Куст":
+    section: "Ресурсы"
+    subsection: "Листья"
+    scroll_section: false  # Листья видны без свайпа
+    scroll_subsection: false
+    scroll_buildings: true  # Свайп чтобы увидеть все кусты
+    scroll_buildings_coords:
+      - {x1: 92, y1: 650, x2: 92, y2: 350, duration: 300}
+    count: 4
+    testable: true
+    notes: "4 экземпляра, свайп 92:650 → 92:350"
+
+  "Склад Листьев":
+    section: "Ресурсы"
+    subsection: "Листья"
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    notes: "Основной склад (не путать со Склад Листьев I)"
+
+  # ==========================================================================
+  # РАЗДЕЛ: РЕСУРСЫ → ПОДРАЗДЕЛ: ГРУНТ
+  # ==========================================================================
+
+  "Ферма Грунта":
+    section: "Ресурсы"
+    subsection: "Грунт"
+    scroll_section: true  # Нужен свайп чтобы увидеть Грунт
+    scroll_subsection: false
+    scroll_buildings: true  # Свайп чтобы увидеть все фермы
+    scroll_buildings_coords:
+      - {x1: 118, y1: 695, x2: 118, y2: 359, duration: 300}
+    count: 4
+    testable: true
+    notes: "4 экземпляра, свайп 118:695 → 118:359"
+
+  "Склад Грунта":
+    section: "Ресурсы"
+    subsection: "Грунт"
+    scroll_section: true
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    notes: "Основной склад (не путать со Склад Грунта I)"
+
+  # ==========================================================================
+  # РАЗДЕЛ: РЕСУРСЫ → ПОДРАЗДЕЛ: ПЕСОК
+  # ==========================================================================
+
+  "Ферма Песка":
+    section: "Ресурсы"
+    subsection: "Песок"
+    scroll_section: true  # Свайп чтобы увидеть подраздел Песок
+    scroll_section_coords:
+      - {x1: 106, y1: 700, x2: 106, y2: 547, duration: 300}
+    scroll_subsection: false
+    scroll_buildings: true  # Свайп чтобы увидеть все 4 фермы
+    scroll_buildings_coords:
+      - {x1: 114, y1: 586, x2: 114, y2: 321, duration: 300}
+    count: 4
+    testable: true
+    notes: "4 экземпляра, свайп раздела 106:700→106:547, свайп списка 114:586→114:321"
+
+  "Склад Песка":
+    section: "Ресурсы"
+    subsection: "Песок"
+    scroll_section: true
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    notes: "Основной склад (не путать со Склад Песка I)"
+
+  # ==========================================================================
+  # РАЗДЕЛ: РЕСУРСЫ → ПОДРАЗДЕЛ: ВОДА
+  # ==========================================================================
+
+  "Пруд":
+    section: "Ресурсы"
+    subsection: "Вода"
+    scroll_section: true  # Свайп чтобы увидеть подраздел Вода
+    scroll_subsection: false
+    scroll_buildings: true  # Свайп чтобы увидеть все пруды
+    count: 4
+    testable: true
+    notes: "4 экземпляра, правильное название 'Пруд'"
+
+  "Водохранилище":
+    section: "Ресурсы"
+    subsection: "Вода"
+    scroll_section: true
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    notes: "Склад воды, называется 'Водохранилище'"
+
+  # ==========================================================================
+  # РАЗДЕЛ: РЕСУРСЫ → ПОДРАЗДЕЛ: МЁД
+  # ==========================================================================
+
+  "Улей":
+    section: "Ресурсы"
+    subsection: "Мед"
+    scroll_section: true  # Нужно 2 свайпа чтобы увидеть Мёд
+    scroll_subsection: false
+    scroll_buildings: false  # После свайпа сразу видны
+    count: 3
+    testable: true
+    notes: "3 экземпляра, Мёд в конце списка подразделов"
+
+  # ==========================================================================
+  # РАЗДЕЛ: СПИСОК ДЕЛ (особый раздел)
+  # Для Логовов используется вкладка 'Список дел' вместо 'Список зданий'
+  # ==========================================================================
+
+  "Логово Всеядных":
+    section: "Список дел"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    special_navigation: true
+    notes: "Открывается через Список дел → Обучите Всеядных → Перейти"
+
+  "Логово Плотоядных":
+    section: "Список дел"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: true
+    special_navigation: true
+    notes: "Открывается через Список дел → Обучите Плотоядных → Перейти"
+
+  # ==========================================================================
+  # ЗДАНИЯ ДЛЯ ПОСТРОЙКИ (testable: false)
+  # Эти здания нужно будет ПОСТРОИТЬ на определённом уровне лорда
+  # ==========================================================================
+
+  "Жилище Лемуров IV":
+    section: "ПОСТРОЙКА"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: false
+    construction_category: "development"
+    construction_coords: [158, 515]
+    required_lord_level: 13
+    notes: "Построить на 13 ур лорда, даёт 4-го строителя"
+
+  "Центр Сбора II":
+    section: "ПОСТРОЙКА"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: false
+    construction_category: "battle"
+    construction_coords: [271, 513]
+    required_lord_level: 13
+    notes: "Построить на 13 ур лорда"
+
+  "Склад Фруктов I":
+    section: "ПОСТРОЙКА"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: false
+    construction_category: "fruits"
+    construction_coords: [155, 174]
+    required_lord_level: 14
+    notes: "Открывается после Склад Фруктов Lv.10, строится на 14 ур"
+
+  "Склад Листьев I":
+    section: "ПОСТРОЙКА"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: false
+    construction_category: "leaves"
+    construction_coords: [376, 174]
+    required_lord_level: 14
+    notes: "Открывается после Склад Листьев Lv.10"
+
+  "Склад Грунта I":
+    section: "ПОСТРОЙКА"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: false
+    construction_category: "soil"
+    construction_coords: [160, 291]
+    required_lord_level: 14
+    notes: "Открывается после Склад Грунта Lv.10"
+
+  "Склад Песка I":
+    section: "ПОСТРОЙКА"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: false
+    construction_category: "sand"
+    construction_coords: [160, 272]
+    required_lord_level: 14
+    notes: "Открывается после Склад Песка Lv.10"
+
+  "Жилище Детенышей 5":
+    section: "ПОСТРОЙКА"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: false
+    construction_category: "population"
+    construction_coords: [155, 400]
+    required_lord_level: 14
+    notes: "5-е жилище, строится на 14 ур лорда"
+
+  "Центр Сбора III":
+    section: "ПОСТРОЙКА"
+    subsection: null
+    scroll_section: false
+    scroll_subsection: false
+    scroll_buildings: false
+    count: 1
+    testable: false
+    construction_category: "battle"
+    construction_coords: [271, 513]
+    required_lord_level: 18
+    notes: "Построить на 18 ур лорда"
+
+# ==========================================================================
+# КООРДИНАТЫ СВАЙПОВ
+# ==========================================================================
+swipe_patterns:
+  # Свайп внутри панели навигации (вниз)
+  panel_down:
+    x1: 270
+    y1: 700
+    x2: 270
+    y2: 300
+    duration: 300
+
+  # Свайп внутри панели навигации (вверх)
+  panel_up:
+    x1: 270
+    y1: 300
+    x2: 270
+    y2: 700
+    duration: 300
+
+# ==========================================================================
+# КООРДИНАТЫ МЕНЮ ПОСТРОЙКИ
+# ==========================================================================
+construction_menu:
+  shovel_icon: [497, 768]
+  confirm_button: [327, 552]
+
+  categories:
+    fruits: [155, 174]
+    grass: [272, 174]
+    leaves: [376, 174]
+    soil: [160, 291]
+    sand: [160, 272]
+    population: [155, 400]
+    development: [158, 515]
+    battle: [271, 513]
