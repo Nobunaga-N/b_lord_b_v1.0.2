@@ -13,7 +13,6 @@ from utils.image_recognition import find_image, get_screenshot
 from utils.ocr_engine import OCREngine
 from utils.logger import logger
 
-
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -253,51 +252,63 @@ class NavigationPanel:
 
         return True
 
-    def collapse_all_sections(self, emulator: Dict, max_attempts: int = 15) -> bool:
+    def collapse_all_sections(self, emulator: Dict, max_attempts: int = 20) -> bool:
         """
-        Свернуть все развёрнутые разделы
+        Свернуть все развёрнутые разделы и подвкладки
 
         Алгоритм:
-        1. Ищем стрелки "вниз" (развёрнутые разделы)
-        2. Кликаем по самой верхней
-        3. Повторяем пока не останется только стрелки "вправо"
-        4. Должно быть ровно 7 стрелок "вправо"
+        1. Ищем стрелки "вниз" (основные И подвкладки)
+        2. ПРИОРИТЕТ У ПОДВКЛАДОК (arrow_down_sub)!
+           - Если есть sub → сворачиваем её (даже если есть основная)
+           - Если только основная → сворачиваем её
+        3. Повторяем пока НЕ ОСТАНЕТСЯ НИ ОДНОЙ стрелки "вниз"
+
+        Логика приоритета:
+        - Сначала сворачиваем ВСЕ подвкладки (начиная с верхней)
+        - Потом сворачиваем основные разделы (начиная с верхней)
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
         logger.info(f"[{emulator_name}] Сворачивание всех разделов...")
 
-        for attempt in range(1, max_attempts + 1):
-            # Поиск стрелок "вниз" (основные разделы)
-            arrow_down_coords = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
+        collapsed_count = 0
 
-            # Поиск стрелок "вниз" (подвкладки)
+        for attempt in range(1, max_attempts + 1):
+            # Поиск стрелок "вниз" (основные + подвкладки)
+            arrow_down_coords = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
             arrow_down_sub_coords = find_image(emulator, self.TEMPLATES['arrow_down_sub'], threshold=0.8)
 
-            if arrow_down_coords is not None:
-                # Есть развёрнутые основные разделы
-                x, y = arrow_down_coords
-                logger.debug(f"[{emulator_name}] Найдена стрелка вниз (основная) в ({x}, {y}), сворачиваем...")
-                tap(emulator, x=int(x), y=int(y))
-                time.sleep(0.8)
+            # Определяем какую стрелку нажать
+            # ПРИОРИТЕТ: SUB стрелка → основная стрелка
+            target_coords = None
+            arrow_type = None
 
-            elif arrow_down_sub_coords is not None:
-                # Есть развёрнутые подвкладки
-                x, y = arrow_down_sub_coords
-                logger.debug(f"[{emulator_name}] Найдена стрелка вниз (подвкладка) в ({x}, {y}), сворачиваем...")
-                tap(emulator, x=int(x), y=int(y))
-                time.sleep(0.8)
+            if arrow_down_sub_coords is not None:
+                # Есть SUB стрелка - сворачиваем её в первую очередь!
+                target_coords = arrow_down_sub_coords
+                arrow_type = "подвкладка"
 
+            elif arrow_down_coords is not None:
+                # Есть только основная стрелка - сворачиваем её
+                target_coords = arrow_down_coords
+                arrow_type = "основная"
+
+            if target_coords is not None:
+                # Есть развёрнутый раздел/подвкладка
+                x, y = target_coords
+                logger.debug(f"[{emulator_name}] Найдена стрелка вниз ({arrow_type}) в ({x}, {y}), сворачиваем...")
+                tap(emulator, x=int(x), y=int(y))
+                collapsed_count += 1
+                time.sleep(0.8)
             else:
                 # Все разделы свёрнуты
-                logger.success(f"[{emulator_name}] ✅ Все разделы свёрнуты (попыток: {attempt})")
-                break
+                logger.success(
+                    f"[{emulator_name}] ✅ Все разделы свёрнуты (свернуто: {collapsed_count}, попыток: {attempt})")
+                return True
 
-        if attempt >= max_attempts:
-            logger.warning(f"[{emulator_name}] ⚠️ Достигнут лимит попыток ({max_attempts})")
-            return False
-
-        return True
+        # Достигнут лимит попыток
+        logger.warning(f"[{emulator_name}] ⚠️ Достигнут лимит попыток ({max_attempts}), свернуто: {collapsed_count}")
+        return collapsed_count > 0  # Считаем успехом если хоть что-то свернули
 
     def execute_swipes(self, emulator: Dict, swipes: List[Dict]) -> bool:
         """
@@ -458,8 +469,13 @@ class NavigationPanel:
         # Найти раздел через OCR
         elements = self.ocr.recognize_text(screenshot, min_confidence=0.5)
 
+        # Нормализуем имя раздела (убираем пробелы, нижний регистр)
+        section_name_normalized = section_name.lower().replace(' ', '')
+
         for elem in elements:
-            if section_name.lower() in elem['text'].lower():
+            elem_text_normalized = elem['text'].lower().replace(' ', '')
+
+            if section_name_normalized in elem_text_normalized:
                 # Нашли раздел, кликаем
                 tap(emulator, x=elem['x'], y=elem['y'])
                 time.sleep(0.8)
@@ -501,10 +517,16 @@ class NavigationPanel:
         ocr_pattern = building_config.get('ocr_pattern', building_name)
         is_multiple = building_config.get('multiple', False)
 
+        # Убираем пробелы для более гибкого поиска
+        # OCR может распознать "ЖилищеДетенышей" вместо "Жилище Детенышей"
+        ocr_pattern_normalized = ocr_pattern.lower().replace(' ', '')
+
         target_building = None
 
         for building in buildings:
-            if ocr_pattern.lower() in building['name'].lower():
+            building_name_normalized = building['name'].lower().replace(' ', '')
+
+            if ocr_pattern_normalized in building_name_normalized:
                 # Нашли здание
                 if is_multiple:
                     # Для множественных зданий - берем первое попавшееся
@@ -533,7 +555,7 @@ class NavigationPanel:
         Сбросить состояние панели навигации
 
         Действия:
-        1. Свернуть все подвкладки и разделы
+        1. Свернуть все подвкладки и разделы (если есть открытые)
         2. Свайп вверх 2 раза для возврата в начало
         3. Проверить что все свёрнуто
 
@@ -547,16 +569,30 @@ class NavigationPanel:
 
         logger.debug(f"[{emulator_name}] Сброс состояния навигации...")
 
-        # 1. Свернуть все разделы
-        self.collapse_all_sections(emulator)
+        # 1. Проверяем есть ли вообще открытые разделы
+        arrow_down = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
+        arrow_down_sub = find_image(emulator, self.TEMPLATES['arrow_down_sub'], threshold=0.8)
 
-        # 2. Свайп вверх 2 раза
+        has_open_sections = (arrow_down is not None or arrow_down_sub is not None)
+
+        if has_open_sections:
+            logger.debug(f"[{emulator_name}] Обнаружены открытые разделы, сворачиваем...")
+            self.collapse_all_sections(emulator)
+        else:
+            logger.debug(f"[{emulator_name}] Все разделы уже свернуты")
+
+        # 2. Свайп вверх 2 раза (всегда делаем для гарантии)
         metadata = self.config.get('metadata', {})
         scroll_to_top = metadata.get('scroll_to_top', [])
         self.execute_swipes(emulator, scroll_to_top)
 
-        # 3. Еще раз проверить и свернуть
-        self.collapse_all_sections(emulator)
+        # 3. Еще раз проверить и свернуть (если что-то появилось)
+        arrow_down = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
+        arrow_down_sub = find_image(emulator, self.TEMPLATES['arrow_down_sub'], threshold=0.8)
+
+        if arrow_down is not None or arrow_down_sub is not None:
+            logger.debug(f"[{emulator_name}] После свайпа появились открытые разделы, сворачиваем...")
+            self.collapse_all_sections(emulator)
 
         logger.debug(f"[{emulator_name}] ✅ Состояние навигации сброшено")
         return True
