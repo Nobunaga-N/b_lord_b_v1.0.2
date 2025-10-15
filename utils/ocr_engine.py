@@ -1,7 +1,7 @@
 """
 OCR движок для распознавания текста в игре Beast Lord
 
-Основан на PaddleX 3.2.x с поддержкой GPU
+Основан на PaddleOCR 3.x с поддержкой GPU
 Адаптирован под русский язык и специфику игры
 """
 
@@ -15,17 +15,17 @@ import cv2
 from loguru import logger
 
 try:
-    from paddlex import create_pipeline
+    from paddleocr import PaddleOCR
     import paddle
     PADDLE_AVAILABLE = True
 except ImportError as e:
-    logger.error(f"❌ Ошибка импорта PaddleX: {e}")
+    logger.error(f"❌ Ошибка импорта PaddleOCR: {e}")
     PADDLE_AVAILABLE = False
 
 
 class OCREngine:
     """
-    OCR движок для распознавания текста (PaddleX 3.2.x)
+    OCR движок для распознавания текста (PaddleOCR 3.x)
 
     Features:
     - Автоматическое определение GPU/CPU
@@ -47,15 +47,9 @@ class OCREngine:
         Note:
             Для качественного распознавания русского текста используется
             славянская модель 'eslav_PP-OCRv5_mobile_rec'.
-
-            Если модель не загружена автоматически, установите вручную:
-            pip install paddlex-eslav
-
-            Или скачайте модель:
-            https://paddleocr.bj.bcebos.com/dygraph_v2.0/multilingual/
         """
         if not PADDLE_AVAILABLE:
-            raise RuntimeError("PaddleX не установлен! Установите: pip install paddlex paddlepaddle-gpu")
+            raise RuntimeError("PaddleOCR не установлен! Установите: pip install paddleocr paddlepaddle-gpu")
 
         self.lang = lang
         self.debug_mode = False
@@ -78,66 +72,30 @@ class OCREngine:
         else:
             logger.info("🔧 Принудительно используется CPU")
 
-        # Инициализация PaddleX 3.2.x pipeline
+        # Инициализация PaddleOCR 3.x с правильной славянской моделью
         try:
             device = 'gpu:0' if use_gpu else 'cpu'
 
             if lang == 'ru':
-                # КРИТИЧНО: Создаём словарь с кириллицей + латиницей + цифрами
-                cyrillic_chars = (
-                    "0123456789"
-                    "abcdefghijklmnopqrstuvwxyz"
-                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                    "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-                    "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
-                    ".:,-()!?/\\ "
+                logger.info("🔧 Загружаю славянскую модель с кириллицей...")
+
+                # ПРАВИЛЬНАЯ ИНИЦИАЛИЗАЦИЯ для кириллицы в PaddleOCR 3.x
+                self.ocr = PaddleOCR(
+                    text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",  # Славянская модель
+                    use_doc_orientation_classify=False,  # Отключаем лишние модули для скорости
+                    use_doc_unwarping=False,
+                    use_textline_orientation=True,  # Включаем определение ориентации строк
+                    device=device,
                 )
-
-                # Сохраняем словарь во временный файл
-                dict_path = self.debug_dir / "cyrillic_dict.txt"
-                with open(dict_path, 'w', encoding='utf-8') as f:
-                    for char in cyrillic_chars:
-                        f.write(char + '\n')
-
-                logger.info(f"📝 Создан кириллический словарь: {dict_path}")
-
-                # Пытаемся создать pipeline с кириллицей
-                try:
-                    # ВАРИАНТ 1: Явно указываем rec_char_dict_path
-                    self.pipeline = create_pipeline(
-                        pipeline="OCR",
-                        device=device,
-                        det_model="PP-OCRv5_server_det",
-                        rec_model="PP-OCRv5_server_rec",
-                        rec_char_dict_path=str(dict_path)  # Явно указываем словарь
-                    )
-                    logger.success(f"✅ OCR инициализирован с кириллическим словарём (устройство: {device})")
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось загрузить с кастомным словарём: {e}")
-
-                    # ВАРИАНТ 2: Fallback на многоязычную модель
-                    try:
-                        logger.info("🔄 Пробую многоязычную модель...")
-                        self.pipeline = create_pipeline(
-                            pipeline="OCR",
-                            device=device,
-                            language="cyrillic"  # Многоязычный режим
-                        )
-                        logger.success(f"✅ OCR инициализирован (многоязычная модель, устройство: {device})")
-                    except Exception as e2:
-                        logger.error(f"❌ Многоязычная модель тоже не работает: {e2}")
-
-                        # ВАРИАНТ 3: Последняя попытка - дефолтная модель
-                        logger.warning("⚠️ Использую дефолтную модель (без гарантий кириллицы)")
-                        self.pipeline = create_pipeline(
-                            pipeline="OCR",
-                            device=device
-                        )
+                logger.success(f"✅ OCR инициализирован (модель: eslav, устройство: {device})")
             else:
                 # Для других языков - стандартная модель
-                self.pipeline = create_pipeline(
-                    pipeline="OCR",
-                    device=device
+                self.ocr = PaddleOCR(
+                    lang=lang,
+                    device=device,
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=True,
                 )
                 logger.success(f"✅ OCR инициализирован (язык: {lang}, устройство: {device})")
 
@@ -177,15 +135,14 @@ class OCREngine:
             crop = image
             x1, y1 = 0, 0
 
-        # Запуск OCR (PaddleX 3.2.x API)
+        # Запуск OCR (PaddleOCR 3.x API)
         try:
-            # PaddleX 3.x принимает numpy array или путь к файлу
-            result = self.pipeline.predict(crop)
+            # В PaddleOCR 3.x метод predict возвращает список результатов
+            result = self.ocr.predict(crop)
 
             logger.debug(f"🔍 OCR result type: {type(result)}")
 
-            # В PaddleX 3.2.x результат может быть генератором
-            # Преобразуем в список
+            # result - это список OCRResult объектов (генератор)
             if hasattr(result, '__iter__') and not isinstance(result, (list, dict)):
                 result = list(result)
                 logger.debug(f"🔍 Converted generator to list, length: {len(result)}")
@@ -196,110 +153,124 @@ class OCREngine:
             logger.error(traceback.format_exc())
             return []
 
-        # Парсинг результатов (PaddleX 3.2.x)
+        # Парсинг результатов (PaddleOCR 3.x)
         elements = []
 
         try:
-            # В PaddleX 3.x результат это список OCRResult объектов
             if isinstance(result, list) and len(result) > 0:
                 ocr_result = result[0]
 
-                # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ для отладки
                 logger.debug(f"🔍 OCRResult type: {type(ocr_result)}")
 
-                # OCRResult это dict-like объект, работаем как со словарём
-                if hasattr(ocr_result, 'keys'):
-                    logger.debug(f"🔍 OCRResult keys: {list(ocr_result.keys())}")
-
-                # Инициализация переменных
+                # OCRResult это dict-like объект
                 boxes = None
                 texts = None
                 scores = None
 
-                # Попробуем разные ключи для извлечения данных
-                # PaddleX 3.x использует dict-like структуру
+                # Извлечение данных из результата
                 if hasattr(ocr_result, 'keys'):
-                    # Поиск координат bbox
-                    for box_key in ['dt_polys', 'rec_polys', 'boxes', 'bbox', 'dt_boxes', 'bboxes']:
-                        if box_key in ocr_result:
-                            boxes = ocr_result[box_key]
-                            logger.debug(f"🔍 Found {box_key}: type={type(boxes)}, len={len(boxes) if hasattr(boxes, '__len__') else 'N/A'}")
-                            break
+                    logger.debug(f"🔍 OCRResult keys: {list(ocr_result.keys())}")
 
-                    # Поиск текстов
-                    for text_key in ['rec_texts', 'rec_text', 'texts', 'text', 'ocr_text']:
-                        if text_key in ocr_result:
-                            texts = ocr_result[text_key]
-                            logger.debug(f"🔍 Found {text_key}: type={type(texts)}, len={len(texts) if hasattr(texts, '__len__') else 'N/A'}")
-                            break
+                    # dt_polys - координаты bbox
+                    if 'dt_polys' in ocr_result:
+                        boxes = ocr_result['dt_polys']
+                        logger.debug(f"🔍 Found dt_polys: type={type(boxes)}, len={len(boxes)}")
 
-                    # Поиск scores
-                    for score_key in ['rec_scores', 'rec_score', 'scores', 'score', 'confidence']:
-                        if score_key in ocr_result:
-                            scores = ocr_result[score_key]
-                            logger.debug(f"🔍 Found {score_key}: type={type(scores)}, len={len(scores) if hasattr(scores, '__len__') else 'N/A'}")
-                            break
+                    # rec_texts - распознанные тексты
+                    if 'rec_texts' in ocr_result:
+                        texts = ocr_result['rec_texts']
+                        logger.debug(f"🔍 Found rec_texts: type={type(texts)}, len={len(texts)}")
+
+                    # rec_scores - уверенность распознавания
+                    if 'rec_scores' in ocr_result:
+                        scores = ocr_result['rec_scores']
+                        logger.debug(f"🔍 Found rec_scores: type={type(scores)}, len={len(scores)}")
 
                 logger.debug(f"📦 Final data - boxes: {boxes is not None}, texts: {texts is not None}, scores: {scores is not None}")
 
-                # Попробуем обработать данные
+                # Обработка данных
                 if texts is not None and boxes is not None and scores is not None:
-                    logger.debug(f"📦 Найдено элементов: {len(texts)}")
+                    try:
+                        logger.debug(f"📦 Найдено элементов: {len(texts)}")
 
-                    for bbox, text, score in zip(boxes, texts, scores):
-                        if score < min_confidence:
-                            continue
-
-                        # bbox может быть numpy array - преобразуем в список
-                        if hasattr(bbox, 'tolist'):
-                            bbox = bbox.tolist()
-
-                        # Вычислить центр bbox
-                        if isinstance(bbox, list) and len(bbox) >= 4:
-                            # Формат: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                            # Или: [(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
-                            try:
-                                # Извлечь все X и Y координаты
-                                xs = [p[0] for p in bbox]
-                                ys = [p[1] for p in bbox]
-                                center_x = int(sum(xs) / len(xs)) + x1
-                                center_y = int(sum(ys) / len(ys)) + y1
-
-                                elements.append({
-                                    'text': str(text),
-                                    'confidence': float(score),
-                                    'x': center_x,
-                                    'y': center_y,
-                                    'bbox': [[int(p[0]) + x1, int(p[1]) + y1] for p in bbox]
-                                })
-                            except Exception as e:
-                                logger.debug(f"⚠️ Ошибка обработки bbox: {e}, bbox={bbox}")
+                        for idx, (text, box, score) in enumerate(zip(texts, boxes, scores)):
+                            # Фильтр по confidence
+                            if score < min_confidence:
                                 continue
 
+                            # Преобразуем box в формат [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
+                            if isinstance(box, np.ndarray):
+                                # Находим минимальные и максимальные координаты
+                                xs = box[:, 0]
+                                ys = box[:, 1]
+                                x_min, x_max = int(np.min(xs)), int(np.max(xs))
+                                y_min, y_max = int(np.min(ys)), int(np.max(ys))
+                            else:
+                                # Если box уже в формате списка координат
+                                x_min = min(p[0] for p in box)
+                                x_max = max(p[0] for p in box)
+                                y_min = min(p[1] for p in box)
+                                y_max = max(p[1] for p in box)
+
+                            # Координаты центра относительно оригинального изображения
+                            center_x = x1 + (x_min + x_max) // 2
+                            center_y = y1 + (y_min + y_max) // 2
+
+                            elements.append({
+                                'text': text,
+                                'confidence': float(score),
+                                'bbox': box.tolist() if isinstance(box, np.ndarray) else box,
+                                'x': center_x,
+                                'y': center_y,
+                                'x_min': x1 + x_min,
+                                'y_min': y1 + y_min,
+                                'x_max': x1 + x_max,
+                                'y_max': y1 + y_max,
+                            })
+
+                        logger.info(f"📊 OCR распознал {len(elements)} элементов")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обработки результатов: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+
         except Exception as e:
-            logger.error(f"❌ Ошибка парсинга результатов OCR: {e}")
+            logger.error(f"❌ Ошибка парсинга результатов: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
-        logger.debug(f"📊 OCR распознал {len(elements)} элементов")
+        # Debug режим - сохранение скриншота с bbox
+        if self.debug_mode and elements:
+            self._save_debug_screenshot(crop, elements, region)
+
         return elements
 
     def parse_level(self, text: str) -> Optional[int]:
         """
-        Парсинг уровня здания (толерантен к ошибкам OCR)
+        Парсинг уровня здания из текста (толерантен к ошибкам OCR)
 
-        Распознает:
-        - Lv.10, Ly.5, Lу.7 (OCR иногда путает v/y/у)
-        - Level 10
-        - Ур.10
+        Args:
+            text: Текст для парсинга
 
         Returns:
             Уровень здания или None
+
+        Examples:
+            >>> parse_level("Lv.10")
+            10
+            >>> parse_level("Ly.5")  # OCR ошибка: v → y
+            5
+            >>> parse_level("Lу.7")  # OCR ошибка: v → у (кириллица)
+            7
+            >>> parse_level("Level 3")
+            3
         """
+        # Толерантные паттерны (учитываем ошибки OCR)
         patterns = [
-            r'[LlЛл][vVуУyYвВ]\.?\s*(\d+)',  # Lv, Ly, Lу, LУ
-            r'Level\s*(\d+)',
-            r'Ур\.?\s*(\d+)',
+            r'[LlЛл][vVуУyYвВ]\.?\s*(\d+)',  # Lv, Ly, Lу, LУ и т.д.
+            r'Level\s*(\d+)',                 # Level 10
+            r'Ур\.?\s*(\d+)',                 # Ур. 10
+            r'уровень\s*(\d+)',               # уровень 10
         ]
 
         for pattern in patterns:
@@ -311,76 +282,87 @@ class OCREngine:
 
     def parse_timer(self, text: str) -> Optional[Dict[str, int]]:
         """
-        Парсинг таймера (HH:MM:SS или MM:SS)
+        Парсинг таймера из текста
+
+        Args:
+            text: Текст для парсинга
 
         Returns:
-            {'hours': 10, 'minutes': 41, 'seconds': 48, 'total_seconds': 38508}
-            или None
-        """
-        # Формат: HH:MM:SS
-        match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', text)
-        if match:
-            hours = int(match.group(1))
-            minutes = int(match.group(2))
-            seconds = int(match.group(3))
-            total_seconds = hours * 3600 + minutes * 60 + seconds
-            return {
-                'hours': hours,
-                'minutes': minutes,
-                'seconds': seconds,
-                'total_seconds': total_seconds
-            }
+            Словарь с часами, минутами, секундами или None
 
-        # Формат: MM:SS
-        match = re.search(r'(\d{1,2}):(\d{2})', text)
-        if match:
-            minutes = int(match.group(1))
-            seconds = int(match.group(2))
-            total_seconds = minutes * 60 + seconds
-            return {
-                'hours': 0,
-                'minutes': minutes,
-                'seconds': seconds,
-                'total_seconds': total_seconds
-            }
+        Examples:
+            >>> parse_timer("10:41:48")
+            {'hours': 10, 'minutes': 41, 'seconds': 48, 'total_seconds': 38508}
+            >>> parse_timer("05:30")
+            {'hours': 0, 'minutes': 5, 'seconds': 30, 'total_seconds': 330}
+        """
+        # Паттерны для таймеров
+        patterns = [
+            r'(\d{1,2}):(\d{2}):(\d{2})',  # HH:MM:SS
+            r'(\d{1,2}):(\d{2})',          # MM:SS
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                groups = match.groups()
+
+                if len(groups) == 3:
+                    # HH:MM:SS
+                    hours, minutes, seconds = map(int, groups)
+                else:
+                    # MM:SS
+                    hours = 0
+                    minutes, seconds = map(int, groups)
+
+                total_seconds = hours * 3600 + minutes * 60 + seconds
+
+                return {
+                    'hours': hours,
+                    'minutes': minutes,
+                    'seconds': seconds,
+                    'total_seconds': total_seconds
+                }
 
         return None
 
     def parse_building_name(self, text: str) -> str:
         """
-        Парсинг названия здания
+        Парсинг названия здания (убирает уровни, кнопки, римские цифры)
 
-        Удаляет:
-        - Уровни (Lv.X, Ly.X)
-        - Кнопки (Перейти)
-        - Римские цифры (I, II, III, IV)
+        Args:
+            text: Текст для парсинга
 
-        Example:
-            "Жилище Лемуров I Lv.10 Перейти" -> "Жилище Лемуров"
+        Returns:
+            Очищенное название здания
+
+        Examples:
+            >>> parse_building_name("Жилище Лемуров I Lv.10 Перейти")
+            "Жилище Лемуров"
+            >>> parse_building_name("Логово Хищников II Ly.5")
+            "Логово Хищников"
         """
-        # Удалить уровни
+        # Убираем уровни (Lv.X, Ly.X и т.д.)
         text = re.sub(r'[LlЛл][vVуУyYвВ]\.?\s*\d+', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'Level\s*\d+', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'Ур\.?\s*\d+', '', text, flags=re.IGNORECASE)
 
-        # Удалить кнопку "Перейти" и её искажения
-        text = re.sub(r'Перейти|ерећти|Переити|ereyti', '', text, flags=re.IGNORECASE)
+        # Убираем "Перейти" и его варианты
+        text = re.sub(r'[ПпPp][еeЕE][рpРP][еeЕE][йиĭІі][тtТT][иiІі]', '', text, flags=re.IGNORECASE)
 
-        # Удалить римские цифры в конце (I, II, III, IV, V)
-        text = re.sub(r'\s+[IVX]+$', '', text)
+        # Убираем римские цифры в конце (I, II, III, IV, V)
+        text = re.sub(r'\s+[IVXivx]+\s*$', '', text)
 
-        # Убрать лишние пробелы
+        # Убираем лишние пробелы
         text = ' '.join(text.split())
 
         return text.strip()
 
-    def group_by_rows(self, elements: List[Dict], y_threshold: int = 20) -> List[List[Dict]]:
+    def group_by_rows(self, elements: List[Dict[str, Any]], y_threshold: int = 20) -> List[List[Dict[str, Any]]]:
         """
         Группировка элементов по строкам на основе Y-координат
 
         Args:
             elements: Список элементов с координатами
-            y_threshold: Порог по Y для группировки (пикселей)
+            y_threshold: Порог для группировки (пиксели)
 
         Returns:
             Список строк (каждая строка - список элементов)
@@ -388,148 +370,135 @@ class OCREngine:
         if not elements:
             return []
 
-        # Сортировка по Y
+        # Сортируем по Y
         sorted_elements = sorted(elements, key=lambda e: e['y'])
 
         rows = []
         current_row = [sorted_elements[0]]
-        current_y = sorted_elements[0]['y']
 
         for elem in sorted_elements[1:]:
-            if abs(elem['y'] - current_y) <= y_threshold:
-                # Элемент на той же строке
+            # Если элемент близко по Y к текущей строке - добавляем
+            if abs(elem['y'] - current_row[0]['y']) <= y_threshold:
                 current_row.append(elem)
             else:
                 # Новая строка
-                # Сортировка текущей строки по X
+                # Сортируем элементы в строке по X
                 current_row.sort(key=lambda e: e['x'])
                 rows.append(current_row)
-
                 current_row = [elem]
-                current_y = elem['y']
 
-        # Добавить последнюю строку
+        # Добавляем последнюю строку
         if current_row:
             current_row.sort(key=lambda e: e['x'])
             rows.append(current_row)
 
+        logger.info(f"📊 Сгруппировано в {len(rows)} строк")
         return rows
 
     def parse_navigation_panel(
         self,
         screenshot: np.ndarray,
-        emulator_id: Optional[int] = None
+        emulator_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Парсинг панели навигации
+        Полный парсинг панели навигации (список зданий)
+
+        Args:
+            screenshot: Скриншот экрана
+            emulator_id: ID эмулятора (для debug)
 
         Returns:
-            Список зданий с информацией:
-            [
-                {
-                    'name': 'Логово Травоядных',
-                    'level': 2,
-                    'y_coord': 435,
-                    'button_coord': (330, 435)
-                },
-                ...
-            ]
+            Список зданий с координатами кнопки "Перейти"
         """
-        # Распознать весь текст
+        # Распознаём весь текст на экране
         elements = self.recognize_text(screenshot, min_confidence=0.3)
-        logger.debug(f"📊 OCR распознал {len(elements)} элементов")
 
         if not elements:
             logger.warning("⚠️ OCR не распознал ни одного элемента")
             return []
 
-        # Сохранить debug скриншот если включен режим
-        if self.debug_mode:
-            self._save_debug_screenshot(screenshot, elements, emulator_id)
-
-        # Группировка по строкам
+        # Группируем по строкам
         rows = self.group_by_rows(elements, y_threshold=20)
-        logger.debug(f"📊 Сгруппировано в {len(rows)} строк")
 
-        # Парсинг зданий
         buildings = []
 
         for row in rows:
-            # Объединить текст строки
-            row_text = ' '.join([e['text'] for e in row])
+            # Собираем текст строки
+            row_text = ' '.join([elem['text'] for elem in row])
             logger.debug(f"📝 Строка: {row_text}")
 
-            # Попробовать извлечь уровень
+            # Проверяем наличие уровня
             level = self.parse_level(row_text)
-
-            # Если нет уровня - пропустить
             if level is None:
                 continue
 
-            # Извлечь название здания
-            name = self.parse_building_name(row_text)
+            # Проверяем наличие кнопки "Перейти"
+            has_button = any(
+                re.search(r'[ПпPp][еeЕE][рpРP][еeЕE][йиĭІі][тtТT][иiІі]', elem['text'], re.IGNORECASE)
+                for elem in row
+            )
 
-            # Если название пустое - пропустить
-            if not name:
+            if not has_button:
                 continue
 
-            # Y-координата = средняя Y элементов строки
-            y_coord = int(sum([e['y'] for e in row]) / len(row))
+            # Парсим название здания
+            building_name = self.parse_building_name(row_text)
 
-            # Координата кнопки "Перейти" (справа от текста)
-            button_x = 330  # Фиксированная X координата кнопки
-            button_y = y_coord
+            if not building_name:
+                continue
+
+            # Координаты кнопки "Перейти" (обычно последний элемент в строке)
+            button_elem = row[-1]
+            button_y = button_elem['y']
 
             buildings.append({
-                'name': name,
+                'name': building_name,
                 'level': level,
-                'y_coord': y_coord,
-                'button_coord': (button_x, button_y)
+                'y': button_y,
+                'raw_text': row_text
             })
 
-            logger.debug(f"✅ Здание: {name} Lv.{level} (Y: {y_coord})")
+            logger.info(f"✅ Здание: {building_name} Lv.{level} (Y: {button_y})")
 
         return buildings
 
     def _save_debug_screenshot(
         self,
-        screenshot: np.ndarray,
+        image: np.ndarray,
         elements: List[Dict],
-        emulator_id: Optional[int] = None
+        region: Optional[Tuple] = None
     ):
         """Сохранить debug скриншот с bbox"""
-        img = screenshot.copy()
+        try:
+            debug_img = image.copy()
 
-        # Нарисовать bbox для каждого элемента
-        for elem in elements:
-            bbox = elem['bbox']
-            text = elem['text']
-            conf = elem['confidence']
+            for elem in elements:
+                # Рисуем bbox
+                box = elem['bbox']
+                if isinstance(box, np.ndarray):
+                    box = box.astype(int)
+                else:
+                    box = np.array(box, dtype=int)
 
-            # Преобразовать bbox в формат для cv2.polylines
-            pts = np.array(bbox, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(debug_img, [box], True, (0, 255, 0), 2)
 
-            # Цвет: зелёный если conf > 0.5, иначе жёлтый
-            color = (0, 255, 0) if conf > 0.5 else (0, 255, 255)
+                # Добавляем текст
+                text = elem['text']
+                confidence = elem['confidence']
+                label = f"{text} ({confidence:.2f})"
 
-            # Нарисовать bbox
-            cv2.polylines(img, [pts], True, color, 2)
+                # Позиция текста
+                if len(box) > 0:
+                    x, y = int(box[0][0]), int(box[0][1]) - 5
+                    cv2.putText(debug_img, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                              0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
-            # Нарисовать текст
-            cv2.putText(
-                img,
-                f"{text} ({conf:.2f})",
-                (int(bbox[0][0]), int(bbox[0][1]) - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                1
-            )
+            # Сохраняем
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"emu1_navigation_{timestamp}.png"
+            filepath = self.debug_dir / filename
+            cv2.imwrite(str(filepath), debug_img)
+            logger.info(f"🐛 Debug скриншот сохранён: {filepath}")
 
-        # Сохранить
-        timestamp = datetime.now().strftime("%H%M%S")
-        emu_prefix = f"emu{emulator_id}_" if emulator_id else ""
-        filename = self.debug_dir / f"{emu_prefix}navigation_{timestamp}.png"
-
-        cv2.imwrite(str(filename), img)
-        logger.debug(f"🐛 Debug скриншот сохранён: {filename}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения debug скриншота: {e}")

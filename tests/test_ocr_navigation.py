@@ -1,54 +1,39 @@
 """
-Тест OCR на панели навигации (PaddleX 3.2.x)
+Тест OCR на реальном эмуляторе
+
+Проверяет:
+- Инициализацию OCR с GPU
+- Получение скриншота
+- Парсинг панели навигации
+- Производительность (бенчмарк 3 прогона)
+- Debug скриншоты с bbox
 """
+
+print("🔍 ОТЛАДКА: Скрипт запущен")
+print("🔍 ОТЛАДКА: Начало импортов...")
 
 import sys
 import time
 from pathlib import Path
 from datetime import datetime
 
-print("🔍 ОТЛАДКА: Скрипт запущен")
-
-# Настройка UTF-8 для Windows ПЕРЕД любыми импортами
-if sys.platform == 'win32':
-    try:
-        import os
-        os.system('chcp 65001 > nul 2>&1')
-        if hasattr(sys.stdout, 'reconfigure'):
-            sys.stdout.reconfigure(encoding='utf-8')
-        if hasattr(sys.stderr, 'reconfigure'):
-            sys.stderr.reconfigure(encoding='utf-8')
-    except Exception as e:
-        print(f"⚠️ Ошибка настройки UTF-8: {e}")
-
-# Добавить корневую директорию в path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-print("🔍 ОТЛАДКА: Начало импортов...")
-
+print("🔍 ОТЛАДКА: logger импортирован")
 from loguru import logger
 
-print("🔍 ОТЛАДКА: logger импортирован")
-
-try:
-    from utils.ocr_engine import OCREngine
-    print("🔍 ОТЛАДКА: OCREngine импортирован")
-except Exception as e:
-    print(f"❌ ОШИБКА импорта OCREngine: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+print("🔍 ОТЛАДКА: OCREngine импортирован")
+from utils.ocr_engine import OCREngine
 
 print("🔍 ОТЛАДКА: Проверка ADB...")
 
+# Проверка ADB
 try:
     from utils.image_recognition import get_screenshot
     from utils.adb_controller import execute_command
     ADB_AVAILABLE = True
     print("🔍 ОТЛАДКА: ADB доступен")
-except ImportError as e:
-    logger.warning(f"⚠️ ADB утилиты не найдены: {e}")
+except ImportError:
     ADB_AVAILABLE = False
+    print("🔍 ОТЛАДКА: ADB недоступен")
 
 print(f"🔍 ОТЛАДКА: ADB_AVAILABLE = {ADB_AVAILABLE}")
 
@@ -84,6 +69,7 @@ def test_with_emulator():
     logger.info("🧪 ТЕСТ OCR НА ЭМУЛЯТОРЕ")
     logger.info("=" * 60)
 
+    # Найти подключенный эмулятор
     emulator = get_first_connected_emulator()
     if not emulator:
         logger.error("❌ Нет подключенных эмуляторов!")
@@ -97,7 +83,7 @@ def test_with_emulator():
     ocr = OCREngine(lang='ru', force_cpu=False)
     ocr.set_debug_mode(True)
 
-    # Получить скриншот
+    # Получить скриншот (используем функцию из image_recognition.py)
     logger.info("\n📸 Получение скриншота...")
     screenshot = get_screenshot(emulator)
 
@@ -145,7 +131,7 @@ def test_with_emulator():
             logger.info(
                 f"   {i}. {building['name']:30} "
                 f"Lv.{building['level']:2} "
-                f"(Y: {building['y_coord']:3})"
+                f"(Y: {building['y']:3})"
             )
         save_results_to_file(all_buildings)
     else:
@@ -194,7 +180,7 @@ def test_with_sample_image():
             logger.info(
                 f"   {i}. {building['name']:30} "
                 f"Lv.{building['level']:2} "
-                f"(Y: {building['y_coord']:3})"
+                f"(Y: {building['y']:3})"
             )
         save_results_to_file(buildings)
     else:
@@ -220,7 +206,7 @@ def save_results_to_file(buildings: list):
 
         for i, building in enumerate(buildings, 1):
             f.write(f"{i}. {building['name']} - Lv.{building['level']}\n")
-            f.write(f"   Y: {building['y_coord']}, Кнопка: {building['button_coord']}\n\n")
+            f.write(f"   Y: {building['y']}\n\n")
 
     logger.success(f"💾 Результаты сохранены: {filename}")
 
