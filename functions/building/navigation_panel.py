@@ -13,6 +13,7 @@ from utils.image_recognition import find_image, get_screenshot
 from utils.ocr_engine import OCREngine
 from utils.logger import logger
 
+
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -399,11 +400,10 @@ class NavigationPanel:
             if not self.collapse_all_sections(emulator):
                 logger.warning(f"[{emulator_name}] ⚠️ Не удалось свернуть все разделы")
 
-            # 5. Свайпы для доступа к разделу (если нужно)
-            section_data = building_config.get('section_data', {})
-            if section_data.get('requires_scroll'):
-                scroll_swipes = section_data.get('scroll_to_section', [])
-                self.execute_swipes(emulator, scroll_swipes)
+            # ВАЖНО: scroll_to_section НЕ ИСПОЛЬЗУЕТСЯ!
+            # После reset_navigation_state() все разделы уже в верху списка.
+            # Свайпы нужны только для подвкладок (scroll_to_subsection)
+            # и для прокрутки внутри подвкладок (scroll_in_subsection)
 
             # 6. Открыть раздел
             section_name = building_config.get('section')
@@ -473,6 +473,12 @@ class NavigationPanel:
         """
         Найти здание через OCR и кликнуть "Перейти"
 
+        Логика для множественных зданий (multiple=true):
+        - На данном этапе просто берем ПЕРВОЕ попавшееся здание
+        - Детальная логика прокачки (какое именно здание качать) будет в BuildingScheduler
+        - BuildingScheduler определит: нужно качать все здания до уровня X,
+          или только одно (с максимальным уровнем) дальше
+
         Args:
             emulator: объект эмулятора
             building_name: название здания
@@ -502,6 +508,7 @@ class NavigationPanel:
                 # Нашли здание
                 if is_multiple:
                     # Для множественных зданий - берем первое попавшееся
+                    # (логика выбора конкретного здания будет в BuildingScheduler)
                     target_building = building
                     break
                 else:

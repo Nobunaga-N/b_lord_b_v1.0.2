@@ -147,10 +147,10 @@ class NavigationTester:
                 elapsed_time = time.time() - start_time
                 return False, elapsed_time, "Не удалось найти или перейти к зданию"
 
-            # 2. Закрыть панель навигации (для проверки что перешли)
-            time.sleep(0.5)
-            self.panel.close_navigation_panel(self.emulator)
-            time.sleep(0.5)
+            # 2. Пауза после перехода (панель навигации закрывается автоматически)
+            # ВАЖНО: НЕ нажимать ESC после перехода к зданию,
+            # т.к. это вызовет диалог "выйти из игры"
+            time.sleep(1.0)
 
             # 3. Открыть панель снова для следующего теста
             self.panel.open_navigation_panel(self.emulator)

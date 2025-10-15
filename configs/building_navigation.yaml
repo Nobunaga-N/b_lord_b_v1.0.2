@@ -33,27 +33,13 @@ navigation:
 
     # =============== РАЗДЕЛ 3: БИТВА ===============
     Битва:
-      requires_scroll: true  # Требует свайпа для доступа к разделу
-      scroll_to_section:
-        - direction: "down"
-          start_x: 138
-          start_y: 239
-          end_x: 138
-          end_y: 787
-          duration: 300
+      requires_scroll: false  # После reset_navigation_state все разделы в верху
       has_subsections: false
       buildings: []  # Центр Сбора II/III строятся отдельно
 
     # =============== РАЗДЕЛ 4: РАЗВИТИЕ ===============
     Развитие:
-      requires_scroll: true
-      scroll_to_section:
-        - direction: "down"
-          start_x: 138
-          start_y: 239
-          end_x: 138
-          end_y: 787
-          duration: 300
+      requires_scroll: false  # После reset_navigation_state все разделы в верху
       has_subsections: false
       buildings:
 
@@ -98,14 +84,7 @@ navigation:
 
     # =============== РАЗДЕЛ 6: РЕСУРСЫ ===============
     Ресурсы:
-      requires_scroll: true
-      scroll_to_section:
-        - direction: "down"
-          start_x: 106
-          start_y: 700
-          end_x: 106
-          end_y: 547
-          duration: 300
+      requires_scroll: false  # После reset_navigation_state все разделы в верху
       has_subsections: true
 
       # Подвкладки раздела Ресурсы
@@ -244,10 +223,10 @@ navigation:
           requires_scroll: true  # Подвкладка видна только после свайпа в Ресурсах
           scroll_to_subsection:
             - direction: "down"
-              start_x: 106
-              start_y: 700
-              end_x: 106
-              end_y: 547
+              start_x: 155
+              start_y: 296
+              end_x: 155
+              end_y: 714
               duration: 300
           buildings:
 
@@ -286,10 +265,10 @@ navigation:
           requires_scroll: true
           scroll_to_subsection:
             - direction: "down"
-              start_x: 110
-              start_y: 700
-              end_x: 110
-              end_y: 433
+              start_x: 155
+              start_y: 296
+              end_x: 155
+              end_y: 714
               duration: 300
           buildings:
 
@@ -337,10 +316,10 @@ navigation:
           requires_scroll: true  # Подвкладка видна только после свайпа в Ресурсах
           scroll_to_subsection:
             - direction: "down"
-              start_x: 106
-              start_y: 700
-              end_x: 106
-              end_y: 547
+              start_x: 155
+              start_y: 296
+              end_x: 155
+              end_y: 714
               duration: 300
           buildings:
 
@@ -532,10 +511,10 @@ metadata:
   # Свайп для возврата в начало списка разделов
   scroll_to_top:
     - direction: "up"
-      start_x: 138
-      start_y: 239
-      end_x: 138
-      end_y: 787
+      start_x: 155
+      start_y: 296
+      end_x: 155
+      end_y: 714
       duration: 300
       repeat: 2  # Делать 2 раза
 
