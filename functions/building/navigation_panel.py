@@ -466,7 +466,7 @@ class NavigationPanel:
         if screenshot is None:
             return False
 
-        # Найти раздел через OCR
+        # Найти раздел через OCR (нормализация теперь в OCR движке)
         elements = self.ocr.recognize_text(screenshot, min_confidence=0.5)
 
         # Нормализуем имя раздела (убираем пробелы, нижний регистр)
