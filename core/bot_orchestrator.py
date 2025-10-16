@@ -1,5 +1,10 @@
 """
-Главный оркестратор бота
+Главный оркестратор бота Beast Lord Bot v3.0
+С интегрированной системой восстановления (Recovery System)
+
+Версия: 1.1
+Дата создания: 2025-01-06
+Последнее обновление: 2025-01-16 (добавлена Recovery System)
 """
 
 import time
@@ -7,13 +12,23 @@ import threading
 from utils.logger import logger
 from utils.config_manager import load_config
 from utils.adb_controller import wait_for_adb
+from utils.recovery_manager import recovery_manager
 from core.emulator_manager import EmulatorManager
 from core.game_launcher import GameLauncher
 from core.function_executor import execute_functions
 
 
 class BotOrchestrator:
-    """Управление главным циклом бота"""
+    """
+    Управление главным циклом бота
+
+    Основные возможности:
+    - Динамическое управление слотами (max_concurrent)
+    - Обработка эмуляторов в параллельных потоках
+    - Graceful shutdown без зависаний
+    - Интеграция с Recovery System для обработки ошибок
+    - Автоматический перезапуск эмуляторов при критических ошибках
+    """
 
     def __init__(self, gui_callback=None):
         """
@@ -117,7 +132,10 @@ class BotOrchestrator:
             # 3. Главный цикл
             while self.is_running and (self.queue or self.active_slots):
 
-                # 3a. Запустить новые потоки до max_concurrent
+                # 3a. Проверка запросов на перезапуск для активных эмуляторов
+                self._check_restart_requests()
+
+                # 3b. Запустить новые потоки до max_concurrent
                 while len(self.active_slots) < self.max_concurrent and self.queue and self.is_running:
                     emulator = self.queue.pop(0)
 
@@ -134,57 +152,96 @@ class BotOrchestrator:
                     self.active_slots.append((emulator, thread))
                     self._update_gui()
 
-                # 3b. Проверить завершенные потоки
+                # 3c. Проверить завершенные потоки
                 for emulator, thread in self.active_slots[:]:
                     if not thread.is_alive():
                         logger.success(f"Слот освобожден: {emulator['name']}")
                         self.active_slots.remove((emulator, thread))
                         self._update_gui()
 
-                # 3c. Пауза
+                # 3d. Пауза
                 time.sleep(1)
 
             # 4. Завершение
-            logger.info("Все эмуляторы обработаны, главный цикл завершен")
-
-        except Exception as e:
-            logger.error(f"Ошибка в главном цикле: {e}")
-            logger.exception(e)
-
-        finally:
+            logger.info("Главный цикл завершён")
             self.is_running = False
             self._update_gui()
 
+        except Exception as e:
+            logger.error(f"Критическая ошибка в главном цикле: {e}")
+            logger.exception(e)
+            self.is_running = False
+            self._update_gui()
+
+    def _check_restart_requests(self):
+        """
+        Проверка запросов на перезапуск эмуляторов
+
+        Если есть запрос на перезапуск активного эмулятора,
+        логирует предупреждение (перезапуск произойдет в _process_emulator)
+        """
+        for emulator, thread in self.active_slots[:]:
+            emulator_id = emulator.get('id')
+
+            if recovery_manager.has_restart_request(emulator_id) and thread.is_alive():
+                reason = recovery_manager.get_restart_reason(emulator_id)
+                logger.warning(f"🔄 Эмулятор {emulator['name']} имеет запрос на перезапуск: {reason}")
+                logger.info(f"⏳ Ожидание завершения текущей обработки перед перезапуском...")
+
     def _process_emulator(self, emulator, active_functions):
         """
-        Обработка одного эмулятора (выполняется в отдельном потоке)
+        Обрабатывает один эмулятор
+        С поддержкой Recovery System
 
         Args:
             emulator: словарь с данными эмулятора
             active_functions: список активных функций
         """
-
-        emulator_name = emulator['name']
+        emulator_name = emulator.get('name', 'Unknown')
+        emulator_id = emulator.get('id')
 
         try:
+            logger.info(f"\n{'='*50}")
+            logger.info(f"🎮 Обработка эмулятора: {emulator_name}")
+            logger.info(f"{'='*50}")
+
+            # НОВОЕ: Проверка запроса на перезапуск
+            if recovery_manager.has_restart_request(emulator_id):
+                reason = recovery_manager.get_restart_reason(emulator_id)
+                logger.warning(f"[{emulator_name}] 🔄 Обнаружен запрос на перезапуск: {reason}")
+
+                # Выполняем перезапуск
+                success = self._restart_emulator(emulator)
+
+                if success:
+                    logger.success(f"[{emulator_name}] ✅ Эмулятор успешно перезапущен")
+                    recovery_manager.clear_restart_request(emulator_id)
+                else:
+                    logger.error(f"[{emulator_name}] ❌ Не удалось перезапустить эмулятор")
+                    # Пропускаем этот эмулятор в текущем цикле
+                    return
+
             # 1. Запустить эмулятор
             logger.info(f"[{emulator_name}] Запуск эмулятора...")
-            if not self.emulator_manager.start_emulator(emulator['id']):
-                logger.error(f"[{emulator_name}] Не удалось запустить эмулятор")
+            if not self.emulator_manager.start_emulator(emulator_id):
+                logger.error(f"[{emulator_name}] ❌ Не удалось запустить эмулятор")
                 return
 
-            # 2. Ждать ADB
+            # 2. Дождаться ADB
             logger.info(f"[{emulator_name}] Ожидание ADB...")
-            if not wait_for_adb(emulator['port'], timeout=90):
-                logger.error(f"[{emulator_name}] ADB не готов, пропускаю")
+            if not wait_for_adb(emulator['port']):
+                logger.error(f"[{emulator_name}] ❌ ADB не готов")
+                self.emulator_manager.stop_emulator(emulator)
                 return
-
-            logger.success(f"[{emulator_name}] ADB готов")
 
             # 3. Запустить игру и дождаться загрузки
             game_launcher = GameLauncher(emulator)
             if not game_launcher.launch_and_wait():
-                logger.error(f"[{emulator_name}] Игра не загрузилась, пропускаю")
+                logger.error(f"[{emulator_name}] ❌ Игра не загрузилась")
+
+                # НОВОЕ: Обработка ошибки загрузки игры
+                recovery_manager.handle_stuck_state(emulator, context="Игра не загрузилась")
+                self.emulator_manager.stop_emulator(emulator)
                 return
 
             # 4. Проверить активные функции
@@ -194,18 +251,73 @@ class BotOrchestrator:
 
             # 5. Выполнить функции по порядку
             logger.info(f"[{emulator_name}] Выполнение функций: {active_functions}")
-            execute_functions(emulator, active_functions)
 
-            logger.success(f"[{emulator_name}] Обработка завершена")
+            try:
+                execute_functions(emulator, active_functions)
+                logger.success(f"[{emulator_name}] ✅ Все функции выполнены")
+            except Exception as func_error:
+                logger.error(f"[{emulator_name}] ❌ Ошибка при выполнении функций: {func_error}")
+
+                # НОВОЕ: Обработка ошибки выполнения функций
+                recovery_manager.handle_stuck_state(emulator, context=f"Ошибка функций: {func_error}")
 
         except Exception as e:
-            logger.error(f"[{emulator_name}] Ошибка: {e}")
+            logger.error(f"[{emulator_name}] ❌ Критическая ошибка в обработке: {e}")
             logger.exception(e)
+
+            # НОВОЕ: Обработка критической ошибки
+            recovery_manager.handle_stuck_state(emulator, context=f"Критическая ошибка: {e}")
 
         finally:
             # Всегда закрыть эмулятор
             logger.info(f"[{emulator_name}] Закрытие эмулятора...")
-            self.emulator_manager.stop_emulator(emulator['id'])
+            try:
+                self.emulator_manager.stop_emulator(emulator['id'])
+            except Exception as close_error:
+                logger.error(f"[{emulator_name}] ⚠️ Ошибка при закрытии эмулятора: {close_error}")
+
+            logger.info(f"[{emulator_name}] 📍 Обработка завершена\n")
+
+    def _restart_emulator(self, emulator) -> bool:
+        """
+        Перезапуск эмулятора (остановка + запуск)
+
+        Args:
+            emulator: объект эмулятора
+
+        Returns:
+            bool: True если перезапуск успешен
+        """
+        emulator_name = emulator.get('name', 'Unknown')
+
+        logger.info(f"[{emulator_name}] 🔄 Перезапуск эмулятора...")
+
+        # Остановка
+        logger.info(f"[{emulator_name}] Остановка...")
+        stop_success = self.emulator_manager.stop_emulator(emulator['id'])
+        if not stop_success:
+            logger.warning(f"[{emulator_name}] ⚠️ Проблема при остановке, продолжаю...")
+
+        # Пауза между остановкой и запуском
+        time.sleep(5)
+
+        # Запуск
+        logger.info(f"[{emulator_name}] Запуск...")
+        start_success = self.emulator_manager.start_emulator(emulator['id'])
+        if not start_success:
+            logger.error(f"[{emulator_name}] ❌ Не удалось запустить эмулятор")
+            return False
+
+        # Ожидание ADB
+        logger.info(f"[{emulator_name}] Ожидание ADB...")
+        adb_ready = wait_for_adb(emulator['port'], timeout=90)
+
+        if not adb_ready:
+            logger.error(f"[{emulator_name}] ❌ ADB не готов после перезапуска")
+            return False
+
+        logger.success(f"[{emulator_name}] ✅ Перезапуск успешен")
+        return True
 
     def _load_config(self):
         """
