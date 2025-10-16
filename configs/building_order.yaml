@@ -1,0 +1,633 @@
+# ===================================================================
+# Порядок прокачки зданий для уровней Лорда 10-18
+# Beast Lord Bot v3.0
+#
+# Структура:
+# - lord_X - конфигурация для уровня Лорда X
+# - buildings - список зданий в СТРОГОМ порядке прокачки
+# - name - название здания (должно совпадать с OCR)
+# - count - количество экземпляров (1 = уникальное, >1 = множественное)
+# - target_level - целевой уровень для этого этапа
+# - type - "unique" или "multiple"
+# - action - "upgrade" (улучшить) или "build" (построить новое)
+# ===================================================================
+
+lord_10:
+  # Промежуточные здания перед Лордом 11
+  buildings:
+    - name: "Улей"
+      count: 3
+      target_level: 10
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Ферма Грунта"
+      count: 4
+      target_level: 10
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Фруктовый Сад"
+      count: 4
+      target_level: 10
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Куст"
+      count: 4
+      target_level: 10
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Пруд"
+      count: 4
+      target_level: 8
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Флора Эволюции"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Песка"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Водохранилище"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Жилище Детенышей"
+      count: 4
+      target_level: 10
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Логово Всеядных"
+      count: 1
+      target_level: 10
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Логово Плотоядных"
+      count: 1
+      target_level: 10
+      type: "unique"
+      action: "upgrade"
+
+lord_11:
+  buildings:
+    # ПЕРВОЕ здание ВСЕГДА Лорд
+    - name: "Лорд"
+      count: 1
+      target_level: 11
+      type: "unique"
+      action: "upgrade"
+
+    # Промежуточные здания перед Лордом 12
+    - name: "Склад Песка"
+      count: 1
+      target_level: 8
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев"
+      count: 1
+      target_level: 8
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта"
+      count: 1
+      target_level: 8
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов"
+      count: 1
+      target_level: 8
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Флора Эволюции"
+      count: 1
+      target_level: 8
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Улей"
+      count: 1
+      target_level: 11
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Ферма Грунта"
+      count: 1
+      target_level: 11
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Фруктовый Сад"
+      count: 1
+      target_level: 11
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Жилище Детенышей"
+      count: 4
+      target_level: 11
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Логово Всеядных"
+      count: 1
+      target_level: 11
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Логово Плотоядных"
+      count: 1
+      target_level: 11
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Центр Альянса"
+      count: 1
+      target_level: 11
+      type: "unique"
+      action: "upgrade"
+
+lord_12:
+  buildings:
+    - name: "Лорд"
+      count: 1
+      target_level: 12
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Песка"
+      count: 1
+      target_level: 9
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев"
+      count: 1
+      target_level: 9
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта"
+      count: 1
+      target_level: 9
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов"
+      count: 1
+      target_level: 9
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Флора Эволюции"
+      count: 1
+      target_level: 9
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Улей"
+      count: 1
+      target_level: 12
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Ферма Грунта"
+      count: 1
+      target_level: 12
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Фруктовый Сад"
+      count: 1
+      target_level: 12
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Жилище Детенышей"
+      count: 4
+      target_level: 12
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Логово Всеядных"
+      count: 1
+      target_level: 12
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Логово Плотоядных"
+      count: 1
+      target_level: 12
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Центр Альянса"
+      count: 1
+      target_level: 12
+      type: "unique"
+      action: "upgrade"
+
+lord_13:
+  buildings:
+    - name: "Лорд"
+      count: 1
+      target_level: 13
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Песка"
+      count: 1
+      target_level: 10
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев"
+      count: 1
+      target_level: 10
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта"
+      count: 1
+      target_level: 10
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов"
+      count: 1
+      target_level: 10
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Флора Эволюции"
+      count: 1
+      target_level: 10
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Улей"
+      count: 1
+      target_level: 13
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Фруктовый Сад"
+      count: 1
+      target_level: 13
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Жилище Детенышей"
+      count: 4
+      target_level: 13
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Логово Всеядных"
+      count: 1
+      target_level: 13
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Логово Плотоядных"
+      count: 1
+      target_level: 13
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Центр Альянса"
+      count: 1
+      target_level: 13
+      type: "unique"
+      action: "upgrade"
+
+    # НОВЫЕ ПОСТРОЙКИ (только после завершения прокачки Лорда!)
+    - name: "Жилище Лемуров IV"
+      count: 1
+      target_level: 1
+      type: "unique"
+      action: "build"
+      note: "Открывает 4-й слот строителя"
+
+    - name: "Центр Сбора II"
+      count: 1
+      target_level: 1
+      type: "unique"
+      action: "build"
+
+    - name: "Склад Листьев II"
+      count: 1
+      target_level: 2
+      type: "unique"
+      action: "build"
+
+    - name: "Склад Фруктов II"
+      count: 1
+      target_level: 2
+      type: "unique"
+      action: "build"
+
+    - name: "Склад Песка II"
+      count: 1
+      target_level: 2
+      type: "unique"
+      action: "build"
+
+    - name: "Склад Грунта II"
+      count: 1
+      target_level: 2
+      type: "unique"
+      action: "build"
+
+lord_14:
+  buildings:
+    - name: "Лорд"
+      count: 1
+      target_level: 14
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Песка II"
+      count: 1
+      target_level: 3
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев II"
+      count: 1
+      target_level: 3
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта II"
+      count: 1
+      target_level: 3
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов II"
+      count: 1
+      target_level: 3
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Улей"
+      count: 1
+      target_level: 14
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Фруктовый Сад"
+      count: 1
+      target_level: 14
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Логово Плотоядных"
+      count: 1
+      target_level: 14
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Центр Альянса"
+      count: 1
+      target_level: 14
+      type: "unique"
+      action: "upgrade"
+
+    # НОВАЯ ПОСТРОЙКА
+    - name: "Жилище Детенышей"
+      count: 5
+      target_level: 14
+      type: "multiple"
+      action: "build"
+      note: "5-е жилище - новая постройка"
+
+lord_15:
+  buildings:
+    - name: "Лорд"
+      count: 1
+      target_level: 15
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Песка II"
+      count: 1
+      target_level: 4
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев II"
+      count: 1
+      target_level: 4
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта II"
+      count: 1
+      target_level: 4
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов II"
+      count: 1
+      target_level: 4
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Фруктовый Сад"
+      count: 1
+      target_level: 15
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Логово Плотоядных"
+      count: 1
+      target_level: 15
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Жилище Детенышей"
+      count: 5
+      target_level: 15
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Центр Альянса"
+      count: 1
+      target_level: 15
+      type: "unique"
+      action: "upgrade"
+
+lord_16:
+  buildings:
+    - name: "Лорд"
+      count: 1
+      target_level: 16
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Песка II"
+      count: 1
+      target_level: 5
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев II"
+      count: 1
+      target_level: 5
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта II"
+      count: 1
+      target_level: 5
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов II"
+      count: 1
+      target_level: 5
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Фруктовый Сад"
+      count: 1
+      target_level: 16
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Жилище Детенышей"
+      count: 5
+      target_level: 16
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Логово Плотоядных"
+      count: 1
+      target_level: 16
+      type: "unique"
+      action: "upgrade"
+
+lord_17:
+  buildings:
+    - name: "Лорд"
+      count: 1
+      target_level: 17
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Песка II"
+      count: 1
+      target_level: 6
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев II"
+      count: 1
+      target_level: 6
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта II"
+      count: 1
+      target_level: 6
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов II"
+      count: 1
+      target_level: 6
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Жилище Детенышей"
+      count: 5
+      target_level: 17
+      type: "multiple"
+      action: "upgrade"
+
+    - name: "Фруктовый Сад"
+      count: 1
+      target_level: 17
+      type: "multiple"
+      action: "upgrade"
+
+lord_18:
+  buildings:
+    - name: "Лорд"
+      count: 1
+      target_level: 18
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Песка II"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Листьев II"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Грунта II"
+      count: 1
+      target_level: 7
+      type: "unique"
+      action: "upgrade"
+
+    - name: "Склад Фруктов II"
+      count: 1
+      target_level: 6
+      type: "unique"
+      action: "upgrade"
+
+    # ФИНАЛЬНАЯ ПОСТРОЙКА
+    - name: "Центр Сбора III"
+      count: 1
+      target_level: 1
+      type: "unique"
+      action: "build"
+      note: "Финальное здание"
+
+# ===================================================================
+# КОНЕЦ КОНФИГУРАЦИИ
+# После достижения 18 уровня Лорда строительство завершено
+# ===================================================================
