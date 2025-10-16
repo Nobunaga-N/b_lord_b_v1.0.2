@@ -1,7 +1,11 @@
 """
 Панель навигации для строительства
 Управление панелью быстрого доступа к зданиям
-Версия с поддержкой YAML конфигурации
+Версия с поддержкой YAML конфигурации + Recovery System
+
+Версия: 1.1
+Дата создания: 2025-01-07
+Последнее обновление: 2025-01-16 (добавлена Recovery System)
 """
 
 import os
@@ -12,6 +16,7 @@ from utils.adb_controller import tap, swipe, press_key
 from utils.image_recognition import find_image, get_screenshot
 from utils.ocr_engine import OCREngine
 from utils.logger import logger
+from utils.recovery_manager import recovery_manager, retry_with_recovery  # НОВОЕ: Recovery System
 
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +31,7 @@ class NavigationPanel:
     - Автоматические свайпы для доступа к разделам
     - Работу с подвкладками (например, Ресурсы)
     - Умное сворачивание/разворачивание разделов
+    - Recovery при ошибках (автоматическое восстановление)
     """
 
     # Координаты
@@ -106,10 +112,10 @@ class NavigationPanel:
             buildings = section_data.get('buildings', [])
             for building in buildings:
                 if building['name'] == building_name:
-                    # Добавляем информацию о секции
-                    building['section'] = section_name
-                    building['section_data'] = section_data
-                    return building
+                    result = building.copy()
+                    result['section'] = section_name
+                    result['from_tasks_tab'] = False
+                    return result
 
             # Проверяем подвкладки
             if section_data.get('has_subsections'):
@@ -118,29 +124,72 @@ class NavigationPanel:
                     buildings = subsection_data.get('buildings', [])
                     for building in buildings:
                         if building['name'] == building_name:
-                            building['section'] = section_name
-                            building['subsection'] = subsection_name
-                            building['section_data'] = section_data
-                            building['subsection_data'] = subsection_data
-                            return building
+                            result = building.copy()
+                            result['section'] = section_name
+                            result['subsection'] = subsection_name
+                            result['subsection_data'] = subsection_data
+                            result['from_tasks_tab'] = False
+                            return result
 
         # Поиск в tasks_tab
         tasks_tab = self.config.get('tasks_tab', {})
         buildings = tasks_tab.get('buildings', [])
         for building in buildings:
             if building['name'] == building_name:
-                building['from_tasks_tab'] = True
-                return building
+                result = building.copy()
+                result['from_tasks_tab'] = True
+                return result
 
-        logger.warning(f"⚠️ Здание '{building_name}' не найдено в конфигурации")
         return None
+
+    def get_buildings_in_section(self, emulator: Dict, section_name: str) -> List[Dict]:
+        """
+        Получить список зданий в разделе через OCR парсинг
+
+        Args:
+            emulator: объект эмулятора
+            section_name: название раздела
+
+        Returns:
+            list: список словарей с информацией о зданиях
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+        emulator_id = emulator.get('id', 0)
+
+        logger.info(f"[{emulator_name}] Получение списка зданий в разделе: {section_name}")
+
+        # Открыть панель навигации
+        if not self.open_navigation_panel(emulator):
+            return []
+
+        # Переключиться на "Список зданий"
+        self.switch_to_buildings_tab(emulator)
+
+        # Свернуть все разделы
+        self.collapse_all_sections(emulator)
+
+        # Найти и открыть нужный раздел
+        if not self._open_section_by_name(emulator, section_name):
+            logger.error(f"[{emulator_name}] Не удалось открыть раздел: {section_name}")
+            return []
+
+        # Получить скриншот
+        screenshot = get_screenshot(emulator)
+        if screenshot is None:
+            return []
+
+        # Парсинг через OCR
+        buildings = self.ocr.parse_navigation_panel(screenshot, emulator_id=emulator_id)
+
+        logger.info(f"[{emulator_name}] Найдено зданий: {len(buildings)}")
+        return buildings
 
     def get_all_testable_buildings(self) -> List[Dict]:
         """
         Получить список всех testable зданий из конфигурации
 
         Returns:
-            list: [{"name": "...", "section": "...", ...}, ...]
+            list: список словарей с информацией о testable зданиях
         """
         testable = []
 
@@ -184,7 +233,10 @@ class NavigationPanel:
         return testable
 
     def open_navigation_panel(self, emulator: Dict) -> bool:
-        """Открыть панель навигации"""
+        """
+        Открыть панель навигации
+        С поддержкой recovery при неудаче
+        """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
         if self.is_navigation_open(emulator):
@@ -192,14 +244,30 @@ class NavigationPanel:
             return True
 
         logger.info(f"[{emulator_name}] Открытие панели навигации...")
+
+        # ПОПЫТКА 1: Обычное открытие
         tap(emulator, x=self.PANEL_ICON_COORDS[0], y=self.PANEL_ICON_COORDS[1])
         time.sleep(1.5)
 
         if self.is_navigation_open(emulator):
             logger.success(f"[{emulator_name}] ✅ Панель навигации открыта")
             return True
+
+        # ПОПЫТКА 2: С recovery (НОВОЕ)
+        logger.warning(f"[{emulator_name}] Панель не открылась, пробую с recovery...")
+        recovery_manager.clear_ui_state(emulator)
+        time.sleep(1)
+
+        tap(emulator, x=self.PANEL_ICON_COORDS[0], y=self.PANEL_ICON_COORDS[1])
+        time.sleep(1.5)
+
+        if self.is_navigation_open(emulator):
+            logger.success(f"[{emulator_name}] ✅ Панель навигации открыта (после recovery)")
+            return True
         else:
             logger.error(f"[{emulator_name}] ❌ Не удалось открыть панель навигации")
+            # НОВОЕ: Запрашиваем перезапуск если панель не открывается
+            recovery_manager.request_emulator_restart(emulator, "Панель навигации не открывается")
             return False
 
     def close_navigation_panel(self, emulator: Dict) -> bool:
@@ -259,67 +327,52 @@ class NavigationPanel:
         Алгоритм:
         1. Ищем стрелки "вниз" (основные И подвкладки)
         2. ПРИОРИТЕТ У ПОДВКЛАДОК (arrow_down_sub)!
-           - Если есть sub → сворачиваем её (даже если есть основная)
+           - Если есть sub → сворачиваем её
            - Если только основная → сворачиваем её
         3. Повторяем пока НЕ ОСТАНЕТСЯ НИ ОДНОЙ стрелки "вниз"
-
-        Логика приоритета:
-        - Сначала сворачиваем ВСЕ подвкладки (начиная с верхней)
-        - Потом сворачиваем основные разделы (начиная с верхней)
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        logger.info(f"[{emulator_name}] Сворачивание всех разделов...")
-
-        collapsed_count = 0
+        logger.debug(f"[{emulator_name}] Сворачивание всех разделов...")
 
         for attempt in range(1, max_attempts + 1):
-            # Поиск стрелок "вниз" (основные + подвкладки)
-            arrow_down_coords = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
-            arrow_down_sub_coords = find_image(emulator, self.TEMPLATES['arrow_down_sub'], threshold=0.8)
+            # ПРИОРИТЕТ 1: Ищем подвкладки (arrow_down_sub)
+            arrow_down_sub = find_image(emulator, self.TEMPLATES['arrow_down_sub'], threshold=0.8)
 
-            # Определяем какую стрелку нажать
-            # ПРИОРИТЕТ: SUB стрелка → основная стрелка
-            target_coords = None
-            arrow_type = None
+            if arrow_down_sub is not None:
+                # Нашли подвкладку - сворачиваем
+                logger.debug(f"[{emulator_name}] Клик по подвкладке (стрелка вниз): {arrow_down_sub}")
+                tap(emulator, x=arrow_down_sub[0], y=arrow_down_sub[1])
+                time.sleep(0.5)
+                continue
 
-            if arrow_down_sub_coords is not None:
-                # Есть SUB стрелка - сворачиваем её в первую очередь!
-                target_coords = arrow_down_sub_coords
-                arrow_type = "подвкладка"
+            # ПРИОРИТЕТ 2: Ищем основные разделы (arrow_down)
+            arrow_down = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
 
-            elif arrow_down_coords is not None:
-                # Есть только основная стрелка - сворачиваем её
-                target_coords = arrow_down_coords
-                arrow_type = "основная"
+            if arrow_down is not None:
+                # Нашли основной раздел - сворачиваем
+                logger.debug(f"[{emulator_name}] Клик по разделу (стрелка вниз): {arrow_down}")
+                tap(emulator, x=arrow_down[0], y=arrow_down[1])
+                time.sleep(0.5)
+                continue
 
-            if target_coords is not None:
-                # Есть развёрнутый раздел/подвкладка
-                x, y = target_coords
-                logger.debug(f"[{emulator_name}] Найдена стрелка вниз ({arrow_type}) в ({x}, {y}), сворачиваем...")
-                tap(emulator, x=int(x), y=int(y))
-                collapsed_count += 1
-                time.sleep(0.8)
-            else:
-                # Все разделы свёрнуты
-                logger.success(
-                    f"[{emulator_name}] ✅ Все разделы свёрнуты (свернуто: {collapsed_count}, попыток: {attempt})")
-                return True
+            # Ничего не найдено - всё свёрнуто
+            logger.success(f"[{emulator_name}] ✅ Все разделы свёрнуты (попытка {attempt})")
+            return True
 
-        # Достигнут лимит попыток
-        logger.warning(f"[{emulator_name}] ⚠️ Достигнут лимит попыток ({max_attempts}), свернуто: {collapsed_count}")
-        return collapsed_count > 0  # Считаем успехом если хоть что-то свернули
+        logger.warning(f"[{emulator_name}] ⚠️ Не удалось свернуть все разделы за {max_attempts} попыток")
+        return False
 
     def execute_swipes(self, emulator: Dict, swipes: List[Dict]) -> bool:
         """
-        Выполнить список свайпов из конфигурации
+        Выполнить список свайпов
 
         Args:
             emulator: объект эмулятора
-            swipes: список свайпов [{"direction": "down", "start_x": ..., ...}, ...]
+            swipes: список свайпов из конфигурации
 
         Returns:
-            bool: True если все свайпы выполнены
+            bool: True если успешно
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
@@ -342,9 +395,11 @@ class NavigationPanel:
 
         return True
 
+    @retry_with_recovery(max_attempts=2, recovery_between_attempts=True)  # НОВОЕ: Декоратор для retry
     def navigate_to_building(self, emulator: Dict, building_name: str) -> bool:
         """
         Навигация к зданию с использованием конфигурации
+        С автоматическим recovery при неудаче (через декоратор)
 
         Полный процесс:
         1. Открыть панель навигации
@@ -410,11 +465,6 @@ class NavigationPanel:
             # 4. Свернуть все разделы
             if not self.collapse_all_sections(emulator):
                 logger.warning(f"[{emulator_name}] ⚠️ Не удалось свернуть все разделы")
-
-            # ВАЖНО: scroll_to_section НЕ ИСПОЛЬЗУЕТСЯ!
-            # После reset_navigation_state() все разделы уже в верху списка.
-            # Свайпы нужны только для подвкладок (scroll_to_subsection)
-            # и для прокрутки внутри подвкладок (scroll_in_subsection)
 
             # 6. Открыть раздел
             section_name = building_config.get('section')
@@ -488,12 +538,6 @@ class NavigationPanel:
     def _find_and_click_building(self, emulator: Dict, building_name: str, building_config: Dict) -> bool:
         """
         Найти здание через OCR и кликнуть "Перейти"
-
-        Логика для множественных зданий (multiple=true):
-        - На данном этапе просто берем ПЕРВОЕ попавшееся здание
-        - Детальная логика прокачки (какое именно здание качать) будет в BuildingScheduler
-        - BuildingScheduler определит: нужно качать все здания до уровня X,
-          или только одно (с максимальным уровнем) дальше
 
         Args:
             emulator: объект эмулятора
@@ -594,3 +638,8 @@ class NavigationPanel:
 
         logger.debug(f"[{emulator_name}] ✅ Состояние навигации сброшено")
         return True
+
+    # Алиас для обратной совместимости
+    def go_to_building(self, emulator: Dict, building_name: str) -> bool:
+        """Алиас для navigate_to_building (для обратной совместимости)"""
+        return self.navigate_to_building(emulator, building_name)
