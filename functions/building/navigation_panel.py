@@ -466,7 +466,7 @@ class NavigationPanel:
         if screenshot is None:
             return False
 
-        # Найти раздел через OCR (нормализация теперь в OCR движке)
+        # Найти раздел через OCR (нормализация кириллицы теперь в OCR движке)
         elements = self.ocr.recognize_text(screenshot, min_confidence=0.5)
 
         # Нормализуем имя раздела (убираем пробелы, нижний регистр)
@@ -518,7 +518,6 @@ class NavigationPanel:
         is_multiple = building_config.get('multiple', False)
 
         # Убираем пробелы для более гибкого поиска
-        # OCR может распознать "ЖилищеДетенышей" вместо "Жилище Детенышей"
         ocr_pattern_normalized = ocr_pattern.lower().replace(' ', '')
 
         target_building = None
@@ -530,7 +529,6 @@ class NavigationPanel:
                 # Нашли здание
                 if is_multiple:
                     # Для множественных зданий - берем первое попавшееся
-                    # (логика выбора конкретного здания будет в BuildingScheduler)
                     target_building = building
                     break
                 else:
