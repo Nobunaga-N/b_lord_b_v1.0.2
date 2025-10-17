@@ -2,8 +2,11 @@
 База данных для хранения состояния зданий и строителей
 Управление прокачкой зданий через SQLite
 
-Версия: 1.0
-Дата создания: 2025-01-16
+Версия: 1.1 (ИСПРАВЛЕННАЯ)
+Дата обновления: 2025-01-17
+Изменения:
+- Добавлен метод _can_construct_building() для проверки условий постройки
+- Исправлен get_next_building_to_upgrade() с проверкой уровня Лорда
 """
 
 import os
@@ -53,24 +56,32 @@ class BuildingDatabase:
     }
 
     def __init__(self):
-        """Инициализация БД и создание таблиц"""
-        # Создаём директорию если её нет
+        """Инициализация подключения к БД и загрузка конфигурации"""
+        # Создаём директорию для БД если её нет
         os.makedirs(os.path.dirname(self.DB_PATH), exist_ok=True)
 
         # Подключаемся к БД
         self.conn = sqlite3.connect(self.DB_PATH, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row  # Для доступа к колонкам по имени
+        self.conn.row_factory = sqlite3.Row
 
-        # Создаём таблицы
+        # Создаём таблицы если их нет
         self._create_tables()
 
-        # Загружаем конфиг порядка прокачки
-        self.building_config = self._load_building_config()
+        # Загружаем конфигурацию порядка прокачки
+        self._load_building_config()
 
-        logger.info(f"✅ BuildingDatabase инициализирована: {self.DB_PATH}")
+        # Инициализируем OCR для определения строителей
+        try:
+            from utils.ocr_engine import OCREngine
+            self._ocr_engine = OCREngine()
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось инициализировать OCR для строителей: {e}")
+            self._ocr_engine = None
+
+        logger.info("✅ BuildingDatabase инициализирована")
 
     def _create_tables(self):
-        """Создать таблицы БД если их нет"""
+        """Создать таблицы если их нет"""
         cursor = self.conn.cursor()
 
         # Таблица зданий
@@ -115,57 +126,80 @@ class BuildingDatabase:
         """)
 
         self.conn.commit()
-        logger.debug("✅ Таблицы БД проверены/созданы")
+        logger.debug("✅ Таблицы БД созданы/проверены")
 
-    def _load_building_config(self) -> Dict:
+    def _load_building_config(self):
         """Загрузить конфигурацию порядка прокачки из YAML"""
-        try:
-            with open(self.CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
-            logger.debug(f"✅ Конфиг загружен: {self.CONFIG_PATH}")
-            return config
-        except FileNotFoundError:
-            logger.error(f"❌ Файл конфига не найден: {self.CONFIG_PATH}")
-            return {}
-        except yaml.YAMLError as e:
-            logger.error(f"❌ Ошибка парсинга YAML: {e}")
-            return {}
+        if not os.path.exists(self.CONFIG_PATH):
+            logger.error(f"❌ Конфиг не найден: {self.CONFIG_PATH}")
+            self.building_config = {}
+            return
+
+        with open(self.CONFIG_PATH, 'r', encoding='utf-8') as f:
+            self.building_config = yaml.safe_load(f)
+
+        logger.debug(f"✅ Конфигурация загружена: {len(self.building_config)} уровней Лорда")
+
+    # ===== РАБОТА С ЗАМОРОЗКОЙ =====
+
+    def is_emulator_frozen(self, emulator_id: int) -> bool:
+        """Проверить заморожен ли эмулятор"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT freeze_until FROM emulator_freeze 
+            WHERE emulator_id = ? AND freeze_until > CURRENT_TIMESTAMP
+        """, (emulator_id,))
+        return cursor.fetchone() is not None
+
+    def freeze_emulator(self, emulator_id: int, hours: int = 6, reason: str = "Недостаточно ресурсов"):
+        """Заморозить эмулятор на N часов"""
+        cursor = self.conn.cursor()
+        freeze_until = datetime.now() + timedelta(hours=hours)
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO emulator_freeze (emulator_id, freeze_until, reason)
+            VALUES (?, ?, ?)
+        """, (emulator_id, freeze_until, reason))
+
+        self.conn.commit()
+        logger.warning(f"❄️ Эмулятор {emulator_id} заморожен до {freeze_until.strftime('%Y-%m-%d %H:%M')}")
+
+    def unfreeze_emulator(self, emulator_id: int):
+        """Разморозить эмулятор"""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM emulator_freeze WHERE emulator_id = ?", (emulator_id,))
+        self.conn.commit()
+        logger.info(f"✅ Эмулятор {emulator_id} разморожен")
+
+    def get_freeze_info(self, emulator_id: int) -> Optional[Dict]:
+        """Получить информацию о заморозке"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM emulator_freeze WHERE emulator_id = ?
+        """, (emulator_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
     # ===== ИНИЦИАЛИЗАЦИЯ ЭМУЛЯТОРА =====
 
-    def is_emulator_initialized(self, emulator_id: int) -> bool:
-        """
-        Проверка: есть ли записи о зданиях для этого эмулятора?
-
-        Returns:
-            True если эмулятор уже инициализирован
-        """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM buildings WHERE emulator_id = ?",
-            (emulator_id,)
-        )
-        count = cursor.fetchone()[0]
-        return count > 0
-
     def init_emulator_buildings(self, emulator_id: int, buildings_data: List[Dict]):
         """
-        Первичное сканирование - записать уровни всех зданий
+        Инициализировать здания для эмулятора (первый запуск)
 
         Args:
             emulator_id: ID эмулятора
-            buildings_data: список зданий [{'name': 'Улей', 'level': 8, 'index': 1}, ...]
+            buildings_data: список словарей с полями name, level, index
         """
         cursor = self.conn.cursor()
 
-        logger.info(f"📝 Инициализация зданий для эмулятора {emulator_id}")
+        logger.info(f"🏗️ Инициализация зданий для эмулятора {emulator_id}")
 
-        for building in buildings_data:
-            name = building['name']
-            level = building['level']
-            index = building.get('index')  # None для уникальных зданий
+        for building_data in buildings_data:
+            name = building_data['name']
+            level = building_data['level']
+            index = building_data.get('index')
 
-            # Определяем тип и целевой уровень из конфига
+            # Ищем здание в конфиге чтобы определить target_level и type
             building_info = self._find_building_in_config(name)
 
             if not building_info:
@@ -226,7 +260,7 @@ class BuildingDatabase:
         """
         Определить количество строителей через OCR
 
-        Область поиска: (10, 115, 145, 179) - красный прямоугольник на скриншоте
+        Область поиска: (10, 115, 145, 179)
         Ожидаемый формат текста: "0/3", "1/3", "2/4" и т.д.
 
         Args:
@@ -234,59 +268,33 @@ class BuildingDatabase:
 
         Returns:
             (busy_count, total_count) - например (1, 3) означает 1 занят из 3 всего
-
-        Raises:
-            ValueError: Если не удалось распознать текст
-
-        Examples:
-            >>> detect_builders_count({'id': 0, 'name': 'LD', 'port': 5554})
-            (0, 3)  # Все 3 строителя свободны
-
-            >>> detect_builders_count({'id': 1, 'name': 'LD-1', 'port': 5556})
-            (2, 4)  # 2 заняты из 4 строителей
         """
-        from utils.ocr_engine import OCREngine
-        from utils.image_recognition import get_screenshot
-        # import cv2  # Раскомментируйте если используете предобработку
-
-        # Получаем ID эмулятора для логов
         emulator_id = emulator.get('id', 0)
         emulator_name = emulator.get('name', f'Emulator-{emulator_id}')
 
-        # Получаем скриншот (теперь передаем объект эмулятора)
+        # Получаем скриншот
         screenshot = get_screenshot(emulator)
         if screenshot is None:
             logger.error(f"❌ Не удалось получить скриншот эмулятора {emulator_name}")
-            return (0, 3)  # Безопасное значение по умолчанию
+            return (0, 3)
 
         # Область поиска слотов строительства
-        x1, y1, x2, y2 = self.BUILDERS_SEARCH_AREA  # (10, 115, 145, 179)
+        x1, y1, x2, y2 = self.BUILDERS_SEARCH_AREA
 
         # Создаем OCR движок (если еще не создан)
         if not hasattr(self, '_ocr_engine'):
-            self._ocr_engine = OCREngine(lang='en')  # Английский для цифр
+            from utils.ocr_engine import OCREngine
+            self._ocr_engine = OCREngine(lang='en')
             logger.debug("✅ OCR движок инициализирован для парсинга строителей")
-
-        # ОПЦИОНАЛЬНО: Предобработка для улучшения распознавания на размытом фоне
-        # Раскомментируйте если OCR плохо распознает цифры:
-        # region_crop = screenshot[y1:y2, x1:x2]
-        # gray = cv2.cvtColor(region_crop, cv2.COLOR_BGR2GRAY)
-        # # Увеличение контраста
-        # gray = cv2.convertScaleAbs(gray, alpha=1.5, beta=30)
-        # # Бинаризация (делает текст четче)
-        # _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        # # Конвертируем обратно в BGR для OCR
-        # preprocessed = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
-        # # Используем preprocessed вместо screenshot в recognize_text
 
         # Распознаем текст в области
         elements = self._ocr_engine.recognize_text(
             screenshot,
             region=(x1, y1, x2, y2),
-            min_confidence=0.5  # Низкий порог для распознавания цифр
+            min_confidence=0.5
         )
 
-        # Ищем паттерн "X/Y" в распознанном тексте
+        # Ищем паттерн "X/Y"
         builder_pattern = re.compile(r'(\d+)\s*/\s*(\d+)')
 
         for element in elements:
@@ -304,13 +312,13 @@ class BuildingDatabase:
                 else:
                     logger.warning(f"⚠️ Некорректные значения: {busy}/{total}, игнорируем")
 
-        # Если ничего не распознано - пробуем с более низким порогом уверенности
+        # Если ничего не распознано - пробуем с более низким порогом
         logger.debug("🔍 Первая попытка не удалась, пробуем с min_confidence=0.3")
 
         elements = self._ocr_engine.recognize_text(
             screenshot,
             region=(x1, y1, x2, y2),
-            min_confidence=0.3  # Еще ниже для цифр на размытом фоне
+            min_confidence=0.3
         )
 
         for element in elements:
@@ -572,17 +580,83 @@ class BuildingDatabase:
         self.conn.commit()
         logger.success("✅ Добавлен 4-й слот строителя!")
 
-    # ===== ЛОГИКА ПРОКАЧКИ =====
+    # ===== УСЛОВИЯ ПОСТРОЙКИ НОВЫХ ЗДАНИЙ (НОВЫЙ МЕТОД) =====
+
+    def _can_construct_building(self, emulator_id: int, building_name: str) -> bool:
+        """
+        Проверить можно ли построить здание
+
+        Условия постройки:
+        - Жилище Лемуров IV: Лорд >= 13
+        - Центр Сбора II: Лорд >= 13
+        - Центр Сбора III: Лорд >= 18
+        - Склад X II: Лорд >= 13 И Склад X >= 10
+        - Жилище Детенышей (5-е): Лорд >= 14
+
+        Returns:
+            True если все условия выполнены
+        """
+        lord_level = self.get_lord_level(emulator_id)
+
+        # Жилище Лемуров IV
+        if building_name == "Жилище Лемуров IV":
+            return lord_level >= 13
+
+        # Центр Сбора II
+        if building_name == "Центр Сбора II":
+            return lord_level >= 13
+
+        # Центр Сбора III
+        if building_name == "Центр Сбора III":
+            return lord_level >= 18
+
+        # Жилище Детенышей (5-е)
+        if "Жилище Детенышей" in building_name:
+            return lord_level >= 14
+
+        # Склады II: Лорд >= 13 И обычный склад >= 10
+        if "Склад" in building_name and "II" in building_name:
+            if lord_level < 13:
+                logger.debug(f"📌 {building_name}: Лорд {lord_level} < 13")
+                return False
+
+            # Маппинг склада II → обычный склад
+            resource_map = {
+                "Склад Фруктов II": "Склад Фруктов",
+                "Склад Листьев II": "Склад Листьев",
+                "Склад Грунта II": "Склад Грунта",
+                "Склад Песка II": "Склад Песка",
+            }
+
+            base_warehouse = resource_map.get(building_name)
+            if base_warehouse:
+                base = self.get_building(emulator_id, base_warehouse, None)
+                if not base or base['current_level'] < 10:
+                    logger.debug(f"📌 {building_name}: {base_warehouse} уровень {base['current_level'] if base else 0} < 10")
+                    return False
+
+            return True
+
+        # По умолчанию можно строить
+        return True
+
+    # ===== ЛОГИКА ПРОКАЧКИ (ИСПРАВЛЕННЫЙ МЕТОД) =====
 
     def get_next_building_to_upgrade(self, emulator_id: int) -> Optional[Dict]:
         """
         ГЛАВНЫЙ МЕТОД - определить следующее здание для прокачки
 
+        ИСПРАВЛЕНО:
+        - Добавлена проверка уровня Лорда (нельзя улучшать здания выше уровня Лорда)
+        - Добавлена проверка условий постройки для новых зданий
+
         Алгоритм:
         1. Получить уровень Лорда
         2. Загрузить конфиг для этого уровня
         3. Пройти по списку зданий по порядку
-        4. Найти первое здание которое нужно качать
+        4. Проверить: нельзя улучшать здания выше уровня Лорда
+        5. Проверить условия постройки для новых зданий
+        6. Найти первое здание которое нужно качать
 
         Returns:
             {
@@ -591,7 +665,7 @@ class BuildingDatabase:
                 'current_level': 8,
                 'target_level': 10,
                 'is_lord': False,
-                'action': 'upgrade' или 'build'
+                'action': 'upgrade' или 'construct'
             }
             или None если всё готово
         """
@@ -623,14 +697,21 @@ class BuildingDatabase:
                     if not building:
                         # Здание не существует - нужно построить
                         if action == 'build':
-                            return {
-                                'name': name,
-                                'index': index,
-                                'current_level': 0,
-                                'target_level': target,
-                                'is_lord': False,
-                                'action': 'build'
-                            }
+                            # Проверяем условия постройки
+                            if self._can_construct_building(emulator_id, name):
+                                return {
+                                    'name': name,
+                                    'index': index,
+                                    'current_level': 0,
+                                    'target_level': target,
+                                    'is_lord': False,
+                                    'action': 'construct'
+                                }
+                        continue
+
+                    # КРИТИЧЕСКАЯ ПРОВЕРКА: нельзя улучшать выше уровня Лорда
+                    if building['current_level'] + 1 > lord_level:
+                        logger.debug(f"⏸️ {name} #{index}: уровень {building['current_level']+1} > Лорд {lord_level}")
                         continue
 
                     # Проверяем: не улучшается ли + не достигло target
@@ -652,14 +733,26 @@ class BuildingDatabase:
                 if not building:
                     # Здание не существует - нужно построить
                     if action == 'build':
-                        return {
-                            'name': name,
-                            'index': None,
-                            'current_level': 0,
-                            'target_level': target,
-                            'is_lord': (name == "Лорд"),
-                            'action': 'build'
-                        }
+                        # Проверяем условия постройки
+                        if self._can_construct_building(emulator_id, name):
+                            return {
+                                'name': name,
+                                'index': None,
+                                'current_level': 0,
+                                'target_level': target,
+                                'is_lord': (name == "Лорд"),
+                                'action': 'construct'
+                            }
+                        else:
+                            # Условия не выполнены, пропускаем
+                            logger.debug(f"⏸️ {name}: условия постройки не выполнены")
+                            continue
+                    continue
+
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: нельзя улучшать выше уровня Лорда
+                # (кроме самого Лорда)
+                if name != "Лорд" and building['current_level'] + 1 > lord_level:
+                    logger.debug(f"⏸️ {name}: уровень {building['current_level']+1} > Лорд {lord_level}")
                     continue
 
                 if (building['status'] != 'upgrading' and
@@ -707,83 +800,12 @@ class BuildingDatabase:
         """
         Проверка: можно ли строить НОВЫЕ здания?
 
-        Нельзя строить если Лорд сейчас улучшается
+        Вызывается из планировщика чтобы понять нужно ли включать эмулятор
         """
-        lord = self.get_building(emulator_id, "Лорд")
+        next_building = self.get_next_building_to_upgrade(emulator_id)
 
-        if not lord:
-            return True
-
-        if lord['status'] == 'upgrading':
-            logger.debug("⏳ Лорд улучшается - новые здания строить нельзя")
+        if not next_building:
             return False
 
-        return True
-
-    # ===== ЗАМОРОЗКА ЭМУЛЯТОРОВ =====
-
-    def freeze_emulator(self, emulator_id: int, reason: str, hours: int = 6):
-        """
-        Заморозить эмулятор на N часов
-
-        Args:
-            emulator_id: ID эмулятора
-            reason: причина заморозки
-            hours: количество часов
-        """
-        cursor = self.conn.cursor()
-
-        freeze_until = datetime.now() + timedelta(hours=hours)
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO emulator_freeze 
-            (emulator_id, freeze_until, reason)
-            VALUES (?, ?, ?)
-        """, (emulator_id, freeze_until, reason))
-
-        self.conn.commit()
-        logger.warning(f"❄️ Эмулятор {emulator_id} заморожен на {hours}ч: {reason}")
-
-    def is_emulator_frozen(self, emulator_id: int) -> bool:
-        """Проверка заморожен ли эмулятор"""
-        cursor = self.conn.cursor()
-
-        cursor.execute("""
-            SELECT freeze_until FROM emulator_freeze 
-            WHERE emulator_id = ? AND freeze_until > CURRENT_TIMESTAMP
-        """, (emulator_id,))
-
-        row = cursor.fetchone()
-        return row is not None
-
-    def unfreeze_emulator(self, emulator_id: int):
-        """Разморозить эмулятор"""
-        cursor = self.conn.cursor()
-
-        cursor.execute("""
-            DELETE FROM emulator_freeze 
-            WHERE emulator_id = ?
-        """, (emulator_id,))
-
-        self.conn.commit()
-        logger.info(f"☀️ Эмулятор {emulator_id} разморожен")
-
-    def cleanup_expired_freezes(self):
-        """Удалить все записи где freeze_until уже прошло"""
-        cursor = self.conn.cursor()
-
-        cursor.execute("""
-            DELETE FROM emulator_freeze 
-            WHERE freeze_until <= CURRENT_TIMESTAMP
-        """)
-
-        deleted_count = cursor.rowcount
-        self.conn.commit()
-
-        if deleted_count > 0:
-            logger.info(f"🧹 Очищено {deleted_count} истёкших заморозок")
-
-    def close(self):
-        """Закрыть соединение с БД"""
-        self.conn.close()
-        logger.debug("🔌 Соединение с БД закрыто")
+        # Если следующее действие - постройка
+        return next_building.get('action') == 'construct'
