@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple, Any
 from utils.logger import logger
 from utils.image_recognition import find_image, get_screenshot
+import re
 
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -221,39 +222,115 @@ class BuildingDatabase:
 
     # ===== ОПРЕДЕЛЕНИЕ КОЛИЧЕСТВА СТРОИТЕЛЕЙ =====
 
-    def detect_builders_count(self, emulator_id: int) -> Tuple[int, int]:
+    def detect_builders_count(self, emulator: dict) -> Tuple[int, int]:
         """
-        Определить количество строителей через шаблоны
+        Определить количество строителей через OCR
 
-        Область поиска: (10, 115, 145, 179)
+        Область поиска: (10, 115, 145, 179) - красный прямоугольник на скриншоте
+        Ожидаемый формат текста: "0/3", "1/3", "2/4" и т.д.
+
+        Args:
+            emulator: Объект эмулятора с полями {id, name, port}
 
         Returns:
-            (busy_count, total_count) - например (1, 3)
+            (busy_count, total_count) - например (1, 3) означает 1 занят из 3 всего
+
+        Raises:
+            ValueError: Если не удалось распознать текст
+
+        Examples:
+            >>> detect_builders_count({'id': 0, 'name': 'LD', 'port': 5554})
+            (0, 3)  # Все 3 строителя свободны
+
+            >>> detect_builders_count({'id': 1, 'name': 'LD-1', 'port': 5556})
+            (2, 4)  # 2 заняты из 4 строителей
         """
-        screenshot = get_screenshot(emulator_id)
+        from utils.ocr_engine import OCREngine
+        from utils.image_recognition import get_screenshot
+        # import cv2  # Раскомментируйте если используете предобработку
 
-        # Обрезаем скриншот до области поиска
-        x1, y1, x2, y2 = self.BUILDERS_SEARCH_AREA
-        search_area = screenshot[y1:y2, x1:x2]
+        # Получаем ID эмулятора для логов
+        emulator_id = emulator.get('id', 0)
+        emulator_name = emulator.get('name', f'Emulator-{emulator_id}')
 
-        # Проверяем шаблоны для 4 строителей
-        for busy in range(5):
-            template_path = self.BUILDER_TEMPLATES.get((busy, 4))
-            if template_path and os.path.exists(template_path):
-                if find_image(search_area, template_path, threshold=0.85):
-                    logger.info(f"🔨 Строители: {busy}/4")
-                    return (busy, 4)
+        # Получаем скриншот (теперь передаем объект эмулятора)
+        screenshot = get_screenshot(emulator)
+        if screenshot is None:
+            logger.error(f"❌ Не удалось получить скриншот эмулятора {emulator_name}")
+            return (0, 3)  # Безопасное значение по умолчанию
 
-        # Проверяем шаблоны для 3 строителей
-        for busy in range(4):
-            template_path = self.BUILDER_TEMPLATES.get((busy, 3))
-            if template_path and os.path.exists(template_path):
-                if find_image(search_area, template_path, threshold=0.85):
-                    logger.info(f"🔨 Строители: {busy}/3")
-                    return (busy, 3)
+        # Область поиска слотов строительства
+        x1, y1, x2, y2 = self.BUILDERS_SEARCH_AREA  # (10, 115, 145, 179)
 
-        # По умолчанию (если ничего не найдено)
-        logger.warning("⚠️ Не удалось определить строителей, по умолчанию 0/3")
+        # Создаем OCR движок (если еще не создан)
+        if not hasattr(self, '_ocr_engine'):
+            self._ocr_engine = OCREngine(lang='en')  # Английский для цифр
+            logger.debug("✅ OCR движок инициализирован для парсинга строителей")
+
+        # ОПЦИОНАЛЬНО: Предобработка для улучшения распознавания на размытом фоне
+        # Раскомментируйте если OCR плохо распознает цифры:
+        # region_crop = screenshot[y1:y2, x1:x2]
+        # gray = cv2.cvtColor(region_crop, cv2.COLOR_BGR2GRAY)
+        # # Увеличение контраста
+        # gray = cv2.convertScaleAbs(gray, alpha=1.5, beta=30)
+        # # Бинаризация (делает текст четче)
+        # _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # # Конвертируем обратно в BGR для OCR
+        # preprocessed = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+        # # Используем preprocessed вместо screenshot в recognize_text
+
+        # Распознаем текст в области
+        elements = self._ocr_engine.recognize_text(
+            screenshot,
+            region=(x1, y1, x2, y2),
+            min_confidence=0.5  # Низкий порог для распознавания цифр
+        )
+
+        # Ищем паттерн "X/Y" в распознанном тексте
+        builder_pattern = re.compile(r'(\d+)\s*/\s*(\d+)')
+
+        for element in elements:
+            text = element['text'].strip()
+            match = builder_pattern.search(text)
+
+            if match:
+                busy = int(match.group(1))
+                total = int(match.group(2))
+
+                # Валидация (в игре может быть только 3 или 4 строителя)
+                if total in [3, 4] and 0 <= busy <= total:
+                    logger.info(f"🔨 Строители: {busy}/{total} (распознано через OCR)")
+                    return (busy, total)
+                else:
+                    logger.warning(f"⚠️ Некорректные значения: {busy}/{total}, игнорируем")
+
+        # Если ничего не распознано - пробуем с более низким порогом уверенности
+        logger.debug("🔍 Первая попытка не удалась, пробуем с min_confidence=0.3")
+
+        elements = self._ocr_engine.recognize_text(
+            screenshot,
+            region=(x1, y1, x2, y2),
+            min_confidence=0.3  # Еще ниже для цифр на размытом фоне
+        )
+
+        for element in elements:
+            text = element['text'].strip()
+            match = builder_pattern.search(text)
+
+            if match:
+                busy = int(match.group(1))
+                total = int(match.group(2))
+
+                if total in [3, 4] and 0 <= busy <= total:
+                    logger.info(f"🔨 Строители: {busy}/{total} (распознано с низкой уверенностью)")
+                    return (busy, total)
+
+        # Если ничего не распознано - логируем для отладки
+        logger.warning(f"⚠️ Не удалось распознать слоты строителей")
+        logger.debug(f"📊 Распознанные элементы: {[e['text'] for e in elements]}")
+
+        # Значение по умолчанию (безопасное предположение)
+        logger.info("ℹ️ Используем значение по умолчанию: 0/3")
         return (0, 3)
 
     # ===== РАБОТА С ЗДАНИЯМИ =====

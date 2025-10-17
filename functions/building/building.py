@@ -55,6 +55,47 @@ class BuildingFunction(BaseFunction):
         """
         emulator_id = self.emulator.get('id', 0)
 
+        # ПРОВЕРКА 0: Инициализация строителей (первый запуск)
+        # Проверяем есть ли записи в таблице builders для этого эмулятора
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM builders WHERE emulator_id = ?
+            """, (emulator_id,))
+            builders_count = cursor.fetchone()[0]
+
+            if builders_count == 0:
+                logger.info(f"[{self.emulator_name}] 🔍 Первый запуск: определяю количество строителей через OCR...")
+
+                # Распознаем строителей через OCR (передаем полный объект эмулятора)
+                busy, total = self.db.detect_builders_count(self.emulator)
+
+                logger.info(f"[{self.emulator_name}] 🔨 Обнаружено строителей: {busy}/{total}")
+
+                # Инициализируем строителей в БД
+                self.db.init_emulator_builders(emulator_id, slots=total)
+
+                # Если есть занятые строители - отмечаем их в БД
+                if busy > 0:
+                    logger.warning(f"[{self.emulator_name}] ⚠️ {busy} строителей уже заняты, но таймеры неизвестны")
+                    # Можно добавить логику для парсинга таймеров через панель навигации
+                    # Пока просто отмечаем их как занятых без таймера
+                    for slot in range(1, busy + 1):
+                        cursor.execute("""
+                            UPDATE builders 
+                            SET is_busy = 1 
+                            WHERE emulator_id = ? AND builder_slot = ?
+                        """, (emulator_id, slot))
+                    self.db.conn.commit()
+
+                logger.success(f"[{self.emulator_name}] ✅ Строители инициализированы: {total - busy} свободных")
+
+        except Exception as e:
+            logger.error(f"[{self.emulator_name}] ❌ Ошибка при инициализации строителей: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
         # ПРОВЕРКА 1: Заморозка эмулятора
         if self.db.is_emulator_frozen(emulator_id):
             freeze_info = self.db.get_freeze_info(emulator_id)
@@ -74,7 +115,7 @@ class BuildingFunction(BaseFunction):
             return False
 
         logger.debug(f"[{self.emulator_name}] ✅ Можно строить: {free_builders} строителей, "
-                    f"следующее здание: {next_building['name']}")
+                     f"следующее здание: {next_building['name']}")
         return True
 
     def execute(self) -> bool:
