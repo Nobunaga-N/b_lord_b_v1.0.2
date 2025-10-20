@@ -395,7 +395,7 @@ class NavigationPanel:
 
         return True
 
-    @retry_with_recovery(max_attempts=2, recovery_between_attempts=True)  # НОВОЕ: Декоратор для retry
+    @retry_with_recovery(max_attempts=2, recovery_between_attempts=True)
     def navigate_to_building(self, emulator: Dict, building_name: str) -> bool:
         """
         Навигация к зданию с использованием конфигурации
@@ -404,7 +404,7 @@ class NavigationPanel:
         Полный процесс:
         1. Открыть панель навигации
         2. Выбрать правильную вкладку (Список дел / Список зданий)
-        3. Свернуть все разделы
+        3. Свернуть все разделы + свайпы вверх для гарантии
         4. Выполнить свайпы для доступа к разделу (если нужно)
         5. Открыть раздел
         6. Выполнить свайпы для доступа к подвкладке (если есть)
@@ -462,9 +462,9 @@ class NavigationPanel:
             self.switch_to_buildings_tab(emulator)
             time.sleep(0.5)
 
-            # 4. Свернуть все разделы
-            if not self.collapse_all_sections(emulator):
-                logger.warning(f"[{emulator_name}] ⚠️ Не удалось свернуть все разделы")
+            # 4. ИСПРАВЛЕНО: Сбросить состояние навигации (гарантирует свайпы вверх)
+            logger.debug(f"[{emulator_name}] Сброс состояния панели навигации...")
+            self.reset_navigation_state(emulator)
 
             # 6. Открыть раздел
             section_name = building_config.get('section')
