@@ -81,6 +81,9 @@ class BuildingConstruction:
         "Склад Грунта II": os.path.join(BASE_DIR, 'data', 'templates', 'building', 'construction', 'buildings', 'sklad_grunta_2.png'),
         "Склад Песка II": os.path.join(BASE_DIR, 'data', 'templates', 'building', 'construction', 'buildings', 'sklad_peska_2.png'),
         "Жилище Детенышей": os.path.join(BASE_DIR, 'data', 'templates', 'building', 'construction', 'buildings', 'jiliche_detenyshey_5.png'),
+        "Склад Песка III": os.path.join(BASE_DIR, 'data', 'templates', 'building', 'construction', 'buildings', 'sklad_peska_3.png'),
+        "Склад Листьев III": os.path.join(BASE_DIR, 'data', 'templates', 'building', 'construction', 'buildings', 'sklad_listev_3.png'),
+        "Склад Грунта III": os.path.join(BASE_DIR, 'data', 'templates', 'building', 'construction', 'buildings', 'sklad_grunta_3.png'),
     }
 
     CONFIRM_BUTTON_TEMPLATE = os.path.join(BASE_DIR, 'data', 'templates', 'building', 'construction', 'button_confirm.png')
