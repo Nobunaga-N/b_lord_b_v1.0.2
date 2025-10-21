@@ -1,5 +1,6 @@
 """
 Настройка логирования через loguru
+С интеграцией журнала критических ошибок
 """
 
 import os
@@ -18,6 +19,7 @@ def setup_logger():
     - SUCCESS: зелёный
     - WARNING: жёлтый
     - ERROR: красный
+    - CRITICAL: красный
     - DEBUG: синий
     """
 
@@ -71,8 +73,80 @@ def setup_logger():
         colorize=True,
     )
 
+    # === НОВОЕ: Обработчик для журнала критических ошибок ===
+    logger.add(
+        _error_log_sink,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+        level="ERROR",  # Ловим ERROR и CRITICAL
+        colorize=False,
+        backtrace=True,
+        diagnose=True,
+    )
+
     logger.info("Логирование настроено")
     logger.debug(f"Файл логов: data/logs/bot.log")
+
+
+def _error_log_sink(message):
+    """
+    Кастомный sink для перехвата ERROR и CRITICAL логов
+    Отправляет их в ErrorLogManager
+
+    Args:
+        message: объект Record из loguru
+    """
+    try:
+        # Импортируем здесь чтобы избежать циклических импортов
+        from utils.error_log_manager import error_log_manager
+
+        record = message.record
+
+        # Извлекаем данные
+        level = record["level"].name
+        text = record["message"]
+        formatted_line = f"[{record['time'].strftime('%H:%M:%S')}] {level: <8} | {text}"
+
+        # Добавляем в журнал ошибок
+        error_log_manager.add_error(
+            log_line=formatted_line,
+            level=level,
+            message=text
+        )
+
+    except Exception:
+        # Игнорируем ошибки в обработчике чтобы не сломать логирование
+        pass
+
+
+def _log_line_sink(message):
+    """
+    Кастомный sink для сбора всех строк лога (для контекста)
+
+    Args:
+        message: объект Record из loguru
+    """
+    try:
+        from utils.error_log_manager import error_log_manager
+
+        record = message.record
+        formatted_line = f"[{record['time'].strftime('%H:%M:%S')}] {record['level'].name: <8} | {record['message']}"
+
+        # Добавляем строку в буфер контекста
+        error_log_manager.add_log_line(formatted_line)
+
+    except Exception:
+        pass
+
+
+# Дополнительно добавляем sink для сбора всех строк (для контекста)
+def add_context_collector():
+    """Добавить коллектор контекста после основной настройки"""
+    logger.add(
+        _log_line_sink,
+        format="{message}",
+        level="DEBUG",
+        colorize=False,
+    )
 
 
 def open_log_terminal():
@@ -83,72 +157,68 @@ def open_log_terminal():
     1. Windows Terminal + PowerShell 7+ (pwsh)
     2. Windows Terminal + PowerShell 5 (powershell)
     3. PowerShell 7+ отдельное окно (pwsh)
-    4. PowerShell 5 отдельное окно (powershell)
-
-    Returns:
-        bool: True если терминал открыт успешно
+    4. PowerShell 5 отдельное окно (fallback)
     """
 
-    log_path = os.path.abspath("data/logs/bot.log")
-
-    # Убедиться что файл логов существует
-    if not os.path.exists(log_path):
-        # Создать пустой файл
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        open(log_path, 'a', encoding='utf-8').close()
-
-    # Создаём временный PowerShell скрипт
+    # Путь к PowerShell скрипту
     script_path = os.path.abspath("data/logs/tail_logs.ps1")
 
-    # PowerShell скрипт с правильной кодировкой
-    ps_script_content = f"""# Установка кодировки UTF-8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
+    # Создаем PowerShell скрипт если его нет
+    if not os.path.exists(script_path):
+        logger.info("Создание PowerShell скрипта для логов...")
+        os.makedirs(os.path.dirname(script_path), exist_ok=True)
 
-# Красивый разделитель с временем запуска
-$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "    🚀 Beast Lord Bot - Логи в реальном времени" -ForegroundColor Green
-Write-Host "    📅 Запуск терминала: $timestamp" -ForegroundColor Yellow
-Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host ""
-
-# Вывод ТОЛЬКО новых логов (без старых)
-Get-Content -Path "{log_path}" -Wait -Tail 0 -Encoding UTF8
-"""
-
-    try:
         with open(script_path, 'w', encoding='utf-8') as f:
-            f.write(ps_script_content)
-    except Exception as e:
-        logger.error(f"Не удалось создать PowerShell скрипт: {e}")
-        return False
+            f.write("""# PowerShell скрипт для просмотра логов в реальном времени
+$logFile = "bot.log"
+
+Write-Host "==================================" -ForegroundColor Cyan
+Write-Host "Beast Lord Bot - Логи" -ForegroundColor Cyan
+Write-Host "==================================" -ForegroundColor Cyan
+Write-Host ""
+
+if (Test-Path $logFile) {
+    Write-Host "Мониторинг: $logFile" -ForegroundColor Green
+    Write-Host "Нажмите Ctrl+C для выхода" -ForegroundColor Yellow
+    Write-Host ""
+    Get-Content $logFile -Wait -Tail 30
+} else {
+    Write-Host "Ошибка: Файл $logFile не найден" -ForegroundColor Red
+    Write-Host "Убедитесь что бот запущен" -ForegroundColor Yellow
+    Read-Host "Нажмите Enter для выхода"
+}
+""")
 
     # ===== ПОПЫТКА 1: Windows Terminal + PowerShell 7+ =====
     try:
-        command = f'wt.exe pwsh -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
+        # Проверяем наличие Windows Terminal
+        wt_path = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe")
 
-        subprocess.Popen(command, shell=True)
-        logger.success("Windows Terminal с PowerShell 7+ открыт")
-        return True
+        if os.path.exists(wt_path):
+            # Пробуем с pwsh
+            command = f'start wt.exe -d data/logs pwsh -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
+
+            subprocess.Popen(command, shell=True)
+            logger.success("Windows Terminal + PowerShell 7+ открыт")
+            return True
 
     except FileNotFoundError:
-        logger.debug("Windows Terminal не найден или PowerShell 7+ не установлен")
+        logger.debug("Windows Terminal не найден")
     except Exception as e:
         logger.debug(f"Не удалось запустить wt.exe + pwsh: {e}")
 
     # ===== ПОПЫТКА 2: Windows Terminal + PowerShell 5 =====
     try:
-        command = f'wt.exe powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
+        wt_path = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe")
 
-        subprocess.Popen(command, shell=True)
-        logger.success("Windows Terminal с PowerShell 5 открыт")
-        logger.warning("Используется PowerShell 5 (установите PowerShell 7+ для лучшей производительности)")
-        return True
+        if os.path.exists(wt_path):
+            command = f'start wt.exe -d data/logs powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
 
-    except FileNotFoundError:
-        logger.debug("Windows Terminal не найден")
+            subprocess.Popen(command, shell=True)
+            logger.success("Windows Terminal + PowerShell 5 открыт")
+            logger.warning("Установите PowerShell 7+ для лучшей производительности")
+            return True
+
     except Exception as e:
         logger.debug(f"Не удалось запустить wt.exe + powershell: {e}")
 
@@ -191,3 +261,4 @@ def get_logger():
 
 # При импорте автоматически настроить логгер
 setup_logger()
+add_context_collector()
