@@ -12,10 +12,13 @@
 
 import os
 import time
-from typing import Dict, Optional
+import re
+from typing import Dict, Optional, Tuple
 from utils.adb_controller import tap, swipe, press_key
 from utils.image_recognition import find_image
 from utils.logger import logger
+from utils.image_recognition import find_image, get_screenshot
+
 
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -124,67 +127,289 @@ class BuildingConstruction:
 
         logger.info("✅ BuildingConstruction инициализирован")
 
-    def construct_building(self, emulator: Dict, building_name: str, building_index: Optional[int] = None) -> bool:
-        """ГЛАВНЫЙ МЕТОД - Построить новое здание"""
+    def construct_building(self, emulator: Dict, building_name: str,
+                           building_index: Optional[int] = None) -> Tuple[bool, Optional[int]]:
+        """
+        ГЛАВНЫЙ МЕТОД - Построить новое здание
+
+        Args:
+            emulator: объект эмулятора
+            building_name: название здания
+            building_index: индекс (для множественных зданий)
+
+        Returns:
+            (success, timer_seconds):
+            - (True, 3600) - постройка началась, таймер 1 час
+            - (True, 0) - постройка завершилась мгновенно (помощь альянса)
+            - (False, None) - нехватка ресурсов
+        """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
         building_display = f"{building_name}" + (f" #{building_index}" if building_index else "")
 
         logger.info(f"[{emulator_name}] 🏗️ Начало постройки: {building_display}")
 
-        if self._try_construct(emulator, building_name):
+        # Попытка 1
+        result = self._try_construct(emulator, building_name)
+        if result[0]:  # success
             logger.success(f"[{emulator_name}] ✅ Здание построено: {building_display}")
-            return True
+            return result
 
         logger.warning(f"[{emulator_name}] ⚠️ Первая попытка неудачна, повторяем...")
         time.sleep(2)
 
-        if self._try_construct(emulator, building_name):
+        # Попытка 2
+        result = self._try_construct(emulator, building_name)
+        if result[0]:  # success
             logger.success(f"[{emulator_name}] ✅ Здание построено (попытка 2): {building_display}")
-            return True
+            return result
 
         logger.error(f"[{emulator_name}] ❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось построить {building_display}")
-        return False
+        return (False, None)
 
-    def _try_construct(self, emulator: Dict, building_name: str) -> bool:
-        """Одна попытка постройки здания"""
+    def _try_construct(self, emulator: Dict, building_name: str) -> Tuple[bool, Optional[int]]:
+        """
+        Одна попытка постройки здания
+
+        Returns:
+            (success, timer_seconds)
+        """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        # ШАГ 1: Открыть меню постройки (лопата)
-        if not self._open_construction_menu(emulator):
-            logger.error(f"[{emulator_name}] ❌ Не удалось открыть меню постройки")
-            return False
+        # ШАГ 1: Клик молоточка
+        if not self._click_hammer(emulator):
+            return (False, None)
 
-        # ШАГ 2: Выбрать категорию
-        category = self.BUILDING_TO_CATEGORY.get(building_name)
-        if not category or not self._select_category(emulator, category):
-            logger.error(f"[{emulator_name}] ❌ Не удалось выбрать категорию")
-            return False
+        # ШАГ 2: Выбор категории
+        category = self._get_building_category(building_name)
+        if not self._select_category(emulator, category):
+            return (False, None)
 
-        # ШАГ 3: Найти и кликнуть по зданию
+        # ШАГ 3: Поиск здания
         if not self._find_and_click_building(emulator, building_name):
-            logger.error(f"[{emulator_name}] ❌ Не удалось найти здание")
-            press_key(emulator, "BACK")
+            return (False, None)
+
+        # ШАГ 4: Клик "Построить"
+        if not self._click_build_button(emulator):
+            return (False, None)
+
+        # ШАГ 5: Обработка окна постройки (аналогично улучшению)
+        build_result = self._handle_build_window(emulator)
+
+        if build_result == "no_resources":
+            # Нехватка ресурсов
+            logger.warning(f"[{emulator_name}] ❌ Недостаточно ресурсов")
+            return (False, None)
+
+        elif build_result == "started":
+            # Постройка началась
+            logger.success(f"[{emulator_name}] ✅ Постройка началась")
+
+            # ШАГ 6: Парсинг таймера (аналогично BuildingUpgrade)
+            timer_seconds = self._parse_construction_timer(emulator)
+
+            if timer_seconds is None:
+                # Таймер не найден - возможно быстрое завершение
+                logger.info(f"[{emulator_name}] 🚀 Возможно быстрое завершение (помощь альянса)")
+                return (True, 0)
+
+            logger.info(f"[{emulator_name}] ⏱️ Таймер постройки: {self._format_time(timer_seconds)}")
+            return (True, timer_seconds)
+
+        else:
+            # Неизвестная ошибка
+            logger.error(f"[{emulator_name}] ❌ Неизвестная ошибка при постройке")
+            return (False, None)
+
+    def _parse_construction_timer(self, emulator: Dict) -> Optional[int]:
+        """
+        Спарсить таймер постройки через иконку "Ускорить"
+
+        Аналогично BuildingUpgrade._parse_upgrade_timer()
+
+        Returns:
+            секунды или None (если таймер не найден - быстрое завершение)
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        logger.debug(f"[{emulator_name}] Поиск иконки 'Ускорить' для парсинга таймера...")
+
+        # Шаблон иконки "Ускорить" (две стрелки вправо)
+        speedup_icon_template = os.path.join(
+            BASE_DIR, 'data', 'templates', 'building', 'speedup_icon.png'
+        )
+
+        # Поиск иконки (макс 5 попыток)
+        speedup_coords = None
+        for attempt in range(5):
+            result = find_image(emulator, speedup_icon_template, threshold=0.7)
+            if result:
+                speedup_coords = result
+                break
             time.sleep(1)
-            return False
 
-        # ШАГ 4: Кликнуть "Подтвердить"
-        if not self._click_confirm(emulator):
-            logger.error(f"[{emulator_name}] ❌ Не удалось кликнуть Подтвердить")
-            press_key(emulator, "BACK")
-            time.sleep(1)
-            return False
+        if not speedup_coords:
+            # Иконка не найдена - возможно быстрое завершение
+            logger.debug(f"[{emulator_name}] Иконка 'Ускорить' не найдена (быстрое завершение?)")
+            return None
 
-        # ШАГ 5: НОВОЕ - Кликнуть молоточек и "Построить"
-        if not self._click_hammer_and_build(emulator):
-            logger.error(f"[{emulator_name}] ❌ Не удалось завершить постройку через молоточек")
-            return False
+        # Кликаем по иконке
+        center_x, center_y = speedup_coords
+        tap(emulator, x=center_x, y=center_y)
+        time.sleep(1.5)
 
-        # ШАГ 6: Проверить что здание построено
-        if not self._verify_construction(emulator, building_name):
-            logger.error(f"[{emulator_name}] ❌ Здание не появилось после постройки")
-            return False
+        # Получаем скриншот
+        screenshot = get_screenshot(emulator)
+        if screenshot is None:
+            logger.error(f"[{emulator_name}] ❌ Не удалось получить скриншот")
+            return None
 
-        return True
+        # Область таймера (x1, y1, x2, y2)
+        TIMER_AREA = (213, 67, 335, 106)
+
+        # Парсим таймер через OCR
+        elements = self.ocr.recognize_text(
+            screenshot,
+            region=TIMER_AREA,
+            min_confidence=0.5
+        )
+
+        # Ищем таймер в формате HH:MM:SS или D:HH:MM:SS
+        timer_pattern = re.compile(r'(\d+):(\d{2}):(\d{2}):(\d{2})|(\d{2}):(\d{2}):(\d{2})')
+
+        for elem in elements:
+            text = elem['text'].strip()
+            match = timer_pattern.search(text)
+
+            if match:
+                if match.group(1):  # Формат D:HH:MM:SS
+                    days = int(match.group(1))
+                    hours = int(match.group(2))
+                    minutes = int(match.group(3))
+                    seconds = int(match.group(4))
+                    total_seconds = days * 86400 + hours * 3600 + minutes * 60 + seconds
+                else:  # Формат HH:MM:SS
+                    hours = int(match.group(5))
+                    minutes = int(match.group(6))
+                    seconds = int(match.group(7))
+                    total_seconds = hours * 3600 + minutes * 60 + seconds
+
+                logger.debug(f"[{emulator_name}] Таймер распознан: {text} ({total_seconds} сек)")
+
+                # Закрываем окно
+                press_key(emulator, "ESC")
+                time.sleep(0.5)
+
+                return total_seconds
+
+        logger.warning(f"[{emulator_name}] ⚠️ Не удалось распознать таймер")
+
+        # Закрываем окно
+        press_key(emulator, "ESC")
+        time.sleep(0.5)
+
+        return None
+
+    def _handle_build_window(self, emulator: Dict) -> str:
+        """
+        Обработать окно постройки здания
+
+        Аналогично BuildingUpgrade._handle_upgrade_window()
+
+        Варианты:
+        1. Кнопка "Построить" - ресурсов хватает
+        2. Кнопка "Пополнить ресурсы" - автопополнение
+           2а. Окно "Пополнить ресурсы" - подтвердить
+           2б. Окно "Недостаточно ресурсов" - заморозка
+
+        Returns:
+            "started" - постройка началась
+            "no_resources" - нехватка ресурсов
+            "error" - ошибка
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        time.sleep(1.5)  # Ждем появления окна
+
+        # Шаблоны кнопок
+        button_build = os.path.join(BASE_DIR, 'data', 'templates', 'building', 'construction', 'button_build.png')
+        button_refill = os.path.join(BASE_DIR, 'data', 'templates', 'building', 'button_refill.png')
+
+        # ВАРИАНТ 1: Кнопка "Построить"
+        result = find_image(emulator, button_build, threshold=0.85)
+        if result:
+            logger.debug(f"[{emulator_name}] Кнопка 'Построить' - кликаем")
+            center_x, center_y = result
+            tap(emulator, x=center_x, y=center_y)
+            time.sleep(2)
+            return "started"
+
+        # ВАРИАНТ 2: Кнопка "Пополнить ресурсы"
+        result = find_image(emulator, button_refill, threshold=0.85)
+        if result:
+            logger.debug(f"[{emulator_name}] Кнопка 'Пополнить ресурсы' - кликаем")
+            center_x, center_y = result
+            tap(emulator, x=center_x, y=center_y)
+            time.sleep(2)
+
+            # Обрабатываем подокно
+            return self._handle_refill_window(emulator)
+
+        logger.warning(f"[{emulator_name}] ⚠️ Не найдены кнопки постройки")
+        return "error"
+
+    def _handle_refill_window(self, emulator: Dict) -> str:
+        """
+        Обработать окно пополнения ресурсов
+
+        Аналогично BuildingUpgrade._handle_refill_window()
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        time.sleep(1.5)
+
+        # Шаблоны окон
+        window_refill = os.path.join(BASE_DIR, 'data', 'templates', 'building', 'window_refill.png')
+        window_no_resources = os.path.join(BASE_DIR, 'data', 'templates', 'building', 'window_no_resources.png')
+        button_confirm = os.path.join(BASE_DIR, 'data', 'templates', 'building', 'button_confirm.png')
+
+        # ВАРИАНТ 1: Окно "Пополнить ресурсы одним кликом"
+        if find_image(emulator, window_refill, threshold=0.85):
+            logger.debug(f"[{emulator_name}] Окно 'Пополнить ресурсы' - подтверждаем")
+
+            result = find_image(emulator, button_confirm, threshold=0.85)
+            if result:
+                center_x, center_y = result
+                tap(emulator, x=center_x, y=center_y)
+                time.sleep(2)
+                return "started"
+
+        # ВАРИАНТ 2: Окно "Недостаточно ресурсов"
+        if find_image(emulator, window_no_resources, threshold=0.85):
+            logger.warning(f"[{emulator_name}] ⚠️ Окно 'Недостаточно ресурсов'")
+
+            # 2x ESC для закрытия
+            press_key(emulator, "ESC")
+            time.sleep(0.5)
+            press_key(emulator, "ESC")
+            time.sleep(0.5)
+
+            return "no_resources"
+
+        logger.warning(f"[{emulator_name}] ⚠️ Неизвестное окно после пополнения")
+        return "error"
+
+    def _format_time(self, seconds: int) -> str:
+        """Форматировать секунды в читаемый вид"""
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+
+        if hours > 0:
+            return f"{hours}ч {minutes}м {secs}с"
+        elif minutes > 0:
+            return f"{minutes}м {secs}с"
+        else:
+            return f"{secs}с"
 
     def _open_construction_menu(self, emulator: Dict) -> bool:
         """Открыть меню постройки (клик лопаты)"""
