@@ -19,6 +19,20 @@
 lord_10:
   # Промежуточные здания перед Лордом 11
   buildings:
+    - name: "Куст"
+      count: 4
+      target_level: 10
+      type: "multiple"
+      action: "upgrade"
+      note: "4 куста до 10 ур"
+
+    - name: "Пруд"
+      count: 4
+      target_level: 8
+      type: "multiple"
+      action: "upgrade"
+      note: "4 пруда до 8 ур"
+
     - name: "Улей"
       count: 3
       target_level: 10
@@ -37,19 +51,11 @@ lord_10:
       type: "multiple"
       action: "upgrade"
 
-    - name: "Куст"
+    - name: "Ферма Грунта"
       count: 4
       target_level: 10
       type: "multiple"
       action: "upgrade"
-      note: "4 куста до 10 ур"
-
-    - name: "Пруд"
-      count: 4
-      target_level: 8
-      type: "multiple"
-      action: "upgrade"
-      note: "4 пруда до 8 ур"
 
     # 🆕 ДОБАВЛЕНО: Луг (3 шт до 10 ур)
     - name: "Луг"
