@@ -218,6 +218,10 @@ class BuildingDatabase:
                         'action': action
                     }
                 else:
+                    # ✅ ИСПРАВЛЕНО: Обновляем максимальный count если нашли больший
+                    if count > unique_buildings[name]['count']:
+                        unique_buildings[name]['count'] = count
+
                     # Обновляем максимальный target_level если нашли больший
                     if target > unique_buildings[name]['max_target_level']:
                         unique_buildings[name]['max_target_level'] = target
