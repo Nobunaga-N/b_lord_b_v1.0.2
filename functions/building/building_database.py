@@ -160,7 +160,9 @@ class BuildingDatabase:
         """
         Извлечь уникальный список зданий из building_order.yaml
 
-        ИСПРАВЛЕНО: Правильно определяет action для каждого экземпляра множественного здания
+        ИСПРАВЛЕНО:
+        - Правильно определяет action для каждого экземпляра множественного здания
+        - Для множественных зданий отслеживает ПЕРСОНАЛЬНЫЙ target_level для КАЖДОГО экземпляра
 
         КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: После появления action='build' для здания,
         последующие action='upgrade' с большим count не увеличивают built_count,
@@ -171,6 +173,7 @@ class BuildingDatabase:
         - Отслеживаем для каждого здания сколько экземпляров УЖЕ ПОСТРОЕНО
         - action='upgrade' с count=N означает что N экземпляров построены (только если не было action='build')
         - action='build' означает что строится НОВЫЙ экземпляр
+        - Для множественных зданий: target обновляется только для первых count экземпляров
 
         Returns:
             list: список записей для БД с полями:
@@ -179,7 +182,6 @@ class BuildingDatabase:
         logger.debug("📋 Извлечение уникального списка зданий из конфига...")
 
         # Словарь для отслеживания зданий
-        # key: name, value: {built_count: int, total_count: int, max_target: int, type: str, has_build_action: bool}
         buildings_tracking = {}
 
         # Проверяем что конфиг загружен
@@ -216,36 +218,55 @@ class BuildingDatabase:
                 # Инициализируем отслеживание для этого здания
                 if name not in buildings_tracking:
                     buildings_tracking[name] = {
-                        'built_count': 0,  # Сколько экземпляров уже построено
-                        'total_count': 0,  # Сколько экземпляров будет всего
-                        'max_target_level': 0,
+                        'built_count': 0,
+                        'total_count': 0,
+                        'target_by_index': {},  # словарь {index: target_level}
+                        'max_target': 0,  # для уникальных зданий
                         'type': btype,
-                        'has_build_action': False  # Встречалось ли action='build'
+                        'has_build_action': False
                     }
 
                 # ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ
-                # Обновляем информацию о здании
                 if action == 'upgrade':
-                    # Эти экземпляры УЖЕ ПОСТРОЕНЫ
-                    # НО: если уже встречался action='build', НЕ увеличиваем built_count!
-                    # Потому что дальнейшие upgrade с большим count означают
-                    # прокачку ВКЛЮЧАЯ только что построенные здания
+                    # Если уже встречался action='build', НЕ увеличиваем built_count!
                     if not buildings_tracking[name]['has_build_action']:
                         if count > buildings_tracking[name]['built_count']:
                             buildings_tracking[name]['built_count'] = count
+
+                    # 🆕 ИСПРАВЛЕНО: Проверяем ТИП здания, а не count!
+                    if btype == 'multiple':
+                        # Множественное здание - обновляем target для первых count экземпляров
+                        for index in range(1, count + 1):
+                            # Обновляем target только если новый больше
+                            current_target = buildings_tracking[name]['target_by_index'].get(index, 0)
+                            if target > current_target:
+                                buildings_tracking[name]['target_by_index'][index] = target
+                    else:
+                        # Уникальное здание
+                        if target > buildings_tracking[name]['max_target']:
+                            buildings_tracking[name]['max_target'] = target
 
                 elif action == 'build':
                     # Строятся НОВЫЕ экземпляры
                     if count > buildings_tracking[name]['total_count']:
                         buildings_tracking[name]['total_count'] = count
+
                     # Отмечаем что встретили action='build'
                     buildings_tracking[name]['has_build_action'] = True
 
-                # Обновляем максимальный target_level
-                if target > buildings_tracking[name]['max_target_level']:
-                    buildings_tracking[name]['max_target_level'] = target
+                    # Для новопостроенных зданий устанавливаем target
+                    if btype == 'multiple':
+                        # Множественное здание
+                        for index in range(buildings_tracking[name]['built_count'] + 1, count + 1):
+                            # Новые экземпляры (еще не построенные)
+                            if index not in buildings_tracking[name]['target_by_index']:
+                                buildings_tracking[name]['target_by_index'][index] = target
+                    else:
+                        # Уникальное здание
+                        if target > buildings_tracking[name]['max_target']:
+                            buildings_tracking[name]['max_target'] = target
 
-                # Обновляем общее количество (на случай если total не обновился из build)
+                # Обновляем общее количество
                 if count > buildings_tracking[name]['total_count']:
                     buildings_tracking[name]['total_count'] = count
 
@@ -253,11 +274,12 @@ class BuildingDatabase:
         result = []
 
         for name, data in buildings_tracking.items():
-            built_count = data['built_count']  # Сколько уже построено
-            total_count = data['total_count']  # Сколько будет всего
-            max_target = data['max_target_level']
+            built_count = data['built_count']
+            total_count = data['total_count']
+            target_by_index = data['target_by_index']
+            max_target = data['max_target']
             btype = data['type']
-            has_build_action = data['has_build_action']  # Встречалось ли action='build'
+            has_build_action = data['has_build_action']
 
             if total_count > 1:
                 # Множественное здание - создаем запись для каждого экземпляра
@@ -267,16 +289,18 @@ class BuildingDatabase:
                     # Если индекс > built_count → здание НУЖНО ПОСТРОИТЬ (action='build')
                     instance_action = 'upgrade' if index <= built_count else 'build'
 
+                    # Получаем ПЕРСОНАЛЬНЫЙ target для этого экземпляра
+                    instance_target = target_by_index.get(index, 1)
+
                     result.append({
                         'name': name,
                         'index': index,
-                        'max_target_level': max_target,
+                        'max_target_level': instance_target,
                         'type': btype,
                         'action': instance_action
                     })
             else:
                 # Уникальное здание
-                # ✅ ИСПРАВЛЕНО: Если встречалось action='build' → нужно строить
                 unique_action = 'build' if has_build_action else 'upgrade'
 
                 result.append({
@@ -289,8 +313,9 @@ class BuildingDatabase:
 
         logger.info(f"✅ Найдено {len(result)} записей зданий")
 
-        # Дебаг: выводим первые 5 записей
-        for i, b in enumerate(result[:5], 1):
+        # Дебаг: выводим первые 10 записей
+        logger.debug(f"\n📋 Первые 10 записей:")
+        for i, b in enumerate(result[:10], 1):
             index_str = f"#{b['index']}" if b['index'] else ""
             logger.debug(f"  {i}. {b['name']}{index_str} (max_level={b['max_target_level']}, action={b['action']})")
 
