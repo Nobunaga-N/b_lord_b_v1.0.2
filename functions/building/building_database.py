@@ -513,25 +513,44 @@ class BuildingDatabase:
             found_by_name = {}
 
             for building in all_buildings_on_screen:
-                # Нормализуем название
-                building_name_normalized = building['name'].lower().replace(' ', '')
+                building_name = building['name']
 
-                # Ищем соответствие для каждого здания из текущего раздела
+                # Проверяем, относится ли это здание к текущему разделу
+                is_relevant = False
                 for target_name, target_index in buildings_in_section:
-                    target_normalized = target_name.lower().replace(' ', '')
+                    # Нормализуем названия для сравнения
+                    target_normalized = target_name.lower().replace(' ', '').replace('ё', 'е')
+                    building_normalized = building_name.lower().replace(' ', '').replace('ё', 'е')
 
-                    # Проверяем совпадение названий
-                    if target_normalized in building_name_normalized or building_name_normalized in target_normalized:
-                        if target_name not in found_by_name:
-                            found_by_name[target_name] = []
+                    # Проверяем совпадение
+                    if target_normalized in building_normalized or building_normalized in target_normalized:
+                        is_relevant = True
+                        # Используем целевое имя из БД (не из OCR)
+                        building_name = target_name
+                        break
 
-                        found_by_name[target_name].append({
-                            'level': building['level'],
-                            'y': building['y'],
-                            'name': building['name']
-                        })
+                if not is_relevant:
+                    continue
 
-            # ОБНОВЛЯЕМ БД СРАЗУ для зданий текущего раздела
+                # Добавляем здание в группу (если еще не добавлено)
+                if building_name not in found_by_name:
+                    found_by_name[building_name] = []
+
+                # Проверяем, нет ли уже здания с такими же Y координатами (дубликат)
+                is_duplicate = False
+                for existing in found_by_name[building_name]:
+                    if abs(existing['y'] - building['y']) < 5:  # Допуск 5 пикселей
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
+                    found_by_name[building_name].append({
+                        'level': building['level'],
+                        'y': building['y'],
+                        'name': building['name']
+                    })
+
+            # ОБНОВЛЯЕМ БД для зданий текущего раздела
             for building_name, building_index in buildings_in_section:
                 if building_name not in found_by_name:
                     logger.warning(f"[{emulator_name}]      ✗ {building_name}: не найдено на экране")
@@ -546,7 +565,7 @@ class BuildingDatabase:
 
                     # Дебаг логирование для множественных зданий
                     logger.debug(f"[{emulator_name}] Обработка {building_name} (множественное):")
-                    logger.debug(f"[{emulator_name}]   Найдено экземпляров: {len(found_instances_sorted)}")
+                    logger.debug(f"[{emulator_name}]   Найдено уникальных экземпляров: {len(found_instances_sorted)}")
                     for idx, inst in enumerate(found_instances_sorted):
                         logger.debug(f"[{emulator_name}]     [{idx + 1}] Lv.{inst['level']} (Y: {inst['y']})")
 
@@ -558,13 +577,13 @@ class BuildingDatabase:
 
                         # Обновляем в БД
                         cursor.execute("""
-                            UPDATE buildings 
-                            SET current_level = ?,
-                                last_updated = CURRENT_TIMESTAMP
-                            WHERE emulator_id = ? 
-                            AND building_name = ? 
-                            AND building_index = ?
-                        """, (level, emulator_id, building_name, building_index))
+                                        UPDATE buildings 
+                                        SET current_level = ?,
+                                            last_updated = CURRENT_TIMESTAMP
+                                        WHERE emulator_id = ? 
+                                        AND building_name = ? 
+                                        AND building_index = ?
+                                    """, (level, emulator_id, building_name, building_index))
 
                         self.conn.commit()
 
@@ -572,7 +591,7 @@ class BuildingDatabase:
                         total_success_count += 1
                     else:
                         logger.error(f"[{emulator_name}] ❌ {building_name} #{building_index}: " +
-                                     f"индекс {building_index} вне диапазона (найдено {len(found_instances_sorted)})")
+                                     f"индекс {building_index} вне диапазона (найдено {len(found_instances_sorted)} уникальных)")
                         total_failed_count += 1
 
                 else:
@@ -581,13 +600,13 @@ class BuildingDatabase:
                         level = found_instances[0]['level']
 
                         cursor.execute("""
-                            UPDATE buildings 
-                            SET current_level = ?,
-                                last_updated = CURRENT_TIMESTAMP
-                            WHERE emulator_id = ? 
-                            AND building_name = ? 
-                            AND building_index IS NULL
-                        """, (level, emulator_id, building_name))
+                                        UPDATE buildings 
+                                        SET current_level = ?,
+                                            last_updated = CURRENT_TIMESTAMP
+                                        WHERE emulator_id = ? 
+                                        AND building_name = ? 
+                                        AND building_index IS NULL
+                                    """, (level, emulator_id, building_name))
 
                         self.conn.commit()
 
