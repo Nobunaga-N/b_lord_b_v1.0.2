@@ -386,7 +386,10 @@ class BuildingDatabase:
         """
         Выполнить первичное сканирование ВСЕХ зданий с level=0
 
-        ОПТИМИЗИРОВАНО: Сканирует все здания раздела за один проход
+        ИСПРАВЛЕНО:
+        - Обработка результатов сразу после сканирования каждого раздела
+        - Правильная навигация к разделу "Развитие"
+        - Корректное сопоставление множественных зданий
 
         Args:
             emulator: объект эмулятора
@@ -447,11 +450,11 @@ class BuildingDatabase:
         from functions.building.navigation_panel import NavigationPanel
         nav_panel = NavigationPanel()
 
-        # Словарь для хранения результатов сканирования
-        # {building_name: [(level, y), (level, y), ...]}
-        scan_results = {}
+        # Счетчики для финальной статистики
+        total_success_count = 0
+        total_failed_count = 0
 
-        # 5. Сканируем каждый раздел
+        # 5. Сканируем каждый раздел и СРАЗУ обновляем БД
         section_num = 0
         for section_key, buildings_in_section in groups.items():
             section_num += 1
@@ -461,6 +464,7 @@ class BuildingDatabase:
             # Открыть панель навигации
             if not nav_panel.open_navigation_panel(emulator):
                 logger.error(f"[{emulator_name}] ❌ Не удалось открыть панель навигации")
+                total_failed_count += len(buildings_in_section)
                 continue
 
             # Получить конфигурацию первого здания для навигации
@@ -469,18 +473,24 @@ class BuildingDatabase:
 
             if not building_config:
                 logger.error(f"[{emulator_name}] ❌ Конфиг не найден для {first_building_name}")
+                total_failed_count += len(buildings_in_section)
                 continue
 
             # Перейти к разделу
             if not self._navigate_to_section(emulator, nav_panel, building_config):
                 logger.error(f"[{emulator_name}] ❌ Не удалось перейти к разделу")
+                total_failed_count += len(buildings_in_section)
                 continue
+
+            # Небольшая пауза после навигации
+            time.sleep(0.5)
 
             # Парсить все здания на экране
             from utils.image_recognition import get_screenshot
             screenshot = get_screenshot(emulator)
             if screenshot is None:
                 logger.error(f"[{emulator_name}] ❌ Не удалось получить скриншот")
+                total_failed_count += len(buildings_in_section)
                 continue
 
             all_buildings_on_screen = nav_panel.ocr.parse_navigation_panel(
@@ -489,117 +499,120 @@ class BuildingDatabase:
             )
 
             if not all_buildings_on_screen:
-                logger.warning(f"[{emulator_name}] ⚠️ Не удалось распознать здания")
+                logger.warning(f"[{emulator_name}] ⚠️ Не удалось распознать здания в разделе {section_key}")
+                total_failed_count += len(buildings_in_section)
                 continue
 
-            logger.info(f"[{emulator_name}]    Распознано зданий: {len(all_buildings_on_screen)}")
+            logger.info(f"[{emulator_name}]    Распознано зданий на экране: {len(all_buildings_on_screen)}")
 
-            # Сохранить результаты для каждого нужного здания
-            for building_name, building_index in buildings_in_section:
-                # Нормализуем название для поиска
-                normalized_name = building_name.lower().replace(' ', '')
+            # Логируем все распознанные здания для отладки
+            for b in all_buildings_on_screen:
+                logger.debug(f"[{emulator_name}]      📍 {b['name']} Lv.{b['level']} (Y: {b['y']})")
 
-                # Ищем все здания с таким названием
-                found = []
-                for b in all_buildings_on_screen:
-                    b_normalized = b['name'].lower().replace(' ', '')
-                    if normalized_name in b_normalized:
-                        found.append({
-                            'level': b['level'],
-                            'y': b['y'],
-                            'name': b['name']
+            # Создаем словарь для группировки найденных зданий по названию
+            found_by_name = {}
+
+            for building in all_buildings_on_screen:
+                # Нормализуем название
+                building_name_normalized = building['name'].lower().replace(' ', '')
+
+                # Ищем соответствие для каждого здания из текущего раздела
+                for target_name, target_index in buildings_in_section:
+                    target_normalized = target_name.lower().replace(' ', '')
+
+                    # Проверяем совпадение названий
+                    if target_normalized in building_name_normalized or building_name_normalized in target_normalized:
+                        if target_name not in found_by_name:
+                            found_by_name[target_name] = []
+
+                        found_by_name[target_name].append({
+                            'level': building['level'],
+                            'y': building['y'],
+                            'name': building['name']
                         })
 
-                if found:
-                    # Сохраняем в словарь результатов
-                    if building_name not in scan_results:
-                        scan_results[building_name] = []
+            # ОБНОВЛЯЕМ БД СРАЗУ для зданий текущего раздела
+            for building_name, building_index in buildings_in_section:
+                if building_name not in found_by_name:
+                    logger.warning(f"[{emulator_name}]      ✗ {building_name}: не найдено на экране")
+                    total_failed_count += 1
+                    continue
 
-                    scan_results[building_name].extend(found)
+                found_instances = found_by_name[building_name]
 
-                    logger.debug(f"[{emulator_name}]      ✓ {building_name}: найдено {len(found)} шт")
+                if building_index is not None:
+                    # Множественное здание - сортируем по Y (сверху вниз)
+                    found_instances_sorted = sorted(found_instances, key=lambda x: x['y'])
+
+                    # Дебаг логирование для множественных зданий
+                    logger.debug(f"[{emulator_name}] Обработка {building_name} (множественное):")
+                    logger.debug(f"[{emulator_name}]   Найдено экземпляров: {len(found_instances_sorted)}")
+                    for idx, inst in enumerate(found_instances_sorted):
+                        logger.debug(f"[{emulator_name}]     [{idx + 1}] Lv.{inst['level']} (Y: {inst['y']})")
+
+                    # Индекс в БД начинается с 1, в массиве с 0
+                    idx = building_index - 1
+
+                    if idx < len(found_instances_sorted):
+                        level = found_instances_sorted[idx]['level']
+
+                        # Обновляем в БД
+                        cursor.execute("""
+                            UPDATE buildings 
+                            SET current_level = ?,
+                                last_updated = CURRENT_TIMESTAMP
+                            WHERE emulator_id = ? 
+                            AND building_name = ? 
+                            AND building_index = ?
+                        """, (level, emulator_id, building_name, building_index))
+
+                        self.conn.commit()
+
+                        logger.success(f"[{emulator_name}] ✅ {building_name} #{building_index} → Lv.{level}")
+                        total_success_count += 1
+                    else:
+                        logger.error(f"[{emulator_name}] ❌ {building_name} #{building_index}: " +
+                                     f"индекс {building_index} вне диапазона (найдено {len(found_instances_sorted)})")
+                        total_failed_count += 1
+
                 else:
-                    logger.warning(f"[{emulator_name}]      ✗ {building_name}: не найдено")
+                    # Уникальное здание - берем первое найденное
+                    if len(found_instances) > 0:
+                        level = found_instances[0]['level']
 
-            # Свернуть раздел
+                        cursor.execute("""
+                            UPDATE buildings 
+                            SET current_level = ?,
+                                last_updated = CURRENT_TIMESTAMP
+                            WHERE emulator_id = ? 
+                            AND building_name = ? 
+                            AND building_index IS NULL
+                        """, (level, emulator_id, building_name))
+
+                        self.conn.commit()
+
+                        logger.success(f"[{emulator_name}] ✅ {building_name} → Lv.{level}")
+                        total_success_count += 1
+                    else:
+                        logger.error(f"[{emulator_name}] ❌ {building_name}: массив пуст")
+                        total_failed_count += 1
+
+            # Свернуть раздел после обработки
             nav_panel.reset_navigation_state(emulator)
             time.sleep(0.5)
 
-        # 6. Обновить БД на основе результатов
-        logger.info(f"[{emulator_name}] 💾 Обновление БД...")
-
-        success_count = 0
-        failed_count = 0
-
-        for building_name, building_index in scannable:
-            if building_name not in scan_results:
-                logger.error(f"[{emulator_name}] ❌ {building_name}: не найдено в результатах")
-                failed_count += 1
-                continue
-
-            found_instances = scan_results[building_name]
-
-            if building_index is not None:
-                # Множественное здание - сопоставляем по порядку (Y-координата)
-                # Сортируем по Y (сверху вниз)
-                found_instances_sorted = sorted(found_instances, key=lambda x: x['y'])
-
-                # Индекс начинается с 1, массив с 0
-                idx = building_index - 1
-
-                if idx < len(found_instances_sorted):
-                    level = found_instances_sorted[idx]['level']
-
-                    # Обновляем в БД
-                    cursor.execute("""
-                        UPDATE buildings 
-                        SET current_level = ?,
-                            last_updated = CURRENT_TIMESTAMP
-                        WHERE emulator_id = ? 
-                        AND building_name = ? 
-                        AND building_index = ?
-                    """, (level, emulator_id, building_name, building_index))
-
-                    self.conn.commit()
-
-                    logger.success(f"[{emulator_name}] ✅ {building_name} #{building_index} → Lv.{level}")
-                    success_count += 1
-                else:
-                    logger.error(f"[{emulator_name}] ❌ {building_name} #{building_index}: индекс вне диапазона")
-                    failed_count += 1
-            else:
-                # Уникальное здание - берем первое найденное
-                if len(found_instances) > 0:
-                    level = found_instances[0]['level']
-
-                    cursor.execute("""
-                        UPDATE buildings 
-                        SET current_level = ?,
-                            last_updated = CURRENT_TIMESTAMP
-                        WHERE emulator_id = ? 
-                        AND building_name = ? 
-                        AND building_index IS NULL
-                    """, (level, emulator_id, building_name))
-
-                    self.conn.commit()
-
-                    logger.success(f"[{emulator_name}] ✅ {building_name} → Lv.{level}")
-                    success_count += 1
-                else:
-                    logger.error(f"[{emulator_name}] ❌ {building_name}: массив пуст")
-                    failed_count += 1
-
-        # 7. Итоги
+        # 6. Итоги
         logger.info(f"[{emulator_name}] 📊 ИТОГО СКАНИРОВАНИЯ:")
-        logger.info(f"[{emulator_name}]   ✅ Успешно: {success_count}")
-        logger.info(f"[{emulator_name}]   ❌ Ошибки: {failed_count}")
+        logger.info(f"[{emulator_name}]   ✅ Успешно: {total_success_count}")
+        logger.info(f"[{emulator_name}]   ❌ Ошибки: {total_failed_count}")
         logger.info(f"[{emulator_name}]   ⏭️ Пропущено (не построено): {len(skipped_build)}")
 
-        if failed_count > 0:
+        if total_failed_count > 0:
             logger.warning(f"[{emulator_name}] ⚠️ Сканирование завершено с ошибками")
-            return False
+            # Возвращаем True если хотя бы часть зданий просканирована
+            return total_success_count > 0
 
-        logger.success(f"[{emulator_name}] ✅ ПЕРВИЧНОЕ СКАНИРОВАНИЕ ЗАВЕРШЕНО")
+        logger.success(f"[{emulator_name}] ✅ ПЕРВИЧНОЕ СКАНИРОВАНИЕ ЗАВЕРШЕНО УСПЕШНО")
         return True
 
     def _group_buildings_by_section(self, buildings: List[Tuple[str, Optional[int]]]) -> Dict[
@@ -649,6 +662,8 @@ class BuildingDatabase:
         """
         Перейти к разделу используя конфигурацию здания
 
+        ИСПРАВЛЕНО: Добавлена правильная навигация для всех типов разделов
+
         Args:
             emulator: объект эмулятора
             nav_panel: объект NavigationPanel
@@ -659,46 +674,58 @@ class BuildingDatabase:
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        # 1. Переключиться на нужную вкладку
+        # Если здание в "Список дел"
         if building_config.get('from_tasks_tab'):
             nav_panel.switch_to_tasks_tab(emulator)
             time.sleep(0.5)
             return True
-        else:
-            nav_panel.switch_to_buildings_tab(emulator)
-            time.sleep(0.5)
 
-            # Сбросить состояние навигации
-            nav_panel.reset_navigation_state(emulator)
+        # Для зданий в "Список зданий"
+        nav_panel.switch_to_buildings_tab(emulator)
+        time.sleep(0.5)
 
-            # 2. Открыть раздел
-            section_name = building_config.get('section')
-            if not nav_panel._open_section_by_name(emulator, section_name):
+        # Сбрасываем состояние навигации (сворачиваем все разделы)
+        nav_panel.reset_navigation_state(emulator)
+
+        # Открываем основной раздел
+        section_name = building_config.get('section')
+        if not nav_panel._open_section_by_name(emulator, section_name):
+            logger.error(f"[{emulator_name}] ❌ Не удалось открыть раздел: {section_name}")
+            return False
+
+        time.sleep(0.5)
+
+        # Если есть подвкладка
+        if 'subsection' in building_config:
+            subsection_name = building_config['subsection']
+            subsection_data = building_config.get('subsection_data', {})
+
+            # Свайпы для доступа к подвкладке (если нужно)
+            if subsection_data.get('requires_scroll'):
+                scroll_swipes = subsection_data.get('scroll_to_subsection', [])
+                nav_panel.execute_swipes(emulator, scroll_swipes)
+                time.sleep(0.3)
+
+            # Открываем подвкладку
+            if not nav_panel._open_section_by_name(emulator, subsection_name):
+                logger.error(f"[{emulator_name}] ❌ Не удалось открыть подвкладку: {subsection_name}")
                 return False
 
-            # 3. Работа с подвкладками (если есть)
-            if 'subsection' in building_config:
-                subsection_name = building_config['subsection']
-                subsection_data = building_config.get('subsection_data', {})
+            time.sleep(0.5)
 
-                # Свайпы для доступа к подвкладке
-                if subsection_data.get('requires_scroll'):
-                    scroll_swipes = subsection_data.get('scroll_to_subsection', [])
-                    nav_panel.execute_swipes(emulator, scroll_swipes)
-
-                # Открыть подвкладку
-                if not nav_panel._open_section_by_name(emulator, subsection_name):
-                    return False
-
-                # Свайпы внутри подвкладки
-                scroll_swipes = building_config.get('scroll_in_subsection', [])
+            # Свайпы внутри подвкладки для доступа к зданиям
+            scroll_swipes = building_config.get('scroll_in_subsection', [])
+            if scroll_swipes:
                 nav_panel.execute_swipes(emulator, scroll_swipes)
-            else:
-                # Свайпы внутри секции
-                scroll_swipes = building_config.get('scroll_in_section', [])
+                time.sleep(0.3)
+        else:
+            # Свайпы внутри основного раздела (если нужно)
+            scroll_swipes = building_config.get('scroll_in_section', [])
+            if scroll_swipes:
                 nav_panel.execute_swipes(emulator, scroll_swipes)
+                time.sleep(0.3)
 
-            return True
+        return True
 
     def has_unscanned_buildings(self, emulator_id: int) -> bool:
         """
