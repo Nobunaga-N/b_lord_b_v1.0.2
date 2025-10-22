@@ -51,7 +51,7 @@ lord_10:
       type: "multiple"
       action: "upgrade"
 
-    - name: "Ферма Грунта"
+    - name: "Ферма Песка"
       count: 4
       target_level: 10
       type: "multiple"
