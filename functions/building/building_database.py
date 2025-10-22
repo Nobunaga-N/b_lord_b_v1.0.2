@@ -620,6 +620,9 @@ class BuildingDatabase:
         """
         Сгруппировать здания по разделам навигации
 
+        ИСПРАВЛЕНО: Дополнительная группировка по требованию скролла внутри раздела
+        Это гарантирует что здания видимые сразу будут просканированы ПЕРЕД зданиями требующими скролл
+
         Args:
             buildings: список (building_name, building_index)
 
@@ -645,10 +648,27 @@ class BuildingDatabase:
                 section = building_config.get('section', 'Unknown')
                 subsection = building_config.get('subsection')
 
+                # ИСПРАВЛЕНИЕ: Проверяем требуется ли скролл внутри раздела/подвкладки
                 if subsection:
-                    section_key = f"{section} > {subsection}"
+                    # Для подвкладок проверяем scroll_in_subsection
+                    scroll_config = building_config.get('scroll_in_subsection', [])
                 else:
-                    section_key = section
+                    # Для обычных разделов проверяем scroll_in_section
+                    scroll_config = building_config.get('scroll_in_section', [])
+
+                requires_scroll = len(scroll_config) > 0
+
+                # Формируем ключ с учетом скролла
+                if subsection:
+                    base_key = f"{section} > {subsection}"
+                else:
+                    base_key = section
+
+                # Добавляем маркер скролла к ключу
+                if requires_scroll:
+                    section_key = f"{base_key} (со скроллом)"
+                else:
+                    section_key = f"{base_key} (без скролла)"
 
             # Добавляем в группу
             if section_key not in groups:
