@@ -160,46 +160,47 @@ class BuildingDatabase:
         """
         Извлечь уникальный список зданий из building_order.yaml
 
-        Здания в конфиге повторяются на разных уровнях Лорда,
-        нужно получить список уникальных зданий с их максимальными параметрами
+        ИСПРАВЛЕНО: Правильно определяет action для каждого экземпляра множественного здания
+
+        Логика:
+        - Проходим по уровням лорда ПО ПОРЯДКУ (10→18)
+        - Отслеживаем для каждого здания сколько экземпляров УЖЕ ПОСТРОЕНО
+        - action='upgrade' с count=N означает что N экземпляров построены
+        - action='build' означает что строится НОВЫЙ экземпляр
 
         Returns:
-            list: список уникальных зданий с полями:
-                  {name: str, count: int, max_target_level: int, type: str, action: str}
+            list: список записей для БД с полями:
+                  {name: str, index: int|None, max_target_level: int, type: str, action: str}
         """
         logger.debug("📋 Извлечение уникального списка зданий из конфига...")
 
-        # Словарь для отслеживания уникальных зданий
-        # key: (name), value: {count, max_target_level, type, action}
-        unique_buildings = {}
+        # Словарь для отслеживания зданий
+        # key: name, value: {built_count: int, total_count: int, max_target: int, type: str}
+        buildings_tracking = {}
 
         # Проверяем что конфиг загружен
         if not self.building_config:
             logger.error("❌ building_config пуст!")
             return []
 
-        for lord_level, config in self.building_config.items():
-            # Пропускаем служебные ключи (если есть)
-            if not isinstance(config, dict):
-                logger.warning(f"⚠️ Пропускаем {lord_level}: не словарь")
+        # Проходим по уровням лорда ПО ПОРЯДКУ
+        for level in range(10, 19):
+            lord_key = f"lord_{level}"
+
+            if lord_key not in self.building_config:
                 continue
 
+            config = self.building_config[lord_key]
+
             # Проверяем наличие ключа 'buildings'
-            if 'buildings' not in config:
-                logger.warning(f"⚠️ В {lord_level} нет ключа 'buildings', пропускаем")
+            if 'buildings' not in config or not isinstance(config['buildings'], list):
                 continue
 
             buildings_list = config['buildings']
 
-            # Проверяем что это список
-            if not isinstance(buildings_list, list):
-                logger.warning(f"⚠️ {lord_level}.buildings не список, пропускаем")
-                continue
-
             for building in buildings_list:
                 # Проверяем обязательные поля
                 if 'name' not in building:
-                    logger.warning(f"⚠️ Здание без 'name' в {lord_level}, пропускаем")
                     continue
 
                 name = building['name']
@@ -208,31 +209,81 @@ class BuildingDatabase:
                 btype = building.get('type', 'unique')
                 action = building.get('action', 'upgrade')
 
-                # Создаем уникальный ключ по имени
-                if name not in unique_buildings:
-                    unique_buildings[name] = {
-                        'name': name,
-                        'count': count,
-                        'max_target_level': target,
+                # Инициализируем отслеживание для этого здания
+                if name not in buildings_tracking:
+                    buildings_tracking[name] = {
+                        'built_count': 0,  # Сколько экземпляров уже построено
+                        'total_count': 0,  # Сколько экземпляров будет всего
+                        'max_target_level': 0,
                         'type': btype,
-                        'action': action
+                        'has_build_action': False  # Встречалось ли action='build'
                     }
-                else:
-                    # ✅ ИСПРАВЛЕНО: Обновляем максимальный count если нашли больший
-                    if count > unique_buildings[name]['count']:
-                        unique_buildings[name]['count'] = count
 
-                    # Обновляем максимальный target_level если нашли больший
-                    if target > unique_buildings[name]['max_target_level']:
-                        unique_buildings[name]['max_target_level'] = target
+                # Обновляем информацию о здании
+                if action == 'upgrade':
+                    # Эти экземпляры УЖЕ ПОСТРОЕНЫ
+                    if count > buildings_tracking[name]['built_count']:
+                        buildings_tracking[name]['built_count'] = count
 
-        result = list(unique_buildings.values())
-        logger.info(f"✅ Найдено {len(result)} уникальных зданий")
+                elif action == 'build':
+                    # Строятся НОВЫЕ экземпляры
+                    if count > buildings_tracking[name]['total_count']:
+                        buildings_tracking[name]['total_count'] = count
+                    # Отмечаем что встретили action='build'
+                    buildings_tracking[name]['has_build_action'] = True
 
-        # Дебаг: выводим первые 3 здания
-        for i, b in enumerate(result[:3], 1):
-            logger.debug(
-                f"  {i}. {b['name']} (count={b['count']}, max_level={b['max_target_level']}, action={b['action']})")
+                # Обновляем максимальный target_level
+                if target > buildings_tracking[name]['max_target_level']:
+                    buildings_tracking[name]['max_target_level'] = target
+
+                # Обновляем общее количество (на случай если total не обновился из build)
+                if count > buildings_tracking[name]['total_count']:
+                    buildings_tracking[name]['total_count'] = count
+
+        # Формируем результат
+        result = []
+
+        for name, data in buildings_tracking.items():
+            built_count = data['built_count']  # Сколько уже построено
+            total_count = data['total_count']  # Сколько будет всего
+            max_target = data['max_target_level']
+            btype = data['type']
+            has_build_action = data['has_build_action']  # Встречалось ли action='build'
+
+            if total_count > 1:
+                # Множественное здание - создаем запись для каждого экземпляра
+                for index in range(1, total_count + 1):
+                    # КЛЮЧЕВАЯ ЛОГИКА:
+                    # Если индекс <= built_count → здание УЖЕ ПОСТРОЕНО (action='upgrade')
+                    # Если индекс > built_count → здание НУЖНО ПОСТРОИТЬ (action='build')
+                    instance_action = 'upgrade' if index <= built_count else 'build'
+
+                    result.append({
+                        'name': name,
+                        'index': index,
+                        'max_target_level': max_target,
+                        'type': btype,
+                        'action': instance_action
+                    })
+            else:
+                # Уникальное здание
+                # ✅ ИСПРАВЛЕНО: Если встречалось action='build' → нужно строить
+                unique_action = 'build' if has_build_action else 'upgrade'
+
+                result.append({
+                    'name': name,
+                    'index': None,
+                    'max_target_level': max_target,
+                    'type': btype,
+                    'action': unique_action
+                })
+
+        logger.info(f"✅ Найдено {len(result)} записей зданий")
+
+        # Дебаг: выводим первые 5 записей
+        for i, b in enumerate(result[:5], 1):
+            index_str = f"#{b['index']}" if b['index'] else ""
+            logger.debug(f"  {i}. {b['name']}{index_str} (max_level={b['max_target_level']}, action={b['action']})")
 
         return result
 
@@ -240,8 +291,8 @@ class BuildingDatabase:
         """
         Инициализировать записи для всех зданий эмулятора в БД
 
-        Создает записи со level=0 (неизвестный уровень) для всех зданий из конфига
-        Для зданий с action='build' level=0 означает что здание НЕ ПОСТРОЕНО
+        ИСПРАВЛЕНО: Теперь работает с новым форматом _extract_unique_buildings(),
+        где каждый экземпляр множественного здания имеет свой action
 
         Args:
             emulator_id: ID эмулятора
@@ -265,29 +316,28 @@ class BuildingDatabase:
             logger.warning(f"⚠️ Эмулятор {emulator_id} уже инициализирован ({count} зданий)")
             return True
 
-        # Получаем уникальный список зданий
-        unique_buildings = self._extract_unique_buildings()
+        # Получаем список зданий из конфига
+        buildings_list = self._extract_unique_buildings()
 
         # Создаем записи для каждого здания
         buildings_created = 0
 
-        for building_data in unique_buildings:
+        for building_data in buildings_list:
             name = building_data['name']
-            count = building_data['count']
+            index = building_data.get('index')  # None для уникальных, номер для множественных
             max_target = building_data['max_target_level']
             btype = building_data['type']
             action = building_data['action']
 
-            if count > 1:
-                # Множественное здание - создаем записи для каждого экземпляра
-                for index in range(1, count + 1):
-                    cursor.execute("""
-                        INSERT INTO buildings 
-                        (emulator_id, building_name, building_type, building_index, 
-                         current_level, target_level, status, action)
-                        VALUES (?, ?, ?, ?, 0, ?, 'idle', ?)
-                    """, (emulator_id, name, btype, index, max_target, action))
-                    buildings_created += 1
+            # Создаем запись в БД
+            if index is not None:
+                # Множественное здание с индексом
+                cursor.execute("""
+                    INSERT INTO buildings 
+                    (emulator_id, building_name, building_type, building_index, 
+                     current_level, target_level, status, action)
+                    VALUES (?, ?, ?, ?, 0, ?, 'idle', ?)
+                """, (emulator_id, name, btype, index, max_target, action))
             else:
                 # Уникальное здание
                 cursor.execute("""
@@ -296,7 +346,8 @@ class BuildingDatabase:
                      current_level, target_level, status, action)
                     VALUES (?, ?, ?, NULL, 0, ?, 'idle', ?)
                 """, (emulator_id, name, btype, max_target, action))
-                buildings_created += 1
+
+            buildings_created += 1
 
         # Инициализируем строителей
         for slot in range(1, total_builders + 1):
@@ -1068,10 +1119,13 @@ class BuildingDatabase:
         logger.info(f"🔨 Строитель #{builder_slot} занят до {timer_finish}")
 
     def set_building_constructed(self, emulator_id: int, building_name: str,
-                                building_index: Optional[int], timer_finish: datetime,
-                                builder_slot: int):
+                                 building_index: Optional[int], timer_finish: datetime,
+                                 builder_slot: int):
         """
         Пометить здание как строящееся (постройка нового здания)
+
+        ИСПРАВЛЕНО: Теперь обновляет action='build' → action='upgrade'
+        после начала постройки
 
         После постройки здание будет иметь level=1
 
@@ -1093,13 +1147,15 @@ class BuildingDatabase:
 
         building_id = building['id']
 
-        # Обновляем статус здания (строится с 0 до 1)
+        # ✅ ИСПРАВЛЕНО: Обновляем статус И action
+        # После начала постройки action меняется с 'build' на 'upgrade'
         if building_index is not None:
             cursor.execute("""
                 UPDATE buildings 
                 SET upgrading_to_level = 1,
                     status = 'upgrading',
                     timer_finish = ?,
+                    action = 'upgrade',
                     last_updated = CURRENT_TIMESTAMP
                 WHERE emulator_id = ? AND building_name = ? AND building_index = ?
             """, (timer_finish, emulator_id, building_name, building_index))
@@ -1109,6 +1165,7 @@ class BuildingDatabase:
                 SET upgrading_to_level = 1,
                     status = 'upgrading',
                     timer_finish = ?,
+                    action = 'upgrade',
                     last_updated = CURRENT_TIMESTAMP
                 WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
             """, (timer_finish, emulator_id, building_name))
@@ -1124,7 +1181,7 @@ class BuildingDatabase:
 
         self.conn.commit()
 
-        logger.info(f"✅ Здание {building_name} начало постройку → Lv.1")
+        logger.info(f"✅ Здание {building_name} начало постройку → Lv.1 (action='build' → 'upgrade')")
         logger.info(f"🔨 Строитель #{builder_slot} занят до {timer_finish}")
 
     # ===== РАБОТА СО СТРОИТЕЛЯМИ =====
