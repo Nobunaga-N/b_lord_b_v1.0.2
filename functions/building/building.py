@@ -261,8 +261,8 @@ class BuildingFunction(BaseFunction):
                     logger.error(f"[{self.emulator_name}] ❌ Не удалось открыть панель навигации")
                     break
 
-                if not self.panel.navigate_to_building(self.emulator, building_name):
-                    logger.error(f"[{self.emulator_name}] ❌ Не удалось перейти к зданию")
+                if not self.panel.navigate_to_building(self.emulator, building_name, building_index):
+                    logger.error(f"[{self.emulator_name}] ❌ Не удалось перейти к зданию: {display_name}")
                     break
 
                 time.sleep(1.5)

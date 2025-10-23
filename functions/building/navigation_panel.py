@@ -396,7 +396,8 @@ class NavigationPanel:
         return True
 
     @retry_with_recovery(max_attempts=2, recovery_between_attempts=True)
-    def navigate_to_building(self, emulator: Dict, building_name: str) -> bool:
+    def navigate_to_building(self, emulator: Dict, building_name: str,
+                             building_index: Optional[int] = None) -> bool:
         """
         Навигация к зданию с использованием конфигурации
         С автоматическим recovery при неудаче (через декоратор)
@@ -413,16 +414,20 @@ class NavigationPanel:
         9. Найти здание через OCR
         10. Кликнуть "Перейти"
 
+        ИСПРАВЛЕНО: Добавлен параметр building_index для множественных зданий
+
         Args:
             emulator: объект эмулятора
             building_name: название здания
+            building_index: индекс здания (для множественных зданий)
 
         Returns:
             bool: True если успешно перешли к зданию
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        logger.info(f"[{emulator_name}] 🎯 Навигация к зданию: {building_name}")
+        logger.info(f"[{emulator_name}] 🎯 Навигация к зданию: {building_name}" +
+                    (f" #{building_index}" if building_index else ""))
 
         # 1. Получить конфигурацию здания
         building_config = self.get_building_config(building_name)
@@ -440,17 +445,11 @@ class NavigationPanel:
             self.switch_to_tasks_tab(emulator)
             time.sleep(0.5)
 
-            # Найти через OCR и кликнуть "Перейти"
-            screenshot = get_screenshot(emulator)
-            if screenshot is None:
-                return False
-
-            # Используем статичные координаты из конфига
+            # Используем статичные координаты
             button_coords = building_config.get('button_coords', {})
             x = button_coords.get('x', 330)
             y = button_coords.get('y', 390)
 
-            logger.debug(f"[{emulator_name}] Клик 'Перейти' по координатам ({x}, {y})")
             tap(emulator, x=x, y=y)
             time.sleep(2)
 
@@ -462,40 +461,36 @@ class NavigationPanel:
             self.switch_to_buildings_tab(emulator)
             time.sleep(0.5)
 
-            # 4. ИСПРАВЛЕНО: Сбросить состояние навигации (гарантирует свайпы вверх)
-            logger.debug(f"[{emulator_name}] Сброс состояния панели навигации...")
+            # Сбросить состояние навигации
             self.reset_navigation_state(emulator)
 
-            # 6. Открыть раздел
+            # Открыть раздел
             section_name = building_config.get('section')
             if not self._open_section_by_name(emulator, section_name):
                 return False
 
-            # 7. Работа с подвкладками (если есть)
+            # Работа с подвкладками
             if 'subsection' in building_config:
                 subsection_name = building_config['subsection']
                 subsection_data = building_config.get('subsection_data', {})
 
-                # Свайпы для доступа к подвкладке
                 if subsection_data.get('requires_scroll'):
                     scroll_swipes = subsection_data.get('scroll_to_subsection', [])
                     self.execute_swipes(emulator, scroll_swipes)
 
-                # Открыть подвкладку
                 if not self._open_section_by_name(emulator, subsection_name):
                     return False
 
-                # Свайпы внутри подвкладки
                 scroll_swipes = building_config.get('scroll_in_subsection', [])
                 self.execute_swipes(emulator, scroll_swipes)
-
             else:
-                # Свайпы внутри секции (если нет подвкладок)
                 scroll_swipes = building_config.get('scroll_in_section', [])
                 self.execute_swipes(emulator, scroll_swipes)
 
             # 8. Найти здание через OCR и кликнуть "Перейти"
-            return self._find_and_click_building(emulator, building_name, building_config)
+            # ПЕРЕДАЕМ building_index в метод!
+            return self._find_and_click_building(emulator, building_name,
+                                                 building_config, building_index)
 
     def _open_section_by_name(self, emulator: Dict, section_name: str) -> bool:
         """
@@ -535,14 +530,20 @@ class NavigationPanel:
         logger.warning(f"[{emulator_name}] ⚠️ Раздел '{section_name}' не найден на экране")
         return False
 
-    def _find_and_click_building(self, emulator: Dict, building_name: str, building_config: Dict) -> bool:
+    def _find_and_click_building(self, emulator: Dict, building_name: str,
+                                 building_config: Dict,
+                                 building_index: Optional[int] = None) -> bool:
         """
         Найти здание через OCR и кликнуть "Перейти"
+
+        ИСПРАВЛЕНО: Для множественных зданий выбирает здание по индексу,
+        а не первое попавшееся
 
         Args:
             emulator: объект эмулятора
             building_name: название здания
             building_config: конфигурация здания
+            building_index: индекс здания (для множественных)
 
         Returns:
             bool: True если успешно
@@ -561,22 +562,46 @@ class NavigationPanel:
         ocr_pattern = building_config.get('ocr_pattern', building_name)
         is_multiple = building_config.get('multiple', False)
 
-        # Убираем пробелы для более гибкого поиска
+        # Нормализация для поиска
         ocr_pattern_normalized = ocr_pattern.lower().replace(' ', '')
 
         target_building = None
 
-        for building in buildings:
-            building_name_normalized = building['name'].lower().replace(' ', '')
+        if is_multiple and building_index is not None:
+            # ✅ ИСПРАВЛЕНИЕ: Для множественных зданий с индексом
+            # Находим ВСЕ экземпляры этого здания
+            matching_buildings = []
 
-            if ocr_pattern_normalized in building_name_normalized:
-                # Нашли здание
-                if is_multiple:
-                    # Для множественных зданий - берем первое попавшееся
-                    target_building = building
-                    break
-                else:
-                    # Для уникальных - точное совпадение
+            for building in buildings:
+                building_name_normalized = building['name'].lower().replace(' ', '')
+
+                if ocr_pattern_normalized in building_name_normalized:
+                    matching_buildings.append(building)
+
+            if not matching_buildings:
+                logger.error(f"[{emulator_name}] ❌ Здание '{building_name}' не найдено в списке")
+                return False
+
+            # Сортируем по Y-координате (сверху вниз)
+            matching_buildings.sort(key=lambda b: b['y'])
+
+            # Выбираем здание по индексу (индекс начинается с 1)
+            if building_index > len(matching_buildings):
+                logger.error(f"[{emulator_name}] ❌ Индекс {building_index} вне диапазона "
+                             f"(найдено {len(matching_buildings)} экземпляров)")
+                return False
+
+            target_building = matching_buildings[building_index - 1]
+
+            logger.debug(f"[{emulator_name}] 📍 Выбрано здание #{building_index} из {len(matching_buildings)} "
+                         f"(Y={target_building['y']}, Lv.{target_building['level']})")
+
+        else:
+            # Для уникальных зданий - первое совпадение
+            for building in buildings:
+                building_name_normalized = building['name'].lower().replace(' ', '')
+
+                if ocr_pattern_normalized in building_name_normalized:
                     target_building = building
                     break
 
@@ -589,7 +614,9 @@ class NavigationPanel:
         tap(emulator, x=self.BUTTON_GO_X, y=y_coord)
         time.sleep(2)
 
-        logger.success(f"[{emulator_name}] ✅ Перешли к зданию: {building_name} (Lv.{target_building['level']})")
+        logger.success(f"[{emulator_name}] ✅ Перешли к зданию: {building_name}" +
+                       (f" #{building_index}" if building_index else "") +
+                       f" (Lv.{target_building['level']})")
         return True
 
     def get_building_level(self, emulator: dict, building_name: str,
@@ -597,7 +624,7 @@ class NavigationPanel:
         """
         Получить уровень здания БЕЗ перехода к нему
 
-        Используется для первичного сканирования уровней
+        ИСПРАВЛЕНО: Правильная обработка множественных зданий по индексу
 
         Args:
             emulator: объект эмулятора
@@ -625,41 +652,32 @@ class NavigationPanel:
 
         # 3. Перейти к нужному разделу (но НЕ кликать "Перейти")
         if building_config.get('from_tasks_tab'):
-            # Здание в "Список дел"
             self.switch_to_tasks_tab(emulator)
             time.sleep(0.5)
         else:
-            # Здание в "Список зданий"
             self.switch_to_buildings_tab(emulator)
             time.sleep(0.5)
 
-            # Сбросить состояние навигации
             self.reset_navigation_state(emulator)
 
-            # Открыть раздел
             section_name = building_config.get('section')
             if not self._open_section_by_name(emulator, section_name):
                 return None
 
-            # Работа с подвкладками (если есть)
             if 'subsection' in building_config:
                 subsection_name = building_config['subsection']
                 subsection_data = building_config.get('subsection_data', {})
 
-                # Свайпы для доступа к подвкладке
                 if subsection_data.get('requires_scroll'):
                     scroll_swipes = subsection_data.get('scroll_to_subsection', [])
                     self.execute_swipes(emulator, scroll_swipes)
 
-                # Открыть подвкладку
                 if not self._open_section_by_name(emulator, subsection_name):
                     return None
 
-                # Свайпы внутри подвкладки
                 scroll_swipes = building_config.get('scroll_in_subsection', [])
                 self.execute_swipes(emulator, scroll_swipes)
             else:
-                # Свайпы внутри секции
                 scroll_swipes = building_config.get('scroll_in_section', [])
                 self.execute_swipes(emulator, scroll_swipes)
 
@@ -679,27 +697,41 @@ class NavigationPanel:
         ocr_pattern = building_config.get('ocr_pattern', building_name)
         is_multiple = building_config.get('multiple', False)
 
-        # Убираем пробелы для более гибкого поиска
         ocr_pattern_normalized = ocr_pattern.lower().replace(' ', '')
 
-        # Для множественных зданий ищем по индексу
+        # ✅ ИСПРАВЛЕНИЕ: Для множественных зданий используем тот же алгоритм
         if is_multiple and building_index is not None:
-            # Римские цифры для индексов
-            roman_numerals = {1: 'I', 2: 'II', 3: 'III', 4: 'IV', 5: 'V'}
-            expected_suffix = roman_numerals.get(building_index, str(building_index))
+            # Находим ВСЕ экземпляры
+            matching_buildings = []
 
             for building in buildings:
                 building_name_normalized = building['name'].lower().replace(' ', '')
 
-                # Проверяем что название совпадает И есть нужная римская цифра
-                if (ocr_pattern_normalized in building_name_normalized and
-                        expected_suffix in building['name']):
-                    level = building['level']
-                    logger.success(f"[{emulator_name}] ✅ {building['name']}: Lv.{level}")
-                    return level
+                if ocr_pattern_normalized in building_name_normalized:
+                    matching_buildings.append(building)
+
+            if not matching_buildings:
+                logger.error(f"[{emulator_name}] ❌ Здание не найдено в списке")
+                return None
+
+            # Сортируем по Y (сверху вниз)
+            matching_buildings.sort(key=lambda b: b['y'])
+
+            # Проверяем диапазон
+            if building_index > len(matching_buildings):
+                logger.error(f"[{emulator_name}] ❌ Индекс {building_index} вне диапазона "
+                             f"(найдено {len(matching_buildings)})")
+                return None
+
+            # Выбираем по индексу
+            target_building = matching_buildings[building_index - 1]
+            level = target_building['level']
+
+            logger.success(f"[{emulator_name}] ✅ {building_name} #{building_index}: Lv.{level}")
+            return level
 
         else:
-            # Для уникальных зданий просто ищем по названию
+            # Для уникальных зданий
             for building in buildings:
                 building_name_normalized = building['name'].lower().replace(' ', '')
 
@@ -759,6 +791,7 @@ class NavigationPanel:
         return True
 
     # Алиас для обратной совместимости
-    def go_to_building(self, emulator: Dict, building_name: str) -> bool:
+    def go_to_building(self, emulator: Dict, building_name: str,
+                       building_index: Optional[int] = None) -> bool:
         """Алиас для navigate_to_building (для обратной совместимости)"""
-        return self.navigate_to_building(emulator, building_name)
+        return self.navigate_to_building(emulator, building_name, building_index)
