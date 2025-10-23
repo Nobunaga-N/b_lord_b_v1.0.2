@@ -93,10 +93,6 @@ class BuildingFunction(BaseFunction):
         # ШАГ 3: Выполнить первичное сканирование
         logger.info(f"[{self.emulator_name}] 🔍 Запуск первичного сканирования...")
 
-        # Закрываем панель навигации если она открыта
-        press_key(self.emulator, "ESC")
-        time.sleep(0.5)
-
         success = self.db.perform_initial_scan(self.emulator)
 
         if not success:
