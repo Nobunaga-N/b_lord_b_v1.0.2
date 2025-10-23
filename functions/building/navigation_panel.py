@@ -1,12 +1,12 @@
 """
-Панель навигации для строительства с УМНОЙ навигацией
+Панель навигации для строительства с УМНОЙ навигацией + Recovery System
 Управление панелью быстрого доступа к зданиям
 
 КЛЮЧЕВАЯ ОСОБЕННОСТЬ:
 Состояние панели (открытые разделы/подвкладки) НЕ сбрасывается после клика "Перейти"
 Сброс происходит ТОЛЬКО при перезапуске игры/эмулятора
 
-Версия: 2.0 (SMART NAVIGATION)
+Версия: 2.1 (SMART NAVIGATION + RECOVERY)
 Дата обновления: 2025-01-23
 """
 
@@ -18,6 +18,7 @@ from utils.adb_controller import tap, swipe, press_key
 from utils.image_recognition import find_image, get_screenshot
 from utils.ocr_engine import OCREngine
 from utils.logger import logger
+from utils.recovery_manager import recovery_manager, retry_with_recovery  # Recovery System
 
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -240,7 +241,9 @@ class NavigationPanel:
     # ==================== БАЗОВЫЕ ОПЕРАЦИИ ====================
 
     def open_navigation_panel(self, emulator: Dict) -> bool:
-        """Открыть панель навигации"""
+        """
+        Открыть панель навигации с поддержкой recovery
+        """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
         if self.nav_state.is_panel_open:
@@ -248,6 +251,8 @@ class NavigationPanel:
             return True
 
         logger.debug(f"[{emulator_name}] Открытие панели навигации...")
+
+        # ПОПЫТКА 1: Обычное открытие
         tap(emulator, x=self.PANEL_ICON_COORDS[0], y=self.PANEL_ICON_COORDS[1])
         time.sleep(1.5)
 
@@ -256,8 +261,41 @@ class NavigationPanel:
             self.nav_state.open_panel()
             logger.success(f"[{emulator_name}] ✅ Панель навигации открыта")
             return True
+
+        # ПОПЫТКА 2: С recovery (обработка диалога выхода)
+        logger.warning(f"[{emulator_name}] Панель не открылась, пробую с recovery...")
+        recovery_manager.clear_ui_state(emulator)
+        time.sleep(1)
+
+        tap(emulator, x=self.PANEL_ICON_COORDS[0], y=self.PANEL_ICON_COORDS[1])
+        time.sleep(1.5)
+
+        if self.is_navigation_open(emulator):
+            self.nav_state.open_panel()
+            logger.success(f"[{emulator_name}] ✅ Панель навигации открыта (после recovery)")
+            return True
         else:
             logger.error(f"[{emulator_name}] ❌ Не удалось открыть панель навигации")
+            # Запрашиваем перезапуск если панель не открывается
+            recovery_manager.request_emulator_restart(emulator, "Панель навигации не открывается")
+            return False
+
+    def close_navigation_panel(self, emulator: Dict) -> bool:
+        """Закрыть панель навигации"""
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        logger.debug(f"[{emulator_name}] Закрытие панели навигации...")
+        press_key(emulator, "ESC")
+        time.sleep(0.5)
+
+        # Панель закрыта, но состояние сохранено
+        self.nav_state.close_panel()
+
+        if not self.is_navigation_open(emulator):
+            logger.debug(f"[{emulator_name}] ✅ Панель навигации закрыта")
+            return True
+        else:
+            logger.warning(f"[{emulator_name}] ⚠️ Панель навигации не закрылась")
             return False
 
     def is_navigation_open(self, emulator: Dict) -> bool:
@@ -397,8 +435,16 @@ class NavigationPanel:
         return False
 
     def _find_and_click_building(self, emulator: Dict, building_name: str,
-                                 building_config: Dict, building_index: Optional[int] = None) -> bool:
-        """Найти здание через OCR и кликнуть 'Перейти'"""
+                                 building_config: Dict, building_index: Optional[int] = None,
+                                 expected_level: Optional[int] = None) -> bool:
+        """
+        Найти здание через OCR и кликнуть 'Перейти'
+
+        ИСПРАВЛЕНО: Для множественных зданий сопоставляет по уровню из БД
+
+        Args:
+            expected_level: ожидаемый уровень здания из БД (для множественных зданий)
+        """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
         emulator_id = emulator.get('id', 0)
 
@@ -421,7 +467,7 @@ class NavigationPanel:
         ocr_pattern_normalized = ocr_pattern.lower().replace(' ', '')
 
         if is_multiple and building_index is not None:
-            # Множественные здания - ищем по индексу
+            # Множественные здания - ищем по уровню или индексу
             matching_buildings = []
 
             for building in buildings:
@@ -433,14 +479,42 @@ class NavigationPanel:
                 logger.error(f"[{emulator_name}] ❌ Здание не найдено")
                 return False
 
-            # Сортируем по Y (сверху вниз)
-            matching_buildings.sort(key=lambda b: b['y'])
+            # НОВАЯ ЛОГИКА: Если известен ожидаемый уровень - ищем по нему
+            if expected_level is not None:
+                logger.debug(f"[{emulator_name}] 🎯 Поиск по ожидаемому уровню: Lv.{expected_level}")
 
-            if building_index > len(matching_buildings):
-                logger.error(f"[{emulator_name}] ❌ Индекс {building_index} вне диапазона")
-                return False
+                # Ищем здание с точным уровнем
+                exact_match = None
+                for building in matching_buildings:
+                    if building['level'] == expected_level:
+                        exact_match = building
+                        logger.success(f"[{emulator_name}] ✅ Найдено точное совпадение: {building['name']} Lv.{building['level']} (Y: {building['y']})")
+                        break
 
-            target_building = matching_buildings[building_index - 1]
+                if exact_match:
+                    target_building = exact_match
+                else:
+                    # Не нашли точное совпадение - ищем ближайший уровень
+                    logger.warning(f"[{emulator_name}] ⚠️ Точное совпадение не найдено, ищу ближайший уровень...")
+
+                    # Сортируем по разнице уровней
+                    matching_buildings.sort(key=lambda b: abs(b['level'] - expected_level))
+                    target_building = matching_buildings[0]
+
+                    logger.warning(f"[{emulator_name}] ⚠️ Выбрано ближайшее: {target_building['name']} Lv.{target_building['level']} (ожидали Lv.{expected_level})")
+            else:
+                # СТАРАЯ ЛОГИКА: Если уровень неизвестен - используем индекс
+                logger.debug(f"[{emulator_name}] 📍 Поиск по индексу #{building_index}")
+
+                # Сортируем по Y (сверху вниз)
+                matching_buildings.sort(key=lambda b: b['y'])
+
+                if building_index > len(matching_buildings):
+                    logger.error(f"[{emulator_name}] ❌ Индекс {building_index} вне диапазона")
+                    return False
+
+                target_building = matching_buildings[building_index - 1]
+                logger.debug(f"[{emulator_name}] 📍 Выбрано по индексу: {target_building['name']} Lv.{target_building['level']} (позиция {building_index}/{len(matching_buildings)})")
         else:
             # Уникальное здание
             target_building = None
@@ -468,26 +542,32 @@ class NavigationPanel:
 
     # ==================== УМНАЯ НАВИГАЦИЯ ====================
 
+    @retry_with_recovery(max_attempts=2, recovery_between_attempts=True)
     def navigate_to_building(self, emulator: Dict, building_name: str,
-                            building_index: Optional[int] = None) -> bool:
+                            building_index: Optional[int] = None,
+                            expected_level: Optional[int] = None) -> bool:
         """
-        УМНАЯ навигация к зданию с FALLBACK механизмом
+        УМНАЯ навигация к зданию с FALLBACK + Recovery механизмом
 
-        Логика:
+        Логика (многоуровневая защита):
         1. ПОПЫТКА 1: Умная навигация (пропускает сброс если уже в разделе)
         2. Если не нашли здание → FALLBACK: полный ритуал сброса
         3. ПОПЫТКА 2: Полная навигация с нуля
+        4. Если всё провалилось → @retry_with_recovery делает recovery и пытается ЕЩЁ РАЗ
 
         Оптимизации:
         - Пропускает сворачивание если уже в нужном месте
         - Не делает лишние свайпы
         - Использует кэш состояния навигации
         - Автоматический fallback при проблемах
+        - Сопоставление множественных зданий по уровню из БД
+        - Recovery при общих ошибках (через декоратор)
 
         Args:
             emulator: объект эмулятора
             building_name: название здания
             building_index: индекс (для множественных)
+            expected_level: ожидаемый уровень из БД (для точного поиска множественных зданий)
 
         Returns:
             bool: True если успешно
@@ -495,7 +575,8 @@ class NavigationPanel:
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
         logger.info(f"[{emulator_name}] 🎯 Навигация: {building_name}" +
-                   (f" #{building_index}" if building_index else ""))
+                   (f" #{building_index}" if building_index else "") +
+                   (f" (ожидаем Lv.{expected_level})" if expected_level else ""))
         logger.debug(f"[{emulator_name}] 📊 {self.nav_state.get_state_info()}")
 
         # 1. Получить конфигурацию здания
@@ -521,7 +602,7 @@ class NavigationPanel:
             # ПОПЫТКА 1: Умная навигация
             logger.debug(f"[{emulator_name}] 🔹 ПОПЫТКА 1: Умная навигация")
             success = self._navigate_via_buildings_tab(emulator, building_config, building_index,
-                                                       allow_optimization=True)
+                                                       allow_optimization=True, expected_level=expected_level)
 
             if success:
                 return True
@@ -543,7 +624,7 @@ class NavigationPanel:
             # ПОПЫТКА 2: Полная навигация с нуля
             logger.debug(f"[{emulator_name}] 🔹 ПОПЫТКА 2: Полная навигация после сброса")
             success = self._navigate_via_buildings_tab(emulator, building_config, building_index,
-                                                       allow_optimization=False)
+                                                       allow_optimization=False, expected_level=expected_level)
 
             if success:
                 logger.success(f"[{emulator_name}] ✅ Навигация успешна после fallback")
@@ -576,12 +657,14 @@ class NavigationPanel:
 
     def _navigate_via_buildings_tab(self, emulator: Dict, building_config: Dict,
                                    building_index: Optional[int],
-                                   allow_optimization: bool = True) -> bool:
+                                   allow_optimization: bool = True,
+                                   expected_level: Optional[int] = None) -> bool:
         """
         Навигация через 'Список зданий' с опциональной ОПТИМИЗАЦИЕЙ
 
         Args:
             allow_optimization: если False - всегда делает полную навигацию (для fallback)
+            expected_level: ожидаемый уровень здания из БД (для точного поиска)
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
@@ -600,7 +683,7 @@ class NavigationPanel:
 
             # Сразу ищем здание на экране
             return self._find_and_click_building(emulator, building_config.get('name'),
-                                                building_config, building_index)
+                                                building_config, building_index, expected_level)
 
         # 4. Нужна навигация - определяем тип
         if allow_optimization:
@@ -664,7 +747,7 @@ class NavigationPanel:
 
         # 8. Находим и кликаем на здание
         return self._find_and_click_building(emulator, building_config.get('name'),
-                                            building_config, building_index)
+                                            building_config, building_index, expected_level)
 
     def _check_needs_full_reset(self, target_section: str,
                                target_subsection: Optional[str]) -> bool:
@@ -707,6 +790,15 @@ class NavigationPanel:
 
         # Для всех остальных - полный сброс
         return True
+
+    # ==================== АЛИАСЫ ДЛЯ ОБРАТНОЙ СОВМЕСТИМОСТИ ====================
+
+    def go_to_building(self, emulator: Dict, building_name: str,
+                      building_index: Optional[int] = None) -> bool:
+        """
+        Алиас для navigate_to_building (для обратной совместимости со старым кодом)
+        """
+        return self.navigate_to_building(emulator, building_name, building_index)
 
     # ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ====================
 
