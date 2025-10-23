@@ -153,6 +153,8 @@ def open_log_terminal():
     """
     Открывает Windows Terminal с логами в режиме tail -f
 
+    ОБНОВЛЕНО: Создаёт улучшенную версию tail_logs.ps1 с обработкой ротации
+
     Приоритет:
     1. Windows Terminal + PowerShell 7+ (pwsh)
     2. Windows Terminal + PowerShell 5 (powershell)
@@ -168,24 +170,107 @@ def open_log_terminal():
         logger.info("Создание PowerShell скрипта для логов...")
         os.makedirs(os.path.dirname(script_path), exist_ok=True)
 
+        # ✅ УЛУЧШЕННАЯ ВЕРСИЯ с обработкой ротации
         with open(script_path, 'w', encoding='utf-8') as f:
-            f.write("""# PowerShell скрипт для просмотра логов в реальном времени
-$logFile = "bot.log"
+            f.write("""# Улучшенный скрипт для отслеживания логов с обработкой ротации
+# Автоматически переподключается к новому файлу при ротации
+
+$logPath = "bot.log"
 
 Write-Host "==================================" -ForegroundColor Cyan
 Write-Host "Beast Lord Bot - Логи" -ForegroundColor Cyan
 Write-Host "==================================" -ForegroundColor Cyan
 Write-Host ""
+Write-Host "💡 Скрипт автоматически переподключится при ротации логов" -ForegroundColor Yellow
+Write-Host "⚠️  Нажмите Ctrl+C для остановки" -ForegroundColor Gray
+Write-Host ""
 
-if (Test-Path $logFile) {
-    Write-Host "Мониторинг: $logFile" -ForegroundColor Green
-    Write-Host "Нажмите Ctrl+C для выхода" -ForegroundColor Yellow
-    Write-Host ""
-    Get-Content $logFile -Wait -Tail 30
-} else {
-    Write-Host "Ошибка: Файл $logFile не найден" -ForegroundColor Red
-    Write-Host "Убедитесь что бот запущен" -ForegroundColor Yellow
+# Функция для безопасного чтения логов с обработкой ошибок
+function Start-LogTail {
+    param([string]$Path)
+
+    $lastPosition = 0
+    $reconnectAttempts = 0
+    $maxReconnectAttempts = 3
+
+    while ($true) {
+        try {
+            # Проверяем существование файла
+            if (-not (Test-Path $Path)) {
+                Write-Host "⏳ Ожидание создания файла логов..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+                continue
+            }
+
+            # Получаем информацию о файле
+            $fileInfo = Get-Item $Path
+            $currentSize = $fileInfo.Length
+
+            # Если файл меньше последней позиции - произошла ротация
+            if ($currentSize -lt $lastPosition) {
+                Write-Host ""
+                Write-Host "🔄 [$(Get-Date -Format 'HH:mm:ss')] Обнаружена ротация логов, переподключение..." -ForegroundColor Magenta
+                Write-Host ""
+                $lastPosition = 0
+                $reconnectAttempts = 0
+            }
+
+            # Читаем новые строки
+            if ($currentSize -gt $lastPosition) {
+                $content = Get-Content -Path $Path -Encoding UTF8 -ErrorAction Stop
+
+                # Выводим только новые строки
+                $newLines = $content | Select-Object -Skip ([Math]::Max(0, $lastPosition))
+                foreach ($line in $newLines) {
+                    Write-Host $line
+                }
+
+                $lastPosition = $content.Count
+                $reconnectAttempts = 0
+            }
+
+            # Небольшая пауза перед следующей проверкой
+            Start-Sleep -Milliseconds 500
+
+        }
+        catch [System.IO.FileNotFoundException] {
+            # Файл был удален/переименован - ротация
+            Write-Host ""
+            Write-Host "🔄 [$(Get-Date -Format 'HH:mm:ss')] Файл логов переименован (ротация), переподключение..." -ForegroundColor Magenta
+            Write-Host ""
+
+            $lastPosition = 0
+            $reconnectAttempts++
+
+            if ($reconnectAttempts -gt $maxReconnectAttempts) {
+                Write-Host "❌ Превышено количество попыток переподключения" -ForegroundColor Red
+                break
+            }
+
+            Start-Sleep -Seconds 2
+        }
+        catch {
+            Write-Host "⚠️  Ошибка чтения логов: $($_.Exception.Message)" -ForegroundColor Red
+            $reconnectAttempts++
+
+            if ($reconnectAttempts -gt $maxReconnectAttempts) {
+                Write-Host "❌ Превышено количество попыток переподключения" -ForegroundColor Red
+                break
+            }
+
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+# Запускаем слежение
+try {
+    Start-LogTail -Path $logPath
+}
+catch {
+    Write-Host "❌ Критическая ошибка: $($_.Exception.Message)" -ForegroundColor Red
     Read-Host "Нажмите Enter для выхода"
+    exit 1
 }
 """)
 
@@ -241,7 +326,8 @@ if (Test-Path $logFile) {
 
         subprocess.Popen(command, shell=True)
         logger.success("PowerShell 5 открыт (отдельное окно)")
-        logger.warning("Используется PowerShell 5 (установите PowerShell 7+ и Windows Terminal для лучшей производительности)")
+        logger.warning(
+            "Используется PowerShell 5 (установите PowerShell 7+ и Windows Terminal для лучшей производительности)")
         return True
 
     except Exception as e:
