@@ -471,12 +471,18 @@ class NavigationPanel:
     def navigate_to_building(self, emulator: Dict, building_name: str,
                             building_index: Optional[int] = None) -> bool:
         """
-        УМНАЯ навигация к зданию
+        УМНАЯ навигация к зданию с FALLBACK механизмом
+
+        Логика:
+        1. ПОПЫТКА 1: Умная навигация (пропускает сброс если уже в разделе)
+        2. Если не нашли здание → FALLBACK: полный ритуал сброса
+        3. ПОПЫТКА 2: Полная навигация с нуля
 
         Оптимизации:
         - Пропускает сворачивание если уже в нужном месте
         - Не делает лишние свайпы
         - Использует кэш состояния навигации
+        - Автоматический fallback при проблемах
 
         Args:
             emulator: объект эмулятора
@@ -510,8 +516,41 @@ class NavigationPanel:
             # === НАВИГАЦИЯ ЧЕРЕЗ "СПИСОК ДЕЛ" ===
             return self._navigate_via_tasks_tab(emulator, building_config)
         else:
-            # === НАВИГАЦИЯ ЧЕРЕЗ "СПИСОК ЗДАНИЙ" ===
-            return self._navigate_via_buildings_tab(emulator, building_config, building_index)
+            # === НАВИГАЦИЯ ЧЕРЕЗ "СПИСОК ЗДАНИЙ" С FALLBACK ===
+
+            # ПОПЫТКА 1: Умная навигация
+            logger.debug(f"[{emulator_name}] 🔹 ПОПЫТКА 1: Умная навигация")
+            success = self._navigate_via_buildings_tab(emulator, building_config, building_index,
+                                                       allow_optimization=True)
+
+            if success:
+                return True
+
+            # ПОПЫТКА НЕ УДАЛАСЬ → FALLBACK
+            logger.warning(f"[{emulator_name}] ⚠️ Умная навигация не сработала, запускаю FALLBACK...")
+
+            # Сбрасываем кэш состояния (возможно он устарел)
+            logger.debug(f"[{emulator_name}] 🔄 Сброс кэша состояния навигации")
+            self.nav_state.is_collapsed = False
+            self.nav_state.is_scrolled_to_top = False
+            self.nav_state.current_section = None
+            self.nav_state.current_subsection = None
+
+            # Делаем ПОЛНЫЙ ритуал сброса
+            logger.info(f"[{emulator_name}] 🔄 ПОЛНЫЙ РИТУАЛ СБРОСА...")
+            self._full_navigation_reset(emulator)
+
+            # ПОПЫТКА 2: Полная навигация с нуля
+            logger.debug(f"[{emulator_name}] 🔹 ПОПЫТКА 2: Полная навигация после сброса")
+            success = self._navigate_via_buildings_tab(emulator, building_config, building_index,
+                                                       allow_optimization=False)
+
+            if success:
+                logger.success(f"[{emulator_name}] ✅ Навигация успешна после fallback")
+                return True
+            else:
+                logger.error(f"[{emulator_name}] ❌ Навигация провалилась даже после fallback")
+                return False
 
     def _navigate_via_tasks_tab(self, emulator: Dict, building_config: Dict) -> bool:
         """Навигация через 'Список дел'"""
@@ -536,8 +575,14 @@ class NavigationPanel:
         return True
 
     def _navigate_via_buildings_tab(self, emulator: Dict, building_config: Dict,
-                                   building_index: Optional[int]) -> bool:
-        """Навигация через 'Список зданий' с ОПТИМИЗАЦИЕЙ"""
+                                   building_index: Optional[int],
+                                   allow_optimization: bool = True) -> bool:
+        """
+        Навигация через 'Список зданий' с опциональной ОПТИМИЗАЦИЕЙ
+
+        Args:
+            allow_optimization: если False - всегда делает полную навигацию (для fallback)
+        """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
         # 1. Переключаемся на вкладку "Список зданий"
@@ -548,8 +593,8 @@ class NavigationPanel:
         target_section = building_config.get('section')
         target_subsection = building_config.get('subsection')
 
-        # 3. ПРОВЕРКА: Может мы уже в нужном месте?
-        if self.nav_state.is_in_same_location('buildings', target_section, target_subsection):
+        # 3. ОПТИМИЗАЦИЯ: Проверяем может мы уже в нужном месте?
+        if allow_optimization and self.nav_state.is_in_same_location('buildings', target_section, target_subsection):
             logger.success(f"[{emulator_name}] 🚀 УЖЕ В НУЖНОМ РАЗДЕЛЕ!")
             logger.debug(f"[{emulator_name}] ⚡ Пропускаем навигацию, сразу ищем здание")
 
@@ -558,7 +603,11 @@ class NavigationPanel:
                                                 building_config, building_index)
 
         # 4. Нужна навигация - определяем тип
-        needs_full_reset = self._check_needs_full_reset(target_section, target_subsection)
+        if allow_optimization:
+            needs_full_reset = self._check_needs_full_reset(target_section, target_subsection)
+        else:
+            # При fallback ВСЕГДА полный сброс
+            needs_full_reset = True
 
         if needs_full_reset:
             logger.debug(f"[{emulator_name}] 🔄 Полная навигация (смена раздела)")
@@ -660,6 +709,60 @@ class NavigationPanel:
         return True
 
     # ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ====================
+
+    def _full_navigation_reset(self, emulator: Dict) -> bool:
+        """
+        ПОЛНЫЙ РИТУАЛ СБРОСА навигации (для fallback)
+
+        Шаги:
+        1. Свернуть все разделы и подвкладки (пока не останется только стрелок вправо)
+        2. Свайп вверх x2 для возврата к началу списка
+        3. Проверить что всё свернуто (еще раз пройтись по стрелкам)
+        4. Обновить состояние навигации
+
+        Args:
+            emulator: объект эмулятора
+
+        Returns:
+            bool: True если успешно
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        logger.info(f"[{emulator_name}] 🔄 === ПОЛНЫЙ РИТУАЛ СБРОСА ===")
+
+        # ШАГ 1: Свернуть все разделы
+        logger.debug(f"[{emulator_name}] 📦 Шаг 1/4: Сворачивание всех разделов...")
+        collapse_success = self.collapse_all_sections(emulator)
+
+        if not collapse_success:
+            logger.warning(f"[{emulator_name}] ⚠️ Не удалось свернуть все разделы с первой попытки")
+
+        # ШАГ 2: Свайп вверх x2 для возврата к началу
+        logger.debug(f"[{emulator_name}] ⬆️ Шаг 2/4: Свайпы к началу списка...")
+        metadata = self.config.get('metadata', {})
+        scroll_to_top = metadata.get('scroll_to_top', [])
+        self.execute_swipes(emulator, scroll_to_top)
+        time.sleep(0.5)
+
+        # ШАГ 3: Проверить что всё свернуто (еще одна проверка)
+        logger.debug(f"[{emulator_name}] 🔍 Шаг 3/4: Проверка развернутых разделов...")
+        arrow_down = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
+        arrow_down_sub = find_image(emulator, self.TEMPLATES['arrow_down_sub'], threshold=0.8)
+
+        if arrow_down is not None or arrow_down_sub is not None:
+            logger.warning(f"[{emulator_name}] ⚠️ Обнаружены открытые разделы после сброса, сворачиваю...")
+            self.collapse_all_sections(emulator)
+            time.sleep(0.5)
+        else:
+            logger.debug(f"[{emulator_name}] ✅ Все разделы свернуты")
+
+        # ШАГ 4: Обновить состояние
+        logger.debug(f"[{emulator_name}] 📝 Шаг 4/4: Обновление состояния навигации...")
+        self.nav_state.mark_collapsed()
+        self.nav_state.mark_scrolled_to_top()
+
+        logger.success(f"[{emulator_name}] ✅ === ПОЛНЫЙ РИТУАЛ СБРОСА ЗАВЕРШЕН ===")
+        return True
 
     def reset_navigation_state(self, emulator: Dict) -> bool:
         """
