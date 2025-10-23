@@ -164,6 +164,10 @@ class BuildingFunction(BaseFunction):
 
         logger.info(f"[{self.emulator_name}] 🏗️ Начало цикла строительства")
 
+        completed_count = self.db.check_and_update_completed_buildings(emulator_id)
+        if completed_count > 0:
+            logger.info(f"[{self.emulator_name}] 🎉 Завершено построек с прошлого цикла: {completed_count}")
+
         upgraded_count = 0
         constructed_count = 0
 
