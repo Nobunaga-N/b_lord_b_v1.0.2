@@ -702,8 +702,8 @@ class BuildingDatabase:
                         total_failed_count += 1
 
             # Свернуть раздел после обработки
-            nav_panel.reset_navigation_state(emulator)
-            time.sleep(0.5)
+            self._cleanup_after_section_scan(emulator, nav_panel)
+            time.sleep(0.3)
 
         # 6. Итоги
         logger.info(f"[{emulator_name}] 📊 ИТОГО СКАНИРОВАНИЯ:")
@@ -717,6 +717,63 @@ class BuildingDatabase:
             return total_success_count > 0
 
         logger.success(f"[{emulator_name}] ✅ ПЕРВИЧНОЕ СКАНИРОВАНИЕ ЗАВЕРШЕНО УСПЕШНО")
+        return True
+
+    def _cleanup_after_section_scan(self, emulator: dict, nav_panel) -> bool:
+        """
+        Очистка состояния навигации после сканирования раздела
+
+        ОПТИМИЗИРОВАННАЯ ВЕРСИЯ - устанавливает флаги состояния
+
+        Логика:
+        1. Свернуть все открытые подвкладки/вкладки (если есть)
+        2. Сделать 2 свайпа к началу списка
+        3. Финальная проверка - если что-то открыто, свернуть
+        4. Установить флаги: is_collapsed=True, is_scrolled_to_top=True
+        5. Готово к сканированию следующего раздела
+
+        Благодаря флагам следующий вызов _navigate_to_section
+        НЕ будет делать лишних действий!
+
+        Args:
+            emulator: объект эмулятора
+            nav_panel: объект NavigationPanel
+
+        Returns:
+            bool: True если успешно
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        logger.debug(f"[{emulator_name}] 🧹 Очистка после сканирования раздела...")
+
+        # ШАГ 1: Свернуть все открытые разделы (если есть)
+        logger.debug(f"[{emulator_name}] 📦 Сворачивание открытых разделов...")
+        nav_panel.collapse_all_sections(emulator)
+        time.sleep(0.3)
+
+        # ШАГ 2: Свайп к началу списка (2 раза)
+        logger.debug(f"[{emulator_name}] ⬆️ Свайп к началу списка...")
+        metadata = nav_panel.config.get('metadata', {})
+        scroll_to_top = metadata.get('scroll_to_top', [])
+        nav_panel.execute_swipes(emulator, scroll_to_top)
+        time.sleep(0.3)
+
+        # ШАГ 3: Финальная проверка - есть ли открытые разделы?
+        logger.debug(f"[{emulator_name}] 🔍 Финальная проверка разделов...")
+        from utils.image_recognition import find_image
+        arrow_down = find_image(emulator, nav_panel.TEMPLATES['arrow_down'], threshold=0.8)
+        arrow_down_sub = find_image(emulator, nav_panel.TEMPLATES['arrow_down_sub'], threshold=0.8)
+
+        if arrow_down is not None or arrow_down_sub is not None:
+            logger.debug(f"[{emulator_name}] ⚠️ Обнаружены открытые разделы, сворачиваю...")
+            nav_panel.collapse_all_sections(emulator)
+            time.sleep(0.3)
+
+        # ШАГ 4: ✅ КРИТИЧНО - Устанавливаем флаги состояния
+        nav_panel.nav_state.mark_collapsed()
+        nav_panel.nav_state.mark_scrolled_to_top()
+
+        logger.success(f"[{emulator_name}] ✅ Очистка завершена, готов к следующему разделу")
         return True
 
     def _group_buildings_by_section(self, buildings: List[Tuple[str, Optional[int]]]) -> Dict[
@@ -786,7 +843,8 @@ class BuildingDatabase:
         """
         Перейти к разделу используя конфигурацию здания
 
-        ИСПРАВЛЕНО: Добавлена правильная навигация для всех типов разделов
+        ОПТИМИЗИРОВАНО: Не делает полный reset с кликами и свайпами
+        Использует флаги состояния (is_collapsed, is_scrolled_to_top)
 
         Args:
             emulator: объект эмулятора
@@ -808,8 +866,25 @@ class BuildingDatabase:
         nav_panel.switch_to_buildings_tab(emulator)
         time.sleep(0.5)
 
-        # Сбрасываем состояние навигации (сворачиваем все разделы)
-        nav_panel.reset_navigation_state(emulator)
+        # ✅ ОПТИМИЗАЦИЯ: Проверяем флаги состояния
+        # Если после cleanup всё уже свернуто - не делаем лишних действий
+        if not nav_panel.nav_state.is_collapsed:
+            logger.debug(f"[{emulator_name}] 📦 Обнаружены открытые разделы, сворачиваю...")
+            nav_panel.collapse_all_sections(emulator)
+            time.sleep(0.3)
+        else:
+            logger.debug(f"[{emulator_name}] ✅ Все разделы уже свернуты (пропускаю)")
+
+        # Проверяем находимся ли в начале списка
+        if not nav_panel.nav_state.is_scrolled_to_top:
+            logger.debug(f"[{emulator_name}] ⬆️ Возвращаюсь в начало списка...")
+            metadata = nav_panel.config.get('metadata', {})
+            scroll_to_top = metadata.get('scroll_to_top', [])
+            nav_panel.execute_swipes(emulator, scroll_to_top)
+            nav_panel.nav_state.mark_scrolled_to_top()
+            time.sleep(0.3)
+        else:
+            logger.debug(f"[{emulator_name}] ✅ Уже в начале списка (пропускаю свайпы)")
 
         # Открываем основной раздел
         section_name = building_config.get('section')
