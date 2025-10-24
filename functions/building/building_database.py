@@ -1826,6 +1826,50 @@ class BuildingDatabase:
         # 5. Все здания достигли целевого уровня
         return None
 
+    def update_building_after_construction(self, emulator_id: int, building_name: str,
+                                           building_index: Optional[int] = None) -> None:
+        """
+        Обновить здание после успешной постройки
+
+        Изменения:
+        1. Установить current_level = 1
+        2. Изменить action: 'build' → 'upgrade'
+        3. Обновить last_updated
+
+        Args:
+            emulator_id: ID эмулятора
+            building_name: название здания
+            building_index: индекс (для множественных зданий)
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+
+            building_display = f"{building_name}" + (f" #{building_index}" if building_index else "")
+
+            if building_index is None:
+                # Unique здание
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET current_level = 1,
+                        action = 'upgrade',
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
+                """, (emulator_id, building_name))
+            else:
+                # Multiple здание
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET current_level = 1,
+                        action = 'upgrade',
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE emulator_id = ? AND building_name = ? AND building_index = ?
+                """, (emulator_id, building_name, building_index))
+
+            self.conn.commit()
+
+            logger.success(f"[Emulator {emulator_id}] ✅ {building_display} построено!")
+            logger.info(f"[Emulator {emulator_id}] 🔄 Action: 'build' → 'upgrade', Level: 0 → 1")
+
     # ===== ЗАМОРОЗКА ЭМУЛЯТОРА =====
 
     def freeze_emulator(self, emulator_id: int, hours: int = 6, reason: str = "Нехватка ресурсов"):

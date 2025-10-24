@@ -199,7 +199,7 @@ class BuildingFunction(BaseFunction):
                        f"(Lv.{current_level} → Lv.{target_level}) [action={action}]")
 
             # ШАГ 1: Перейти к зданию (для upgrade) или открыть меню постройки (для construct)
-            if action == 'construct':
+            if action == 'build':
                 # ПОСТРОЙКА НОВОГО ЗДАНИЯ
                 logger.info(f"[{self.emulator_name}] 🏗️ Постройка нового здания: {display_name}")
 
@@ -208,7 +208,7 @@ class BuildingFunction(BaseFunction):
                 time.sleep(0.5)
 
                 # Строим здание через BuildingConstruction
-                success, timer_seconds = self.construction.construct_building(
+                success = self.construction.construct_building(
                     self.emulator, building_name, building_index
                 )
 
