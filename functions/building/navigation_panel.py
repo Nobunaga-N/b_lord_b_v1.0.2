@@ -695,16 +695,31 @@ class NavigationPanel:
         if needs_full_reset:
             logger.debug(f"[{emulator_name}] 🔄 Полная навигация (смена раздела)")
 
-            # Сворачиваем всё если еще не свернуто
-            if not self.nav_state.is_collapsed:
-                self.collapse_all_sections(emulator)
+            # КРИТИЧНОЕ ИСПРАВЛЕНИЕ: При полном сбросе ВСЕГДА выполняем операции,
+            # игнорируя флаги is_collapsed и is_scrolled_to_top, т.к. они могут быть
+            # устаревшими после предыдущего set_section()
 
-            # Свайпы вверх если еще не в начале
-            if not self.nav_state.is_scrolled_to_top:
-                metadata = self.config.get('metadata', {})
-                scroll_to_top = metadata.get('scroll_to_top', [])
-                self.execute_swipes(emulator, scroll_to_top)
-                self.nav_state.mark_scrolled_to_top()
+            # ШАГ 1: ВСЕГДА сворачиваем всё
+            self.collapse_all_sections(emulator)
+
+            # ШАГ 2: ВСЕГДА делаем свайпы вверх
+            metadata = self.config.get('metadata', {})
+            scroll_to_top = metadata.get('scroll_to_top', [])
+            self.execute_swipes(emulator, scroll_to_top)
+            self.nav_state.mark_scrolled_to_top()
+
+            # ШАГ 3: КРИТИЧНО! Проверяем что всё свернуто после свайпов
+            # Свайпы могут "вытащить" ранее свёрнутые разделы обратно
+            time.sleep(0.5)
+            arrow_down = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
+            arrow_down_sub = find_image(emulator, self.TEMPLATES['arrow_down_sub'], threshold=0.8)
+
+            if arrow_down is not None or arrow_down_sub is not None:
+                logger.warning(f"[{emulator_name}] ⚠️ Обнаружены открытые разделы после свайпов, сворачиваю...")
+                self.collapse_all_sections(emulator)
+                time.sleep(0.5)
+            else:
+                logger.debug(f"[{emulator_name}] ✅ Все разделы свернуты после полного сброса")
         else:
             logger.debug(f"[{emulator_name}] ⚡ Частичная навигация (тот же раздел)")
 
