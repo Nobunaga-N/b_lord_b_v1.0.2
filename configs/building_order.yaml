@@ -377,6 +377,13 @@ lord_13:
       type: "unique"
       action: "upgrade"
 
+    - name: "Жилище Лемуров IV"
+      count: 1
+      target_level: 1
+      type: "unique"
+      action: "build"
+      note: "КРИТИЧНО: Открывает 4-й слот строителя! Строим первым."
+
     - name: "Склад Листьев"
       count: 1
       target_level: 10
@@ -394,6 +401,30 @@ lord_13:
       target_level: 10
       type: "unique"
       action: "upgrade"
+
+    - name: "Склад Песка II"
+      count: 1
+      target_level: 1
+      type: "unique"
+      action: "build"
+
+    - name: "Склад Листьев II"
+      count: 1
+      target_level: 1
+      type: "unique"
+      action: "build"
+
+    - name: "Склад Грунта II"
+      count: 1
+      target_level: 1
+      type: "unique"
+      action: "build"
+
+    - name: "Склад Фруктов II"
+      count: 1
+      target_level: 1
+      type: "unique"
+      action: "build"
 
     - name: "Флора Эволюции"
       count: 1
@@ -445,18 +476,6 @@ lord_13:
       type: "unique"
       action: "upgrade"
 
-    # ===============================================
-    # НОВЫЕ ПОСТРОЙКИ (после завершения Лорда 13!)
-    # Порядок важен: сначала Жилище Лемуров IV (4-й строитель)
-    # ===============================================
-
-    - name: "Жилище Лемуров IV"
-      count: 1
-      target_level: 1
-      type: "unique"
-      action: "build"
-      note: "КРИТИЧНО: Открывает 4-й слот строителя! Строим первым."
-
     - name: "Центр Сбора II"
       count: 1
       target_level: 1
@@ -467,26 +486,25 @@ lord_13:
       count: 1
       target_level: 2
       type: "unique"
-      action: "build"
-      note: "После постройки (level=1) сразу качаем до 2"
+      action: "upgrade"
 
     - name: "Склад Листьев II"
       count: 1
       target_level: 2
       type: "unique"
-      action: "build"
+      action: "upgrade"
 
     - name: "Склад Грунта II"
       count: 1
       target_level: 2
       type: "unique"
-      action: "build"
+      action: "upgrade"
 
     - name: "Склад Фруктов II"
       count: 1
       target_level: 2
       type: "unique"
-      action: "build"
+      action: "upgrade"
 
 lord_14:
   buildings:
@@ -503,6 +521,13 @@ lord_14:
       type: "unique"
       action: "upgrade"
       note: "Зона кормления должна быть 14 ур перед апгрейдом Лорда на 15"
+
+    - name: "Жилище Детенышей"
+      count: 5
+      target_level: 1
+      type: "multiple"
+      action: "build"
+      note: "Строим 5-е жилище (условие: Лорд >= 14)"
 
     - name: "Склад Песка II"
       count: 1
@@ -558,12 +583,7 @@ lord_14:
     # 2. Прокачиваем ВСЕ 5 жилищ до 14 (включая только что построенное)
     # ===============================================
 
-    - name: "Жилище Детенышей"
-      count: 5
-      target_level: 1
-      type: "multiple"
-      action: "build"
-      note: "Строим 5-е жилище (условие: Лорд >= 14)"
+
 
     - name: "Жилище Детенышей"
       count: 5
