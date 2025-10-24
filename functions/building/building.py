@@ -200,7 +200,7 @@ class BuildingFunction(BaseFunction):
 
             # ШАГ 1: Перейти к зданию (для upgrade) или открыть меню постройки (для construct)
             if action == 'build':
-                # ПОСТРОЙКА НОВОГО ЗДАНИЯ
+                # ПОСТРОЙКА НОВОГО ЗДАНИЯ (МГНОВЕННАЯ, БЕЗ РЕСУРСОВ, БЕЗ СТРОИТЕЛЯ)
                 logger.info(f"[{self.emulator_name}] 🏗️ Постройка нового здания: {display_name}")
 
                 # Закрываем панель навигации если открыта
@@ -213,43 +213,20 @@ class BuildingFunction(BaseFunction):
                 )
 
                 if success:
-                    if timer_seconds == 0:
-                        # Быстрое завершение (помощь альянса)
-                        logger.success(f"[{self.emulator_name}] 🚀 Мгновенная постройка: {display_name}")
+                    logger.success(f"[{self.emulator_name}] ✅ Здание построено: {display_name}")
 
-                        # Обновляем уровень сразу на 1
-                        self.db.update_building_level(
-                            emulator_id, building_name, building_index, 1
-                        )
+                    # Обновляем БД: level=1, action='build' → 'upgrade'
+                    self.db.update_building_after_construction(
+                        emulator_id, building_name, building_index
+                    )
 
-                        constructed_count += 1
-                    else:
-                        # Обычная постройка с таймером
-                        timer_finish = datetime.now() + timedelta(seconds=timer_seconds)
-
-                        # Получаем свободный слот строителя
-                        builder_slot = self.db.get_free_builder(emulator_id)
-                        if builder_slot is None:
-                            logger.error(f"[{self.emulator_name}] ❌ Нет свободных строителей в БД")
-                            break
-
-                        # Обновляем БД - здание строится
-                        self.db.set_building_constructed(
-                            emulator_id, building_name, building_index,
-                            timer_finish, builder_slot
-                        )
-
-                        logger.success(f"[{self.emulator_name}] ✅ Постройка началась: {display_name}")
-                        logger.info(f"[{self.emulator_name}] ⏱️ Таймер: {self._format_time(timer_seconds)}")
-
-                        constructed_count += 1
+                    constructed_count += 1
                 else:
-                    # Не удалось построить (нехватка ресурсов)
-                    logger.warning(f"[{self.emulator_name}] ❌ Не удалось построить: {display_name}")
-
-                    # Замораживаем эмулятор
-                    self.db.freeze_emulator(emulator_id, hours=6, reason="Нехватка ресурсов (постройка)")
+                    # Технический сбой (не нашли шаблоны, и т.д.)
+                    logger.error(f"[{self.emulator_name}] ❌ Технический сбой постройки: {display_name}")
+                    # НЕ замораживаем эмулятор - просто прерываем цикл
                     break
+
 
             else:
                 # УЛУЧШЕНИЕ СУЩЕСТВУЮЩЕГО ЗДАНИЯ
