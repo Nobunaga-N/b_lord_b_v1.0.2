@@ -2,12 +2,14 @@
 Менеджер восстановления для обработки непредвиденных ситуаций
 Универсальная система recovery для всего проекта Beast Lord Bot v3.0
 
-Версия: 1.0
+Версия: 1.1
 Дата создания: 2025-01-16
+Дата обновления: 2025-01-24 (добавлен threading.Lock для thread-safety)
 """
 
 import time
 import os
+import threading  # ✅ ДОБАВЛЕНО для thread-safety
 from typing import Callable, Any, Optional, Dict
 from functools import wraps
 from utils.adb_controller import press_key
@@ -27,6 +29,7 @@ class RecoveryManager:
     - Обнаружение диалога выхода из игры
     - Повторные попытки операций с автоматическим recovery
     - Запрос на перезапуск эмулятора при критических ошибках
+    - Thread-safe операции для работы в многопоточной среде
 
     Использование:
     ```python
@@ -53,6 +56,7 @@ class RecoveryManager:
     def __init__(self):
         """Инициализация менеджера восстановления"""
         self.restart_requests = {}  # Хранение запросов на перезапуск {emulator_id: {reason, timestamp}}
+        self.lock = threading.Lock()  # ✅ ДОБАВЛЕНО: Блокировка для thread-safety
         logger.debug("RecoveryManager инициализирован")
 
     def clear_ui_state(self, emulator: Dict, max_attempts: int = None) -> bool:
@@ -159,6 +163,7 @@ class RecoveryManager:
         Запросить перезапуск эмулятора
 
         Сохраняет запрос на перезапуск для обработки в BotOrchestrator
+        Thread-safe метод
 
         Args:
             emulator: объект эмулятора
@@ -167,16 +172,19 @@ class RecoveryManager:
         emulator_id = emulator.get('id')
         emulator_name = emulator.get('name', f"id:{emulator_id}")
 
-        self.restart_requests[emulator_id] = {
-            'reason': reason,
-            'timestamp': time.time()
-        }
+        # ✅ ИСПРАВЛЕНО: Добавлена блокировка
+        with self.lock:
+            self.restart_requests[emulator_id] = {
+                'reason': reason,
+                'timestamp': time.time()
+            }
 
         logger.warning(f"[{emulator_name}] 🔄 Запрошен перезапуск эмулятора: {reason}")
 
     def has_restart_request(self, emulator_id: int) -> bool:
         """
         Проверить есть ли запрос на перезапуск эмулятора
+        Thread-safe метод
 
         Args:
             emulator_id: ID эмулятора
@@ -184,11 +192,14 @@ class RecoveryManager:
         Returns:
             bool: True если есть запрос
         """
-        return emulator_id in self.restart_requests
+        # ✅ ИСПРАВЛЕНО: Добавлена блокировка
+        with self.lock:
+            return emulator_id in self.restart_requests
 
     def get_restart_reason(self, emulator_id: int) -> Optional[str]:
         """
         Получить причину запроса на перезапуск
+        Thread-safe метод
 
         Args:
             emulator_id: ID эмулятора
@@ -196,19 +207,24 @@ class RecoveryManager:
         Returns:
             str: причина или None
         """
-        request = self.restart_requests.get(emulator_id)
-        return request['reason'] if request else None
+        # ✅ ИСПРАВЛЕНО: Добавлена блокировка
+        with self.lock:
+            request = self.restart_requests.get(emulator_id)
+            return request['reason'] if request else None
 
     def clear_restart_request(self, emulator_id: int):
         """
         Очистить запрос на перезапуск после обработки
+        Thread-safe метод
 
         Args:
             emulator_id: ID эмулятора
         """
-        if emulator_id in self.restart_requests:
-            del self.restart_requests[emulator_id]
-            logger.debug(f"Запрос на перезапуск эмулятора {emulator_id} очищен")
+        # ✅ ИСПРАВЛЕНО: Добавлена блокировка
+        with self.lock:
+            if emulator_id in self.restart_requests:
+                del self.restart_requests[emulator_id]
+                logger.debug(f"Запрос на перезапуск эмулятора {emulator_id} очищен")
 
 
 def retry_with_recovery(max_attempts: int = 2, recovery_between_attempts: bool = True):
