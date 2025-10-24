@@ -22,6 +22,7 @@ from typing import List, Dict, Optional, Tuple, Any
 from utils.logger import logger
 from utils.image_recognition import find_image, get_screenshot
 import re
+import threading
 
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -63,77 +64,75 @@ class BuildingDatabase:
 
     def __init__(self):
         """Инициализация подключения к БД и загрузка конфигурации"""
-        # Создаём директорию для БД если её нет
         os.makedirs(os.path.dirname(self.DB_PATH), exist_ok=True)
 
-        # Подключаемся к БД
+        # ✅ ДОБАВЛЕНО: Блокировка для thread-safety
+        self.db_lock = threading.Lock()
+
         self.conn = sqlite3.connect(self.DB_PATH, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
 
-        # Создаём таблицы если их нет
         self._create_tables()
-
-        # Загружаем конфигурацию порядка прокачки
         self._load_building_config()
 
-        # Инициализируем OCR для определения строителей
         try:
             from utils.ocr_engine import OCREngine
             self._ocr_engine = OCREngine()
         except Exception as e:
-            logger.warning(f"⚠️ Не удалось инициализировать OCR для строителей: {e}")
+            logger.warning(f"⚠️ Не удалось инициализировать OCR: {e}")
             self._ocr_engine = None
 
-        logger.info("✅ BuildingDatabase инициализирована")
+        logger.info("✅ BuildingDatabase инициализирована (Thread-Safe)")
 
     def _create_tables(self):
         """Создать таблицы если их нет"""
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            cursor = self.conn.cursor()
 
-        # Таблица зданий (ОБНОВЛЕНА: добавлено поле action)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS buildings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                emulator_id INTEGER NOT NULL,
-                building_name TEXT NOT NULL,
-                building_type TEXT NOT NULL,
-                building_index INTEGER,
-                current_level INTEGER NOT NULL DEFAULT 0,
-                upgrading_to_level INTEGER,
-                target_level INTEGER NOT NULL,
-                status TEXT NOT NULL DEFAULT 'idle',
-                action TEXT NOT NULL DEFAULT 'upgrade',
-                timer_finish TIMESTAMP,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(emulator_id, building_name, building_index)
-            )
-        """)
+            # Таблица зданий (ОБНОВЛЕНА: добавлено поле action)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS buildings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    emulator_id INTEGER NOT NULL,
+                    building_name TEXT NOT NULL,
+                    building_type TEXT NOT NULL,
+                    building_index INTEGER,
+                    current_level INTEGER NOT NULL DEFAULT 0,
+                    upgrading_to_level INTEGER,
+                    target_level INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    action TEXT NOT NULL DEFAULT 'upgrade',
+                    timer_finish TIMESTAMP,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(emulator_id, building_name, building_index)
+                )
+            """)
 
-        # Таблица строителей
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS builders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                emulator_id INTEGER NOT NULL,
-                builder_slot INTEGER NOT NULL,
-                is_busy BOOLEAN NOT NULL DEFAULT 0,
-                building_id INTEGER,
-                finish_time TIMESTAMP,
-                FOREIGN KEY (building_id) REFERENCES buildings(id),
-                UNIQUE(emulator_id, builder_slot)
-            )
-        """)
+            # Таблица строителей
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS builders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    emulator_id INTEGER NOT NULL,
+                    builder_slot INTEGER NOT NULL,
+                    is_busy BOOLEAN NOT NULL DEFAULT 0,
+                    building_id INTEGER,
+                    finish_time TIMESTAMP,
+                    FOREIGN KEY (building_id) REFERENCES buildings(id),
+                    UNIQUE(emulator_id, builder_slot)
+                )
+            """)
 
-        # Таблица заморозки эмуляторов
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS emulator_freeze (
-                emulator_id INTEGER PRIMARY KEY,
-                freeze_until TIMESTAMP NOT NULL,
-                reason TEXT
-            )
-        """)
+            # Таблица заморозки эмуляторов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS emulator_freeze (
+                    emulator_id INTEGER PRIMARY KEY,
+                    freeze_until TIMESTAMP NOT NULL,
+                    reason TEXT
+                )
+            """)
 
-        self.conn.commit()
-        logger.debug("✅ Таблицы БД проверены/созданы")
+            self.conn.commit()
+            logger.debug("✅ Таблицы БД проверены/созданы")
 
     def _load_building_config(self):
         """Загрузить конфигурацию порядка прокачки из YAML"""
@@ -335,66 +334,67 @@ class BuildingDatabase:
         Returns:
             bool: True если успешно
         """
-        logger.info(f"🏗️ Инициализация зданий для эмулятора {emulator_id}...")
+        with self.db_lock:
+            logger.info(f"🏗️ Инициализация зданий для эмулятора {emulator_id}...")
 
-        cursor = self.conn.cursor()
+            cursor = self.conn.cursor()
 
-        # Проверяем, не инициализирован ли уже этот эмулятор
-        cursor.execute("""
-            SELECT COUNT(*) FROM buildings WHERE emulator_id = ?
-        """, (emulator_id,))
-
-        count = cursor.fetchone()[0]
-
-        if count > 0:
-            logger.warning(f"⚠️ Эмулятор {emulator_id} уже инициализирован ({count} зданий)")
-            return True
-
-        # Получаем список зданий из конфига
-        buildings_list = self._extract_unique_buildings()
-
-        # Создаем записи для каждого здания
-        buildings_created = 0
-
-        for building_data in buildings_list:
-            name = building_data['name']
-            index = building_data.get('index')  # None для уникальных, номер для множественных
-            max_target = building_data['max_target_level']
-            btype = building_data['type']
-            action = building_data['action']
-
-            # Создаем запись в БД
-            if index is not None:
-                # Множественное здание с индексом
-                cursor.execute("""
-                    INSERT INTO buildings 
-                    (emulator_id, building_name, building_type, building_index, 
-                     current_level, target_level, status, action)
-                    VALUES (?, ?, ?, ?, 0, ?, 'idle', ?)
-                """, (emulator_id, name, btype, index, max_target, action))
-            else:
-                # Уникальное здание
-                cursor.execute("""
-                    INSERT INTO buildings 
-                    (emulator_id, building_name, building_type, building_index, 
-                     current_level, target_level, status, action)
-                    VALUES (?, ?, ?, NULL, 0, ?, 'idle', ?)
-                """, (emulator_id, name, btype, max_target, action))
-
-            buildings_created += 1
-
-        # Инициализируем строителей
-        for slot in range(1, total_builders + 1):
+            # Проверяем, не инициализирован ли уже этот эмулятор
             cursor.execute("""
-                INSERT INTO builders 
-                (emulator_id, builder_slot, is_busy)
-                VALUES (?, ?, 0)
-            """, (emulator_id, slot))
+                SELECT COUNT(*) FROM buildings WHERE emulator_id = ?
+            """, (emulator_id,))
 
-        self.conn.commit()
+            count = cursor.fetchone()[0]
 
-        logger.success(f"✅ Создано {buildings_created} записей зданий и {total_builders} строителей")
-        return True
+            if count > 0:
+                logger.warning(f"⚠️ Эмулятор {emulator_id} уже инициализирован ({count} зданий)")
+                return True
+
+            # Получаем список зданий из конфига
+            buildings_list = self._extract_unique_buildings()
+
+            # Создаем записи для каждого здания
+            buildings_created = 0
+
+            for building_data in buildings_list:
+                name = building_data['name']
+                index = building_data.get('index')  # None для уникальных, номер для множественных
+                max_target = building_data['max_target_level']
+                btype = building_data['type']
+                action = building_data['action']
+
+                # Создаем запись в БД
+                if index is not None:
+                    # Множественное здание с индексом
+                    cursor.execute("""
+                        INSERT INTO buildings 
+                        (emulator_id, building_name, building_type, building_index, 
+                         current_level, target_level, status, action)
+                        VALUES (?, ?, ?, ?, 0, ?, 'idle', ?)
+                    """, (emulator_id, name, btype, index, max_target, action))
+                else:
+                    # Уникальное здание
+                    cursor.execute("""
+                        INSERT INTO buildings 
+                        (emulator_id, building_name, building_type, building_index, 
+                         current_level, target_level, status, action)
+                        VALUES (?, ?, ?, NULL, 0, ?, 'idle', ?)
+                    """, (emulator_id, name, btype, max_target, action))
+
+                buildings_created += 1
+
+            # Инициализируем строителей
+            for slot in range(1, total_builders + 1):
+                cursor.execute("""
+                    INSERT INTO builders 
+                    (emulator_id, builder_slot, is_busy)
+                    VALUES (?, ?, 0)
+                """, (emulator_id, slot))
+
+            self.conn.commit()
+
+            logger.success(f"✅ Создано {buildings_created} записей зданий и {total_builders} строителей")
+            return True
 
     def scan_building_level(self, emulator: dict, building_name: str,
                            building_index: Optional[int] = None) -> bool:
@@ -957,47 +957,48 @@ class BuildingDatabase:
         Returns:
             количество завершенных построек
         """
-        cursor = self.conn.cursor()
-        current_time = datetime.now()
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            current_time = datetime.now()
 
-        # Находим все здания с истекшими таймерами
-        cursor.execute("""
-            SELECT id, building_name, building_index, upgrading_to_level, timer_finish
-            FROM buildings 
-            WHERE emulator_id = ? 
-            AND status = 'upgrading' 
-            AND timer_finish <= ?
-        """, (emulator_id, current_time))
-
-        completed = cursor.fetchall()
-
-        for row in completed:
-            building_id = row['id']
-            building_name = row['building_name']
-            building_index = row['building_index']
-            new_level = row['upgrading_to_level']
-
-            # Обновляем здание
+            # Находим все здания с истекшими таймерами
             cursor.execute("""
-                UPDATE buildings 
-                SET current_level = ?,
-                    upgrading_to_level = NULL,
-                    status = 'idle',
-                    timer_finish = NULL,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (new_level, building_id))
+                SELECT id, building_name, building_index, upgrading_to_level, timer_finish
+                FROM buildings 
+                WHERE emulator_id = ? 
+                AND status = 'upgrading' 
+                AND timer_finish <= ?
+            """, (emulator_id, current_time))
 
-            display_name = building_name
-            if building_index:
-                display_name += f" #{building_index}"
+            completed = cursor.fetchall()
 
-            logger.success(f"✅ Завершено: {display_name} → Lv.{new_level}")
+            for row in completed:
+                building_id = row['id']
+                building_name = row['building_name']
+                building_index = row['building_index']
+                new_level = row['upgrading_to_level']
 
-        if completed:
-            self.conn.commit()
+                # Обновляем здание
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET current_level = ?,
+                        upgrading_to_level = NULL,
+                        status = 'idle',
+                        timer_finish = NULL,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (new_level, building_id))
 
-        return len(completed)
+                display_name = building_name
+                if building_index:
+                    display_name += f" #{building_index}"
+
+                logger.success(f"✅ Завершено: {display_name} → Lv.{new_level}")
+
+            if completed:
+                self.conn.commit()
+
+            return len(completed)
 
     def get_unscanned_buildings_count(self, emulator_id: int) -> int:
         """
@@ -1192,95 +1193,97 @@ class BuildingDatabase:
             building_index: индекс (для множественных)
             new_level: новый уровень
         """
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            cursor = self.conn.cursor()
 
-        if building_index is not None:
-            cursor.execute("""
-                UPDATE buildings 
-                SET current_level = ?, 
-                    upgrading_to_level = NULL,
-                    status = 'idle',
-                    timer_finish = NULL,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE emulator_id = ? AND building_name = ? AND building_index = ?
-            """, (new_level, emulator_id, building_name, building_index))
-        else:
-            cursor.execute("""
-                UPDATE buildings 
-                SET current_level = ?, 
-                    upgrading_to_level = NULL,
-                    status = 'idle',
-                    timer_finish = NULL,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
-            """, (new_level, emulator_id, building_name))
+            if building_index is not None:
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET current_level = ?, 
+                        upgrading_to_level = NULL,
+                        status = 'idle',
+                        timer_finish = NULL,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE emulator_id = ? AND building_name = ? AND building_index = ?
+                """, (new_level, emulator_id, building_name, building_index))
+            else:
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET current_level = ?, 
+                        upgrading_to_level = NULL,
+                        status = 'idle',
+                        timer_finish = NULL,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
+                """, (new_level, emulator_id, building_name))
 
-        self.conn.commit()
-        logger.info(f"✅ Обновлён уровень: {building_name} → {new_level}")
+            self.conn.commit()
+            logger.info(f"✅ Обновлён уровень: {building_name} → {new_level}")
 
     def set_building_upgrading(self, emulator_id: int, building_name: str,
                                building_index: Optional[int], timer_finish: datetime,
                                builder_slot: int):
         """Пометить здание как улучшающееся"""
 
-        # 🐛 ВРЕМЕННОЕ ЛОГИРОВАНИЕ В НАЧАЛЕ
-        logger.warning(f"[DEBUG] set_building_upgrading вызван: {building_name} "
-                       f"#{building_index}, slot={builder_slot}")
 
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            # 🐛 ВРЕМЕННОЕ ЛОГИРОВАНИЕ В НАЧАЛЕ
+            logger.warning(f"[DEBUG] set_building_upgrading вызван: {building_name} "
+                           f"#{building_index}, slot={builder_slot}")
+            cursor = self.conn.cursor()
 
-        # Получаем текущее здание
-        building = self.get_building(emulator_id, building_name, building_index)
+            # Получаем текущее здание
+            building = self.get_building(emulator_id, building_name, building_index)
 
-        if not building:
-            logger.error(f"❌ Здание не найдено: {building_name}")
-            return
+            if not building:
+                logger.error(f"❌ Здание не найдено: {building_name}")
+                return
 
-        # 🐛 ЛОГИРОВАНИЕ ДО ОБНОВЛЕНИЯ
-        logger.warning(f"[DEBUG] ДО обновления: status={building['status']}")
+            # 🐛 ЛОГИРОВАНИЕ ДО ОБНОВЛЕНИЯ
+            logger.warning(f"[DEBUG] ДО обновления: status={building['status']}")
 
-        building_id = building['id']
-        current_level = building['current_level']
-        upgrading_to = current_level + 1
+            building_id = building['id']
+            current_level = building['current_level']
+            upgrading_to = current_level + 1
 
-        # Обновляем статус здания
-        if building_index is not None:
+            # Обновляем статус здания
+            if building_index is not None:
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET upgrading_to_level = ?,
+                        status = 'upgrading',
+                        timer_finish = ?,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE emulator_id = ? AND building_name = ? AND building_index = ?
+                """, (upgrading_to, timer_finish, emulator_id, building_name, building_index))
+            else:
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET upgrading_to_level = ?,
+                        status = 'upgrading',
+                        timer_finish = ?,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
+                """, (upgrading_to, timer_finish, emulator_id, building_name))
+
+            # Занимаем строителя
             cursor.execute("""
-                UPDATE buildings 
-                SET upgrading_to_level = ?,
-                    status = 'upgrading',
-                    timer_finish = ?,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE emulator_id = ? AND building_name = ? AND building_index = ?
-            """, (upgrading_to, timer_finish, emulator_id, building_name, building_index))
-        else:
-            cursor.execute("""
-                UPDATE buildings 
-                SET upgrading_to_level = ?,
-                    status = 'upgrading',
-                    timer_finish = ?,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
-            """, (upgrading_to, timer_finish, emulator_id, building_name))
+                UPDATE builders 
+                SET is_busy = 1,
+                    building_id = ?,
+                    finish_time = ?
+                WHERE emulator_id = ? AND builder_slot = ?
+            """, (building_id, timer_finish, emulator_id, builder_slot))
 
-        # Занимаем строителя
-        cursor.execute("""
-            UPDATE builders 
-            SET is_busy = 1,
-                building_id = ?,
-                finish_time = ?
-            WHERE emulator_id = ? AND builder_slot = ?
-        """, (building_id, timer_finish, emulator_id, builder_slot))
+            self.conn.commit()
 
-        self.conn.commit()
+            # 🐛 ЛОГИРОВАНИЕ ПОСЛЕ ОБНОВЛЕНИЯ
+            updated_building = self.get_building(emulator_id, building_name, building_index)
+            logger.warning(f"[DEBUG] ПОСЛЕ обновления: status={updated_building['status']}, "
+                           f"upgrading_to={updated_building['upgrading_to_level']}")
 
-        # 🐛 ЛОГИРОВАНИЕ ПОСЛЕ ОБНОВЛЕНИЯ
-        updated_building = self.get_building(emulator_id, building_name, building_index)
-        logger.warning(f"[DEBUG] ПОСЛЕ обновления: status={updated_building['status']}, "
-                       f"upgrading_to={updated_building['upgrading_to_level']}")
-
-        logger.info(f"✅ Здание {building_name} начало улучшение → Lv.{upgrading_to}")
-        logger.info(f"🔨 Строитель #{builder_slot} занят до {timer_finish}")
+            logger.info(f"✅ Здание {building_name} начало улучшение → Lv.{upgrading_to}")
+            logger.info(f"🔨 Строитель #{builder_slot} занят до {timer_finish}")
 
     def set_building_constructed(self, emulator_id: int, building_name: str,
                                  building_index: Optional[int], timer_finish: datetime,
@@ -1300,53 +1303,54 @@ class BuildingDatabase:
             timer_finish: время завершения постройки
             builder_slot: номер занятого строителя
         """
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            cursor = self.conn.cursor()
 
-        # Получаем текущее здание
-        building = self.get_building(emulator_id, building_name, building_index)
+            # Получаем текущее здание
+            building = self.get_building(emulator_id, building_name, building_index)
 
-        if not building:
-            logger.error(f"❌ Здание не найдено: {building_name}")
-            return
+            if not building:
+                logger.error(f"❌ Здание не найдено: {building_name}")
+                return
 
-        building_id = building['id']
+            building_id = building['id']
 
-        # ✅ ИСПРАВЛЕНО: Обновляем статус И action
-        # После начала постройки action меняется с 'build' на 'upgrade'
-        if building_index is not None:
+            # ✅ ИСПРАВЛЕНО: Обновляем статус И action
+            # После начала постройки action меняется с 'build' на 'upgrade'
+            if building_index is not None:
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET upgrading_to_level = 1,
+                        status = 'upgrading',
+                        timer_finish = ?,
+                        action = 'upgrade',
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE emulator_id = ? AND building_name = ? AND building_index = ?
+                """, (timer_finish, emulator_id, building_name, building_index))
+            else:
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET upgrading_to_level = 1,
+                        status = 'upgrading',
+                        timer_finish = ?,
+                        action = 'upgrade',
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
+                """, (timer_finish, emulator_id, building_name))
+
+            # Занимаем строителя
             cursor.execute("""
-                UPDATE buildings 
-                SET upgrading_to_level = 1,
-                    status = 'upgrading',
-                    timer_finish = ?,
-                    action = 'upgrade',
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE emulator_id = ? AND building_name = ? AND building_index = ?
-            """, (timer_finish, emulator_id, building_name, building_index))
-        else:
-            cursor.execute("""
-                UPDATE buildings 
-                SET upgrading_to_level = 1,
-                    status = 'upgrading',
-                    timer_finish = ?,
-                    action = 'upgrade',
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
-            """, (timer_finish, emulator_id, building_name))
+                UPDATE builders 
+                SET is_busy = 1,
+                    building_id = ?,
+                    finish_time = ?
+                WHERE emulator_id = ? AND builder_slot = ?
+            """, (building_id, timer_finish, emulator_id, builder_slot))
 
-        # Занимаем строителя
-        cursor.execute("""
-            UPDATE builders 
-            SET is_busy = 1,
-                building_id = ?,
-                finish_time = ?
-            WHERE emulator_id = ? AND builder_slot = ?
-        """, (building_id, timer_finish, emulator_id, builder_slot))
+            self.conn.commit()
 
-        self.conn.commit()
-
-        logger.info(f"✅ Здание {building_name} начало постройку → Lv.1 (action='build' → 'upgrade')")
-        logger.info(f"🔨 Строитель #{builder_slot} занят до {timer_finish}")
+            logger.info(f"✅ Здание {building_name} начало постройку → Lv.1 (action='build' → 'upgrade')")
+            logger.info(f"🔨 Строитель #{builder_slot} занят до {timer_finish}")
 
     # ===== РАБОТА СО СТРОИТЕЛЯМИ =====
 
@@ -1359,89 +1363,90 @@ class BuildingDatabase:
         Returns:
             номер слота (1, 2, 3, 4) или None если все заняты
         """
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            cursor = self.conn.cursor()
 
-        # ✅ ДОБАВЛЕНО: Сначала проверяем и освобождаем строителей с истекшими таймерами
-        current_time = datetime.now()
+            # ✅ ДОБАВЛЕНО: Сначала проверяем и освобождаем строителей с истекшими таймерами
+            current_time = datetime.now()
 
-        cursor.execute("""
-            SELECT builder_slot, building_id, finish_time 
-            FROM builders 
-            WHERE emulator_id = ? AND is_busy = 1 AND finish_time <= ?
-        """, (emulator_id, current_time))
-
-        expired_builders = cursor.fetchall()
-
-        # Освобождаем истекших строителей и обновляем здания
-        for row in expired_builders:
-            builder_slot = row['builder_slot']
-            building_id = row['building_id']
-            finish_time = row['finish_time']
-
-            logger.info(f"🔨 Строитель #{builder_slot} завершил работу (финиш: {finish_time})")
-
-            # Освобождаем строителя
             cursor.execute("""
-                UPDATE builders 
-                SET is_busy = 0,
-                    building_id = NULL,
-                    finish_time = NULL
-                WHERE emulator_id = ? AND builder_slot = ?
-            """, (emulator_id, builder_slot))
+                SELECT builder_slot, building_id, finish_time 
+                FROM builders 
+                WHERE emulator_id = ? AND is_busy = 1 AND finish_time <= ?
+            """, (emulator_id, current_time))
 
-            # Обновляем статус здания
-            if building_id:
-                # Получаем информацию о здании
+            expired_builders = cursor.fetchall()
+
+            # Освобождаем истекших строителей и обновляем здания
+            for row in expired_builders:
+                builder_slot = row['builder_slot']
+                building_id = row['building_id']
+                finish_time = row['finish_time']
+
+                logger.info(f"🔨 Строитель #{builder_slot} завершил работу (финиш: {finish_time})")
+
+                # Освобождаем строителя
                 cursor.execute("""
-                    SELECT building_name, building_index, upgrading_to_level 
-                    FROM buildings 
-                    WHERE id = ?
-                """, (building_id,))
+                    UPDATE builders 
+                    SET is_busy = 0,
+                        building_id = NULL,
+                        finish_time = NULL
+                    WHERE emulator_id = ? AND builder_slot = ?
+                """, (emulator_id, builder_slot))
 
-                building_row = cursor.fetchone()
-
-                if building_row:
-                    building_name = building_row['building_name']
-                    building_index = building_row['building_index']
-                    new_level = building_row['upgrading_to_level']
-
-                    # Обновляем здание: level повышен, статус idle
+                # Обновляем статус здания
+                if building_id:
+                    # Получаем информацию о здании
                     cursor.execute("""
-                        UPDATE buildings 
-                        SET current_level = ?,
-                            upgrading_to_level = NULL,
-                            status = 'idle',
-                            timer_finish = NULL,
-                            last_updated = CURRENT_TIMESTAMP
+                        SELECT building_name, building_index, upgrading_to_level 
+                        FROM buildings 
                         WHERE id = ?
-                    """, (new_level, building_id))
+                    """, (building_id,))
 
-                    display_name = building_name
-                    if building_index:
-                        display_name += f" #{building_index}"
+                    building_row = cursor.fetchone()
 
-                    logger.success(f"✅ Здание {display_name} достигло уровня {new_level}")
+                    if building_row:
+                        building_name = building_row['building_name']
+                        building_index = building_row['building_index']
+                        new_level = building_row['upgrading_to_level']
 
-        # Коммитим все изменения
-        if expired_builders:
-            self.conn.commit()
-            logger.info(f"🔄 Освобождено строителей: {len(expired_builders)}")
+                        # Обновляем здание: level повышен, статус idle
+                        cursor.execute("""
+                            UPDATE buildings 
+                            SET current_level = ?,
+                                upgrading_to_level = NULL,
+                                status = 'idle',
+                                timer_finish = NULL,
+                                last_updated = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, (new_level, building_id))
 
-        # ✅ ТЕПЕРЬ ищем свободный слот
-        cursor.execute("""
-            SELECT builder_slot 
-            FROM builders 
-            WHERE emulator_id = ? AND is_busy = 0
-            ORDER BY builder_slot
-            LIMIT 1
-        """, (emulator_id,))
+                        display_name = building_name
+                        if building_index:
+                            display_name += f" #{building_index}"
 
-        row = cursor.fetchone()
+                        logger.success(f"✅ Здание {display_name} достигло уровня {new_level}")
 
-        if row:
-            return row['builder_slot']
+            # Коммитим все изменения
+            if expired_builders:
+                self.conn.commit()
+                logger.info(f"🔄 Освобождено строителей: {len(expired_builders)}")
 
-        return None
+            # ✅ ТЕПЕРЬ ищем свободный слот
+            cursor.execute("""
+                SELECT builder_slot 
+                FROM builders 
+                WHERE emulator_id = ? AND is_busy = 0
+                ORDER BY builder_slot
+                LIMIT 1
+            """, (emulator_id,))
+
+            row = cursor.fetchone()
+
+            if row:
+                return row['builder_slot']
+
+            return None
 
     def free_builder(self, emulator_id: int, builder_slot: int):
         """
@@ -1451,35 +1456,36 @@ class BuildingDatabase:
             emulator_id: ID эмулятора
             builder_slot: номер слота строителя
         """
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            cursor = self.conn.cursor()
 
-        cursor.execute("""
-            UPDATE builders 
-            SET is_busy = 0,
-                building_id = NULL,
-                finish_time = NULL
-            WHERE emulator_id = ? AND builder_slot = ?
-        """, (emulator_id, builder_slot))
+            cursor.execute("""
+                UPDATE builders 
+                SET is_busy = 0,
+                    building_id = NULL,
+                    finish_time = NULL
+                WHERE emulator_id = ? AND builder_slot = ?
+            """, (emulator_id, builder_slot))
 
-        self.conn.commit()
+            self.conn.commit()
 
-        logger.info(f"✅ Строитель #{builder_slot} освобожден")
+            logger.info(f"✅ Строитель #{builder_slot} освобожден")
 
-    def get_busy_builders_count(self, emulator_id: int) -> int:
-        """
-        Получить количество занятых строителей
+        def get_busy_builders_count(self, emulator_id: int) -> int:
+            """
+            Получить количество занятых строителей
 
-        Returns:
-            int: количество занятых строителей
-        """
-        cursor = self.conn.cursor()
+            Returns:
+                int: количество занятых строителей
+            """
+            cursor = self.conn.cursor()
 
-        cursor.execute("""
-            SELECT COUNT(*) FROM builders 
-            WHERE emulator_id = ? AND is_busy = 1
-        """, (emulator_id,))
+            cursor.execute("""
+                SELECT COUNT(*) FROM builders 
+                WHERE emulator_id = ? AND is_busy = 1
+            """, (emulator_id,))
 
-        return cursor.fetchone()[0]
+            return cursor.fetchone()[0]
 
     # ===== ЛОГИКА ВЫБОРА СЛЕДУЮЩЕГО ЗДАНИЯ =====
 
@@ -1773,19 +1779,20 @@ class BuildingDatabase:
             hours: количество часов заморозки
             reason: причина заморозки
         """
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            cursor = self.conn.cursor()
 
-        freeze_until = datetime.now() + timedelta(hours=hours)
+            freeze_until = datetime.now() + timedelta(hours=hours)
 
-        cursor.execute("""
-            INSERT OR REPLACE INTO emulator_freeze 
-            (emulator_id, freeze_until, reason)
-            VALUES (?, ?, ?)
-        """, (emulator_id, freeze_until, reason))
+            cursor.execute("""
+                INSERT OR REPLACE INTO emulator_freeze 
+                (emulator_id, freeze_until, reason)
+                VALUES (?, ?, ?)
+            """, (emulator_id, freeze_until, reason))
 
-        self.conn.commit()
+            self.conn.commit()
 
-        logger.warning(f"❄️ Эмулятор {emulator_id} заморожен до {freeze_until} ({reason})")
+            logger.warning(f"❄️ Эмулятор {emulator_id} заморожен до {freeze_until} ({reason})")
 
     def is_emulator_frozen(self, emulator_id: int) -> bool:
         """
@@ -1794,29 +1801,30 @@ class BuildingDatabase:
         Returns:
             bool: True если эмулятор заморожен
         """
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            cursor = self.conn.cursor()
 
-        cursor.execute("""
-            SELECT freeze_until FROM emulator_freeze 
-            WHERE emulator_id = ?
-        """, (emulator_id,))
-
-        row = cursor.fetchone()
-
-        if not row:
-            return False
-
-        freeze_until = datetime.fromisoformat(row[0])
-
-        if datetime.now() < freeze_until:
-            return True
-        else:
-            # Заморозка истекла - удаляем запись
             cursor.execute("""
-                DELETE FROM emulator_freeze WHERE emulator_id = ?
+                SELECT freeze_until FROM emulator_freeze 
+                WHERE emulator_id = ?
             """, (emulator_id,))
-            self.conn.commit()
-            return False
+
+            row = cursor.fetchone()
+
+            if not row:
+                return False
+
+            freeze_until = datetime.fromisoformat(row[0])
+
+            if datetime.now() < freeze_until:
+                return True
+            else:
+                # Заморозка истекла - удаляем запись
+                cursor.execute("""
+                    DELETE FROM emulator_freeze WHERE emulator_id = ?
+                """, (emulator_id,))
+                self.conn.commit()
+                return False
 
     def unfreeze_emulator(self, emulator_id: int):
         """
@@ -1825,12 +1833,13 @@ class BuildingDatabase:
         Args:
             emulator_id: ID эмулятора
         """
-        cursor = self.conn.cursor()
+        with self.db_lock:
+            cursor = self.conn.cursor()
 
-        cursor.execute("""
-            DELETE FROM emulator_freeze WHERE emulator_id = ?
-        """, (emulator_id,))
+            cursor.execute("""
+                DELETE FROM emulator_freeze WHERE emulator_id = ?
+            """, (emulator_id,))
 
-        self.conn.commit()
+            self.conn.commit()
 
-        logger.info(f"✅ Эмулятор {emulator_id} разморожен")
+            logger.info(f"✅ Эмулятор {emulator_id} разморожен")
