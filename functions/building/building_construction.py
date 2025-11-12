@@ -321,6 +321,9 @@ class BuildingConstruction:
         """
         Проверить постройку через панель навигации
 
+        ИСПРАВЛЕНО: Теперь ищет ЛЮБОЙ экземпляр с Lv.1, а не по конкретному индексу
+        (т.к. панель сортирует здания по уровню, не по индексу)
+
         Args:
             emulator: объект эмулятора
             building_name: название здания
@@ -332,7 +335,6 @@ class BuildingConstruction:
             "not_found" - здание не найдено вообще
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-        emulator_id = emulator.get('id', 0)
         building_display = f"{building_name}" + (f" #{building_index}" if building_index else "")
 
         logger.debug(f"[{emulator_name}] 🔍 Проверяем постройку в панели навигации: {building_display}")
@@ -347,22 +349,58 @@ class BuildingConstruction:
         press_key(emulator, "ESC")
         time.sleep(0.5)
 
-        # Используем встроенный метод navigate_to_building для получения уровня
-        level = nav_panel.get_building_level(emulator, building_name, building_index)
+        # ✅ ИСПРАВЛЕНИЕ: Проверяем ВСЕ экземпляры здания
+        if building_index:
+            # Для множественных зданий - проверяем до 10 экземпляров
+            logger.debug(f"[{emulator_name}] 🔍 Ищем только что построенное здание (должно быть Lv.1)")
 
-        if level is None:
-            logger.error(f"[{emulator_name}] ❌ Здание {building_display} не найдено в панели навигации")
-            return "not_found"
+            all_levels = []
+            for idx in range(1, 11):  # Проверяем до 10 экземпляров
+                try:
+                    level = nav_panel.get_building_level(emulator, building_name, idx)
+                    if level is not None:
+                        all_levels.append((idx, level))
+                        logger.debug(f"[{emulator_name}] Найдено: {building_name} #{idx} → Lv.{level}")
+                except Exception as e:
+                    logger.debug(f"[{emulator_name}] Пропускаем #{idx}: {e}")
+                    continue
 
-        logger.debug(f"[{emulator_name}] Найдено: {building_display} Lv.{level}")
+            if not all_levels:
+                logger.error(f"[{emulator_name}] ❌ Здания не найдены вообще")
+                return "not_found"
 
-        if level == 1:
-            return "level_1"
-        elif level == 0:
-            return "level_0"
+            # Проверяем есть ли здание с Lv.1
+            found_level_1 = any(level == 1 for idx, level in all_levels)
+            found_level_0 = any(level == 0 for idx, level in all_levels)
+
+            logger.debug(f"[{emulator_name}] Найденные уровни: {all_levels}")
+
+            if found_level_1:
+                logger.success(f"[{emulator_name}] ✅ Постройка подтверждена! Найдено здание Lv.1")
+                return "level_1"
+            elif found_level_0:
+                logger.warning(f"[{emulator_name}] ⚠️ Найдено здание Lv.0 (не достроено)")
+                return "level_0"
+            else:
+                logger.warning(f"[{emulator_name}] ⚠️ Не найдено Lv.1 или Lv.0")
+                return "not_found"
         else:
-            logger.warning(f"[{emulator_name}] ⚠️ Неожиданный уровень: {level}")
-            return "not_found"
+            # Для уникального здания - проверяем как раньше
+            level = nav_panel.get_building_level(emulator, building_name, None)
+
+            if level is None:
+                logger.error(f"[{emulator_name}] ❌ Здание не найдено в панели навигации")
+                return "not_found"
+
+            logger.debug(f"[{emulator_name}] Найдено: {building_display} Lv.{level}")
+
+            if level == 1:
+                return "level_1"
+            elif level == 0:
+                return "level_0"
+            else:
+                logger.warning(f"[{emulator_name}] ⚠️ Неожиданный уровень: {level}")
+                return "not_found"
 
     def _finish_incomplete_construction(self, emulator: Dict, building_name: str,
                                         building_index: Optional[int] = None) -> bool:
