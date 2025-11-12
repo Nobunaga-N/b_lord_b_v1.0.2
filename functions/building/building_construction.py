@@ -361,6 +361,11 @@ class BuildingConstruction:
                     if level is not None:
                         all_levels.append((idx, level))
                         logger.debug(f"[{emulator_name}] Найдено: {building_name} #{idx} → Lv.{level}")
+
+                        # ✅ КРИТИЧНО: Если нашли Lv.1 - сразу прерываем цикл!
+                        if level == 1:
+                            logger.success(f"[{emulator_name}] ✅ Найдено новое здание Lv.1, прерываем поиск")
+                            break
                 except Exception as e:
                     logger.debug(f"[{emulator_name}] Пропускаем #{idx}: {e}")
                     continue
