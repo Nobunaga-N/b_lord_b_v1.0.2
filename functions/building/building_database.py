@@ -1632,8 +1632,8 @@ class BuildingDatabase:
             # ПРОВЕРКА ПРОМЕЖУТОЧНЫХ ЗДАНИЙ только для Лорда
             if name == "Лорд":
                 if not self._check_intermediate_buildings_ready(emulator_id, lord_level):
-                    logger.debug(f"[{emulator_name}] ⏸️ Лорд: промежуточные здания не готовы")
-                    return None
+                    logger.debug(f"[{emulator_name}] ⏸️ Лорд: промежуточные здания не готовы, пропускаем")
+                    continue  # ← Пропускаем Лорда, но проверяем остальные здания!
 
             # МНОЖЕСТВЕННОЕ ЗДАНИЕ (несколько экземпляров)
             if btype == 'multiple':
