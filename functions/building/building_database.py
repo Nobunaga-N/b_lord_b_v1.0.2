@@ -1881,12 +1881,15 @@ class BuildingDatabase:
         return None
 
     def update_building_after_construction(self, emulator_id: int, building_name: str,
-                                           building_index: Optional[int] = None) -> None:
+                                           building_index: Optional[int] = None,
+                                           actual_level: Optional[int] = None) -> None:
         """
         Обновить здание после успешной постройки
 
+        ИСПРАВЛЕНО: Теперь принимает actual_level для корректного обновления
+
         Изменения:
-        1. Установить current_level = 1
+        1. Установить current_level = actual_level (или 1 если не передан)
         2. Изменить action: 'build' → 'upgrade'
         3. Обновить last_updated
 
@@ -1894,35 +1897,39 @@ class BuildingDatabase:
             emulator_id: ID эмулятора
             building_name: название здания
             building_index: индекс (для множественных зданий)
+            actual_level: фактический уровень здания (по умолчанию 1)
         """
         with self.db_lock:
             cursor = self.conn.cursor()
 
             building_display = f"{building_name}" + (f" #{building_index}" if building_index else "")
 
+            # Если actual_level не передан, используем 1
+            level_to_set = actual_level if actual_level is not None else 1
+
             if building_index is None:
                 # Unique здание
                 cursor.execute("""
                     UPDATE buildings 
-                    SET current_level = 1,
+                    SET current_level = ?,
                         action = 'upgrade',
                         last_updated = CURRENT_TIMESTAMP
                     WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
-                """, (emulator_id, building_name))
+                """, (level_to_set, emulator_id, building_name))
             else:
                 # Multiple здание
                 cursor.execute("""
                     UPDATE buildings 
-                    SET current_level = 1,
+                    SET current_level = ?,
                         action = 'upgrade',
                         last_updated = CURRENT_TIMESTAMP
                     WHERE emulator_id = ? AND building_name = ? AND building_index = ?
-                """, (emulator_id, building_name, building_index))
+                """, (level_to_set, emulator_id, building_name, building_index))
 
             self.conn.commit()
 
             logger.success(f"[Emulator {emulator_id}] ✅ {building_display} построено!")
-            logger.info(f"[Emulator {emulator_id}] 🔄 Action: 'build' → 'upgrade', Level: 0 → 1")
+            logger.info(f"[Emulator {emulator_id}] 🔄 Action: 'build' → 'upgrade', Level: 0 → {level_to_set}")
 
     # ===== ЗАМОРОЗКА ЭМУЛЯТОРА =====
 

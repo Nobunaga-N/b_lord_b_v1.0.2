@@ -208,16 +208,16 @@ class BuildingFunction(BaseFunction):
                 time.sleep(0.5)
 
                 # Строим здание через BuildingConstruction
-                success = self.construction.construct_building(
+                success, actual_level = self.construction.construct_building(
                     self.emulator, building_name, building_index
                 )
 
                 if success:
                     logger.success(f"[{self.emulator_name}] ✅ Здание построено: {display_name}")
 
-                    # Обновляем БД: level=1, action='build' → 'upgrade'
+                    # Обновляем БД с РЕАЛЬНЫМ уровнем (без повторного сканирования!)
                     self.db.update_building_after_construction(
-                        emulator_id, building_name, building_index
+                        emulator_id, building_name, building_index, actual_level
                     )
 
                     constructed_count += 1

@@ -13,7 +13,7 @@
 
 import os
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from utils.adb_controller import tap, swipe, press_key
 from utils.image_recognition import find_image
 from utils.logger import logger
@@ -136,7 +136,7 @@ class BuildingConstruction:
         logger.info("✅ BuildingConstruction инициализирован")
 
     def construct_building(self, emulator: Dict, building_name: str,
-                           building_index: Optional[int] = None) -> bool:
+                           building_index: Optional[int] = None) -> Tuple[bool, Optional[int]]:
         """
         ГЛАВНЫЙ МЕТОД - Построить новое здание
 
@@ -146,7 +146,7 @@ class BuildingConstruction:
             building_index: индекс (для множественных зданий)
 
         Returns:
-            bool: True если здание успешно построено
+             Tuple[bool, Optional[int]]: (успех, уровень_здания)
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
         building_display = f"{building_name}" + (f" #{building_index}" if building_index else "")
@@ -154,22 +154,22 @@ class BuildingConstruction:
         logger.info(f"[{emulator_name}] 🏗️ Начало постройки: {building_display}")
 
         # Попытка 1
-        success = self._try_construct(emulator, building_name, building_index)
+        success, level = self._try_construct(emulator, building_name, building_index)
         if success:
             logger.success(f"[{emulator_name}] ✅ Здание построено: {building_display}")
-            return True
+            return True, level
 
         logger.warning(f"[{emulator_name}] ⚠️ Первая попытка неудачна, повторяем...")
         time.sleep(2)
 
         # Попытка 2
-        success = self._try_construct(emulator, building_name, building_index)
+        success, level = self._try_construct(emulator, building_name, building_index)
         if success:
             logger.success(f"[{emulator_name}] ✅ Здание построено (попытка 2): {building_display}")
-            return True
+            return True, level
 
         logger.error(f"[{emulator_name}] ❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось построить {building_display}")
-        return False
+        return False, None
 
     def _ensure_shovel_visible(self, emulator: Dict, max_attempts: int = 4) -> bool:
         """
@@ -230,7 +230,7 @@ class BuildingConstruction:
         return False
 
     def _try_construct(self, emulator: Dict, building_name: str,
-                       building_index: Optional[int] = None) -> bool:
+                           building_index: Optional[int] = None) -> Tuple[bool, Optional[int]]:
         """
         Одна попытка постройки здания
 
@@ -291,38 +291,41 @@ class BuildingConstruction:
 
         # ШАГ 7: ПРОВЕРКА ЧЕРЕЗ ПАНЕЛЬ НАВИГАЦИИ
         logger.debug(f"[{emulator_name}] ШАГ 7: Проверяем постройку через панель навигации")
-        verification_result = self._verify_construction_in_panel(emulator, building_name, building_index)
+        verification_result, actual_level = self._verify_construction_in_panel(
+            emulator, building_name, building_index
+        )
 
-        if verification_result == "level_1":
-            # ✅ Здание построено, уровень 1
-            logger.success(f"[{emulator_name}] ✅ Здание построено, уровень подтвержден: 1")
-            return True
+        if verification_result == "level_found":
+            # ✅ Здание построено или уже было построено
+            logger.success(f"[{emulator_name}] ✅ Здание подтверждено, уровень: {actual_level}")
+
+            # Возвращаем статус И уровень для обновления БД
+            return True, actual_level
 
         elif verification_result == "level_0":
             # ⚠️ Уровень 0, нужно достроить
             logger.warning(f"[{emulator_name}] ⚠️ Уровень 0, достраиваем...")
             if not self._finish_incomplete_construction(emulator, building_name, building_index):
                 logger.error(f"[{emulator_name}] ❌ Не удалось достроить здание")
-                return False
+                return False, None
             logger.success(f"[{emulator_name}] ✅ Здание достроено успешно")
-            return True
+            return True, 1  # После достройки = уровень 1
 
         elif verification_result == "not_found":
-            # ❌ Здания нет, начинаем с начала (вернет False для retry)
+            # ❌ Здания нет
             logger.error(f"[{emulator_name}] ❌ Здание не найдено в панели навигации")
-            return False
+            return False, None
 
         else:
-            logger.error(f"[{emulator_name}] ❌ Неизвестный результат проверки: {verification_result}")
-            return False
+            logger.error(f"[{emulator_name}] ❌ Неизвестный результат: {verification_result}")
+            return False, None
 
     def _verify_construction_in_panel(self, emulator: Dict, building_name: str,
-                                      building_index: Optional[int] = None) -> str:
+                                      building_index: Optional[int] = None) -> Tuple[str, Optional[int]]:
         """
         Проверить постройку через панель навигации
 
-        ИСПРАВЛЕНО: Теперь ищет ЛЮБОЙ экземпляр с Lv.1, а не по конкретному индексу
-        (т.к. панель сортирует здания по уровню, не по индексу)
+        ИСПРАВЛЕНО: Возвращает (статус, уровень) вместо только статуса
 
         Args:
             emulator: объект эмулятора
@@ -330,9 +333,10 @@ class BuildingConstruction:
             building_index: индекс для множественных зданий
 
         Returns:
-            "level_1" - здание построено, уровень 1
-            "level_0" - здание есть но уровень 0 (не достроили)
-            "not_found" - здание не найдено вообще
+            Tuple[str, Optional[int]]: (статус, уровень)
+                - ("level_found", N) - здание найдено с уровнем N >= 1
+                - ("level_0", 0) - здание есть но уровень 0 (не достроено)
+                - ("not_found", None) - здание не найдено вообще
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
         building_display = f"{building_name}" + (f" #{building_index}" if building_index else "")
@@ -349,22 +353,22 @@ class BuildingConstruction:
         press_key(emulator, "ESC")
         time.sleep(0.5)
 
-        # ✅ ИСПРАВЛЕНИЕ: Проверяем ВСЕ экземпляры здания
+        # Проверяем здания
         if building_index:
             # Для множественных зданий - проверяем до 10 экземпляров
-            logger.debug(f"[{emulator_name}] 🔍 Ищем только что построенное здание (должно быть Lv.1)")
+            logger.debug(f"[{emulator_name}] 🔍 Ищем построенное здание (любой уровень >= 1)")
 
             all_levels = []
-            for idx in range(1, 11):  # Проверяем до 10 экземпляров
+            for idx in range(1, 11):
                 try:
                     level = nav_panel.get_building_level(emulator, building_name, idx)
                     if level is not None:
                         all_levels.append((idx, level))
                         logger.debug(f"[{emulator_name}] Найдено: {building_name} #{idx} → Lv.{level}")
 
-                        # ✅ КРИТИЧНО: Если нашли Lv.1 - сразу прерываем цикл!
-                        if level == 1:
-                            logger.success(f"[{emulator_name}] ✅ Найдено новое здание Lv.1, прерываем поиск")
+                        # Если нашли уровень >= 1 - прерываем
+                        if level >= 1:
+                            logger.success(f"[{emulator_name}] ✅ Найдено здание Lv.{level}, прерываем поиск")
                             break
                 except Exception as e:
                     logger.debug(f"[{emulator_name}] Пропускаем #{idx}: {e}")
@@ -372,40 +376,42 @@ class BuildingConstruction:
 
             if not all_levels:
                 logger.error(f"[{emulator_name}] ❌ Здания не найдены вообще")
-                return "not_found"
+                return ("not_found", None)
 
-            # Проверяем есть ли здание с Lv.1
-            found_level_1 = any(level == 1 for idx, level in all_levels)
-            found_level_0 = any(level == 0 for idx, level in all_levels)
+            # Проверяем уровни
+            found_built = [(idx, level) for idx, level in all_levels if level >= 1]
+            found_level_0 = [(idx, level) for idx, level in all_levels if level == 0]
 
             logger.debug(f"[{emulator_name}] Найденные уровни: {all_levels}")
 
-            if found_level_1:
-                logger.success(f"[{emulator_name}] ✅ Постройка подтверждена! Найдено здание Lv.1")
-                return "level_1"
+            if found_built:
+                # Берем первое найденное здание с уровнем >= 1
+                idx, level = found_built[0]
+                logger.success(f"[{emulator_name}] ✅ Постройка подтверждена! #{idx} Lv.{level}")
+                return ("level_found", level)
             elif found_level_0:
                 logger.warning(f"[{emulator_name}] ⚠️ Найдено здание Lv.0 (не достроено)")
-                return "level_0"
+                return ("level_0", 0)
             else:
-                logger.warning(f"[{emulator_name}] ⚠️ Не найдено Lv.1 или Lv.0")
-                return "not_found"
+                return ("not_found", None)
         else:
-            # Для уникального здания - проверяем как раньше
+            # Для уникального здания
             level = nav_panel.get_building_level(emulator, building_name, None)
 
             if level is None:
                 logger.error(f"[{emulator_name}] ❌ Здание не найдено в панели навигации")
-                return "not_found"
+                return ("not_found", None)
 
             logger.debug(f"[{emulator_name}] Найдено: {building_display} Lv.{level}")
 
-            if level == 1:
-                return "level_1"
+            if level >= 1:
+                logger.success(f"[{emulator_name}] ✅ Здание подтверждено с уровнем {level}")
+                return ("level_found", level)
             elif level == 0:
-                return "level_0"
+                logger.warning(f"[{emulator_name}] ⚠️ Здание найдено с уровнем 0")
+                return ("level_0", 0)
             else:
-                logger.warning(f"[{emulator_name}] ⚠️ Неожиданный уровень: {level}")
-                return "not_found"
+                return ("not_found", None)
 
     def _finish_incomplete_construction(self, emulator: Dict, building_name: str,
                                         building_index: Optional[int] = None) -> bool:
