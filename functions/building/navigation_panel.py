@@ -895,7 +895,7 @@ class NavigationPanel:
         return True
 
     def get_building_level(self, emulator: Dict, building_name: str,
-                          building_index: Optional[int] = None) -> Optional[int]:
+                           building_index: Optional[int] = None) -> Optional[int]:
         """
         Получить уровень здания БЕЗ перехода к нему
         Используется для первичного сканирования
@@ -904,7 +904,7 @@ class NavigationPanel:
         emulator_id = emulator.get('id', 0)
 
         logger.info(f"[{emulator_name}] 🔍 Сканирование уровня: {building_name}" +
-                   (f" #{building_index}" if building_index else ""))
+                    (f" #{building_index}" if building_index else ""))
 
         # Получить конфигурацию
         building_config = self.get_building_config(building_name)
@@ -934,6 +934,20 @@ class NavigationPanel:
                 self.execute_swipes(emulator, scroll_to_top)
                 self.nav_state.mark_scrolled_to_top()
 
+                # КРИТИЧНО! Проверяем что всё свернуто после свайпов
+                # Свайпы могут "вытащить" ранее свёрнутые разделы обратно
+                time.sleep(0.5)
+                arrow_down = find_image(emulator, self.TEMPLATES['arrow_down'], threshold=0.8)
+                arrow_down_sub = find_image(emulator, self.TEMPLATES['arrow_down_sub'], threshold=0.8)
+
+                if arrow_down is not None or arrow_down_sub is not None:
+                    logger.warning(f"[{emulator_name}] ⚠️ Обнаружены открытые разделы после свайпов, сворачиваю...")
+                    self.collapse_all_sections(emulator)
+                    time.sleep(0.5)
+                else:
+                    logger.debug(f"[{emulator_name}] ✅ Все разделы свернуты после свайпов")
+
+            # Открываем раздел
             section_name = building_config.get('section')
             if not self._open_section_by_name(emulator, section_name):
                 return None

@@ -883,6 +883,20 @@ class BuildingDatabase:
             nav_panel.execute_swipes(emulator, scroll_to_top)
             nav_panel.nav_state.mark_scrolled_to_top()
             time.sleep(0.3)
+
+            # КРИТИЧНО! Проверяем что всё свернуто после свайпов
+            # Свайпы могут "вытащить" ранее свёрнутые разделы обратно
+            from utils.image_recognition import find_image
+            arrow_down = find_image(emulator, nav_panel.TEMPLATES['arrow_down'], threshold=0.8)
+            arrow_down_sub = find_image(emulator, nav_panel.TEMPLATES['arrow_down_sub'], threshold=0.8)
+
+            if arrow_down is not None or arrow_down_sub is not None:
+                logger.warning(f"[{emulator_name}] ⚠️ Обнаружены открытые разделы после свайпов, сворачиваю...")
+                nav_panel.collapse_all_sections(emulator)
+                time.sleep(0.3)
+            else:
+                logger.debug(f"[{emulator_name}] ✅ Все разделы свернуты после свайпов")
+
         else:
             logger.debug(f"[{emulator_name}] ✅ Уже в начале списка (пропускаю свайпы)")
 
