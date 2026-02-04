@@ -56,7 +56,7 @@ class BuildingUpgrade:
     }
 
     # Пороги для поиска изображений
-    THRESHOLD_ICON = 0.7  # Для иконок (могут быть разных размеров)
+    THRESHOLD_ICON = 0.65  # Для иконок (могут быть разных размеров)
     THRESHOLD_BUTTON = 0.85  # Для кнопок
     THRESHOLD_WINDOW = 0.85  # Для заголовков окон
 
