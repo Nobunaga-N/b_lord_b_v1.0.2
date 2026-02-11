@@ -2020,3 +2020,172 @@ class BuildingDatabase:
             self.conn.commit()
 
             logger.info(f"✅ Эмулятор {emulator_id} разморожен")
+
+    # ===== МЕТОДЫ ДЛЯ ПЛАНИРОВЩИКА =====
+
+    def has_buildings(self, emulator_id: int) -> bool:
+        """
+        Есть ли записи зданий для эмулятора в БД
+
+        Используется планировщиком для определения НОВЫХ эмуляторов:
+        - False → эмулятор новый, требуется первичное сканирование
+        - True → эмулятор уже инициализирован
+
+        Args:
+            emulator_id: ID эмулятора
+
+        Returns:
+            bool: True если есть хотя бы одна запись
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM buildings WHERE emulator_id = ?",
+                (emulator_id,)
+            )
+            return cursor.fetchone()[0] > 0
+
+    def has_buildings_to_upgrade(self, emulator_id: int) -> bool:
+        """
+        Есть ли здания которые можно улучшить или построить
+
+        Проверяет наличие зданий со статусом 'idle' которые
+        ещё не достигли целевого уровня.
+
+        Условия для включения:
+        - status = 'idle' (не в процессе улучшения)
+        - current_level < target_level (есть куда расти)
+
+        НЕ учитывает:
+        - Наличие свободных строителей (это отдельная проверка)
+        - Наличие ресурсов (узнаем только при попытке улучшения)
+        - Автосканирование (это делается при запуске эмулятора)
+
+        Args:
+            emulator_id: ID эмулятора
+
+        Returns:
+            bool: True если есть хотя бы одно такое здание
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM buildings
+                WHERE emulator_id = ?
+                AND status = 'idle'
+                AND current_level < target_level
+            """, (emulator_id,))
+            return cursor.fetchone()[0] > 0
+
+    def get_nearest_builder_finish_time(self, emulator_id: int) -> Optional[datetime]:
+        """
+        Время ближайшего освобождения занятого строителя
+
+        Используется планировщиком для определения когда эмулятору
+        потребуется внимание (когда освободится строитель).
+
+        Проверяет ТОЛЬКО занятых строителей (is_busy = 1) с установленным
+        finish_time. Если все строители свободны — возвращает None.
+
+        Args:
+            emulator_id: ID эмулятора
+
+        Returns:
+            datetime — время ближайшего освобождения
+            None — нет занятых строителей (все свободны или нет записей)
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT MIN(finish_time) as nearest
+                FROM builders
+                WHERE emulator_id = ? AND is_busy = 1 AND finish_time IS NOT NULL
+            """, (emulator_id,))
+
+            row = cursor.fetchone()
+
+            if row and row['nearest']:
+                finish_time = row['nearest']
+                # SQLite может хранить как строку — обрабатываем оба варианта
+                if isinstance(finish_time, str):
+                    return datetime.fromisoformat(finish_time)
+                return finish_time
+
+            return None
+
+    def get_all_builder_finish_times(self, emulator_id: int) -> list:
+        """
+        Все времена освобождения занятых строителей (для батчинга)
+
+        Используется планировщиком для определения оптимального
+        момента запуска. Если два строителя освобождаются с разницей
+        в несколько минут — лучше подождать и обработать оба за раз.
+
+        Возвращает только будущие времена (finish_time > now).
+        Строители с истёкшими таймерами уже свободны (обрабатываются
+        в get_free_builder()).
+
+        Args:
+            emulator_id: ID эмулятора
+
+        Returns:
+            list[datetime] — отсортированный по возрастанию, может быть пустым
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT finish_time
+                FROM builders
+                WHERE emulator_id = ? AND is_busy = 1 AND finish_time IS NOT NULL
+                ORDER BY finish_time ASC
+            """, (emulator_id,))
+
+            times = []
+            for row in cursor.fetchall():
+                finish_time = row['finish_time']
+                if isinstance(finish_time, str):
+                    times.append(datetime.fromisoformat(finish_time))
+                elif finish_time:
+                    times.append(finish_time)
+
+            return times
+
+    def get_freeze_until(self, emulator_id: int) -> Optional[datetime]:
+        """
+        Время разморозки эмулятора
+
+        Используется планировщиком для постановки в расписание:
+        замороженный эмулятор будет запланирован на время разморозки.
+
+        Если заморозка уже истекла — возвращает None (и НЕ удаляет запись,
+        это делает is_emulator_frozen() при следующем вызове).
+
+        Args:
+            emulator_id: ID эмулятора
+
+        Returns:
+            datetime — время разморозки (в будущем)
+            None — эмулятор не заморожен или заморозка истекла
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT freeze_until FROM emulator_freeze WHERE emulator_id = ?",
+                (emulator_id,)
+            )
+
+            row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            freeze_until = row['freeze_until']
+
+            if isinstance(freeze_until, str):
+                freeze_until = datetime.fromisoformat(freeze_until)
+
+            # Возвращаем только если заморозка ещё действует
+            if freeze_until > datetime.now():
+                return freeze_until
+
+            return None
