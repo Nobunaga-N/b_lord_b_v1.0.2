@@ -48,6 +48,60 @@ class BuildingFunction(BaseFunction):
 
         logger.info(f"[{self.emulator_name}] ✅ BuildingFunction инициализирована")
 
+    @staticmethod
+    def get_next_event_time(emulator_id: int) -> Optional[datetime]:
+        """
+        Когда строительству потребуется эмулятор?
+
+        Лёгкая проверка через БД без запуска эмулятора.
+        Вызывается планировщиком для определения времени запуска.
+
+        Логика:
+        1. Нет записей в БД → datetime.min (новый эмулятор, первичное сканирование)
+        2. Эмулятор заморожен → время разморозки
+        3. Есть свободный строитель + есть что строить → datetime.now() (нужен сейчас)
+        4. Есть свободный строитель, но строить нечего → None
+        5. Все строители заняты + есть что строить → время ближайшего освобождения
+        6. Все строители заняты + строить нечего → None
+
+        Returns:
+            datetime — когда нужен эмулятор
+            None — эмулятор не нужен для строительства
+        """
+        db = BuildingDatabase()
+
+        try:
+            # 1. Новый эмулятор (нет записей в БД)?
+            if not db.has_buildings(emulator_id):
+                return datetime.min  # Максимальный приоритет
+
+            # 2. Заморожен?
+            if db.is_emulator_frozen(emulator_id):
+                freeze_until = db.get_freeze_until(emulator_id)
+                return freeze_until  # Время разморозки или None если истекла
+
+            # 3. Есть что строить?
+            has_work = db.has_buildings_to_upgrade(emulator_id)
+
+            if not has_work:
+                return None  # Все здания на максимуме
+
+            # 4. Есть свободный строитель?
+            #    get_free_builder() автоматически освобождает строителей с истёкшими таймерами
+            free_builder = db.get_free_builder(emulator_id)
+
+            if free_builder is not None:
+                # Строитель свободен и есть что строить → нужен СЕЙЧАС
+                return datetime.now()
+
+            # 5. Все строители заняты → время ближайшего освобождения
+            nearest = db.get_nearest_builder_finish_time(emulator_id)
+            return nearest  # datetime или None
+
+        except Exception as e:
+            logger.error(f"[Emulator {emulator_id}] Ошибка в BuildingFunction.get_next_event_time: {e}")
+            return None
+
     def _first_time_initialization(self) -> bool:
         """
         Инициализация при первом запуске эмулятора

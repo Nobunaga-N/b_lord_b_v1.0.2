@@ -11,4 +11,4 @@ functions:
   tiles: false
   wilds: false
 settings:
-  max_concurrent: 1
+  max_concurrent: 2
