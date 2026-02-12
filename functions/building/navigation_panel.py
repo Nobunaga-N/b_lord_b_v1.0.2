@@ -479,29 +479,50 @@ class NavigationPanel:
                 logger.error(f"[{emulator_name}] ❌ Здание не найдено")
                 return False
 
-            # НОВАЯ ЛОГИКА: Если известен ожидаемый уровень - ищем по нему
+            # УЛУЧШЕННАЯ ЛОГИКА: Комбинированный поиск по уровню + индексу
             if expected_level is not None:
-                logger.debug(f"[{emulator_name}] 🎯 Поиск по ожидаемому уровню: Lv.{expected_level}")
+                logger.debug(f"[{emulator_name}] 🎯 Поиск: Lv.{expected_level}, index=#{building_index}")
 
-                # Ищем здание с точным уровнем
-                exact_match = None
-                for building in matching_buildings:
-                    if building['level'] == expected_level:
-                        exact_match = building
-                        logger.success(f"[{emulator_name}] ✅ Найдено точное совпадение: {building['name']} Lv.{building['level']} (Y: {building['y']})")
-                        break
+                # Сортируем по Y (позиция сверху вниз)
+                matching_buildings.sort(key=lambda b: b['y'])
 
-                if exact_match:
-                    target_building = exact_match
+                # Считаем сколько зданий с expected_level
+                same_level = [b for b in matching_buildings if b['level'] == expected_level]
+
+                if len(same_level) == 1:
+                    # УНИКАЛЬНЫЙ УРОВЕНЬ — точная идентификация
+                    # (сработает при пересортировке, когда уровень стал уникальным)
+                    target_building = same_level[0]
+                    logger.success(f"[{emulator_name}] ✅ Единственное совпадение по уровню: "
+                                   f"{target_building['name']} Lv.{target_building['level']} (Y: {target_building['y']})")
+
+                elif len(same_level) > 1:
+                    # НЕСКОЛЬКО ЗДАНИЙ С ОДИНАКОВЫМ УРОВНЕМ
+                    # Используем building_index для позиционного выбора среди ВСЕХ экземпляров
+                    logger.debug(f"[{emulator_name}] 📊 Найдено {len(same_level)} зданий с Lv.{expected_level}, "
+                                 f"всего экземпляров: {len(matching_buildings)}")
+
+                    if building_index <= len(matching_buildings):
+                        target_building = matching_buildings[building_index - 1]
+                        logger.success(f"[{emulator_name}] ✅ Выбрано по позиции #{building_index}: "
+                                       f"{target_building['name']} Lv.{target_building['level']} (Y: {target_building['y']})")
+
+                        # Верификация: предупреждаем если уровень не совпал
+                        if target_building['level'] != expected_level:
+                            logger.warning(f"[{emulator_name}] ⚠️ Уровень позиции #{building_index} = "
+                                           f"Lv.{target_building['level']}, ожидали Lv.{expected_level}")
+                    else:
+                        logger.error(f"[{emulator_name}] ❌ Индекс {building_index} вне диапазона "
+                                     f"({len(matching_buildings)} экземпляров)")
+                        return False
+
                 else:
-                    # Не нашли точное совпадение - ищем ближайший уровень
-                    logger.warning(f"[{emulator_name}] ⚠️ Точное совпадение не найдено, ищу ближайший уровень...")
-
-                    # Сортируем по разнице уровней
+                    # НЕТ ЗДАНИЙ С ТАКИМ УРОВНЕМ — fallback на ближайший
+                    logger.warning(f"[{emulator_name}] ⚠️ Нет зданий с Lv.{expected_level}, ищу ближайший...")
                     matching_buildings.sort(key=lambda b: abs(b['level'] - expected_level))
                     target_building = matching_buildings[0]
-
-                    logger.warning(f"[{emulator_name}] ⚠️ Выбрано ближайшее: {target_building['name']} Lv.{target_building['level']} (ожидали Lv.{expected_level})")
+                    logger.warning(f"[{emulator_name}] ⚠️ Выбрано ближайшее: "
+                                   f"{target_building['name']} Lv.{target_building['level']}")
             else:
                 # СТАРАЯ ЛОГИКА: Если уровень неизвестен - используем индекс
                 logger.debug(f"[{emulator_name}] 📍 Поиск по индексу #{building_index}")

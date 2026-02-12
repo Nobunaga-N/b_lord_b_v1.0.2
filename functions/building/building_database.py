@@ -1012,7 +1012,81 @@ class BuildingDatabase:
             if completed:
                 self.conn.commit()
 
+                # Пересчёт индексов для затронутых множественных зданий
+                affected_names = set()
+                for row in completed:
+                    if row['building_index'] is not None:
+                        affected_names.add(row['building_name'])
+
+                for name in affected_names:
+                    self.recalculate_building_indices(emulator_id, name)
+
             return len(completed)
+
+    def recalculate_building_indices(self, emulator_id: int, building_name: str):
+        """
+        Пересчитать building_index для группы множественных зданий
+        после завершения улучшения.
+
+        Правило сортировки игры:
+        - Более низкие уровни — вверху (меньший индекс)
+        - Среди одинаковых уровней — последнее улучшенное внизу (больший индекс)
+
+        Аппроксимация: ORDER BY current_level ASC, last_updated ASC
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+
+            # Получаем все экземпляры этого здания
+            cursor.execute("""
+                SELECT id, building_index, current_level, last_updated
+                FROM buildings
+                WHERE emulator_id = ? AND building_name = ? AND building_index IS NOT NULL
+                ORDER BY current_level ASC, last_updated ASC
+            """, (emulator_id, building_name))
+
+            rows = cursor.fetchall()
+
+            if not rows:
+                return
+
+            # Проверяем нужен ли пересчёт
+            needs_recalc = False
+            for new_index, row in enumerate(rows, start=1):
+                if row['building_index'] != new_index:
+                    needs_recalc = True
+                    break
+
+            if not needs_recalc:
+                return
+
+            # Логируем текущее и новое состояние
+            logger.info(f"🔄 Пересчёт индексов: {building_name} (emulator {emulator_id})")
+
+            # Используем временные отрицательные индексы чтобы избежать UNIQUE constraint
+            # (нельзя сменить index 1→2 если index 2 уже существует)
+            for new_index, row in enumerate(rows, start=1):
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET building_index = ?
+                    WHERE id = ?
+                """, (-(new_index), row['id']))
+
+            # Теперь ставим правильные положительные
+            for new_index, row in enumerate(rows, start=1):
+                old_index = row['building_index']
+                if old_index != new_index:
+                    logger.debug(f"   {building_name}: index {old_index} → {new_index} "
+                               f"(Lv.{row['current_level']})")
+
+                cursor.execute("""
+                    UPDATE buildings 
+                    SET building_index = ?
+                    WHERE id = ?
+                """, (new_index, row['id']))
+
+            self.conn.commit()
+            logger.success(f"✅ Индексы пересчитаны: {building_name}")
 
     def get_unscanned_buildings_count(self, emulator_id: int) -> int:
         """
@@ -1445,6 +1519,21 @@ class BuildingDatabase:
             if expired_builders:
                 self.conn.commit()
                 logger.info(f"🔄 Освобождено строителей: {len(expired_builders)}")
+
+                # Пересчёт индексов для затронутых множественных зданий
+                affected_names = set()
+                for row in expired_builders:
+                    if row['building_id']:
+                        cursor.execute(
+                            "SELECT building_name, building_index FROM buildings WHERE id = ?",
+                            (row['building_id'],)
+                        )
+                        b_row = cursor.fetchone()
+                        if b_row and b_row['building_index'] is not None:
+                            affected_names.add(b_row['building_name'])
+
+                for name in affected_names:
+                    self.recalculate_building_indices(emulator_id, name)
 
             # ✅ ТЕПЕРЬ ищем свободный слот
             cursor.execute("""

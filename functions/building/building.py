@@ -80,15 +80,17 @@ class BuildingFunction(BaseFunction):
                 freeze_until = db.get_freeze_until(emulator_id)
                 return freeze_until  # Время разморозки или None если истекла
 
-            # 3. Есть что строить?
+            # 3. Сначала обновить завершённые постройки!
+            #    КРИТИЧНО: get_free_builder() переводит здания из 'upgrading' в 'idle',
+            #    поэтому ДОЛЖЕН вызываться ДО has_buildings_to_upgrade()
+
+            free_builder = db.get_free_builder(emulator_id)
+
+            # 4. Есть что строить?
             has_work = db.has_buildings_to_upgrade(emulator_id)
 
             if not has_work:
                 return None  # Все здания на максимуме
-
-            # 4. Есть свободный строитель?
-            #    get_free_builder() автоматически освобождает строителей с истёкшими таймерами
-            free_builder = db.get_free_builder(emulator_id)
 
             if free_builder is not None:
                 # Строитель свободен и есть что строить → нужен СЕЙЧАС
@@ -288,7 +290,8 @@ class BuildingFunction(BaseFunction):
                     logger.error(f"[{self.emulator_name}] ❌ Не удалось открыть панель навигации")
                     break
 
-                if not self.panel.navigate_to_building(self.emulator, building_name, building_index):
+                if not self.panel.navigate_to_building(self.emulator, building_name, building_index,
+                                                       expected_level=current_level):
                     logger.error(f"[{self.emulator_name}] ❌ Не удалось перейти к зданию: {display_name}")
                     break
 
