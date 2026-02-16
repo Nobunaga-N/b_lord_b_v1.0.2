@@ -67,7 +67,7 @@ class BuildingDatabase:
         os.makedirs(os.path.dirname(self.DB_PATH), exist_ok=True)
 
         # ✅ ДОБАВЛЕНО: Блокировка для thread-safety
-        self.db_lock = threading.Lock()
+        self.db_lock = threading.RLock()
 
         self.conn = sqlite3.connect(self.DB_PATH, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
