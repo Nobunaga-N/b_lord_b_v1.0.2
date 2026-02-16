@@ -164,6 +164,7 @@ class NavigationPanel:
         self.ocr = OCREngine()
         self.config = self._load_config()
         self.nav_state = NavigationState()  # НОВОЕ: Состояние навигации
+        self.last_detected_level = None  # Фактический уровень здания после navigate
 
         if not self.config:
             logger.error("❌ Не удалось загрузить конфигурацию building_navigation.yaml")
@@ -548,6 +549,9 @@ class NavigationPanel:
             if not target_building:
                 logger.error(f"[{emulator_name}] ❌ Здание не найдено")
                 return False
+
+        # Сохраняем фактический уровень для вызывающего кода
+        self.last_detected_level = target_building['level']
 
         # Кликаем "Перейти"
         go_button_y = target_building['y']

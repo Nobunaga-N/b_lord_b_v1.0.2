@@ -295,6 +295,9 @@ class BuildingFunction(BaseFunction):
                     logger.error(f"[{self.emulator_name}] ❌ Не удалось перейти к зданию: {display_name}")
                     break
 
+                # Получаем фактический уровень, обнаруженный при навигации
+                actual_level = self.panel.last_detected_level
+
                 time.sleep(1.5)
 
                 # ШАГ 2: Улучшить здание
@@ -308,8 +311,9 @@ class BuildingFunction(BaseFunction):
                         # Быстрое завершение (помощь альянса)
                         logger.success(f"[{self.emulator_name}] 🚀 Мгновенное улучшение: {display_name}")
 
-                        # Обновляем уровень сразу
-                        new_level = current_level + 1
+                        # Обновляем уровень сразу (используем actual_level если БД устарела)
+                        base_level = actual_level if actual_level is not None else current_level
+                        new_level = base_level + 1
                         self.db.update_building_level(
                             emulator_id, building_name, building_index, new_level
                         )
@@ -331,10 +335,10 @@ class BuildingFunction(BaseFunction):
                             logger.error(f"[{self.emulator_name}] ❌ Нет свободных строителей в БД")
                             break
 
-                        # Обновляем БД
+                        # Обновляем БД (передаём actual_level для коррекции при расхождении
                         self.db.set_building_upgrading(
                             emulator_id, building_name, building_index,
-                            timer_finish, builder_slot
+                            timer_finish, builder_slot, actual_level=actual_level
                         )
 
                         logger.success(f"[{self.emulator_name}] ✅ Улучшение началось: {display_name}")

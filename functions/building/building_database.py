@@ -1310,12 +1310,10 @@ class BuildingDatabase:
 
     def set_building_upgrading(self, emulator_id: int, building_name: str,
                                building_index: Optional[int], timer_finish: datetime,
-                               builder_slot: int):
+                               builder_slot: int, actual_level: Optional[int] = None):
         """Пометить здание как улучшающееся"""
 
-
         with self.db_lock:
-            # 🐛 ВРЕМЕННОЕ ЛОГИРОВАНИЕ В НАЧАЛЕ
             logger.warning(f"[DEBUG] set_building_upgrading вызван: {building_name} "
                            f"#{building_index}, slot={builder_slot}")
             cursor = self.conn.cursor()
@@ -1327,32 +1325,39 @@ class BuildingDatabase:
                 logger.error(f"❌ Здание не найдено: {building_name}")
                 return
 
-            # 🐛 ЛОГИРОВАНИЕ ДО ОБНОВЛЕНИЯ
             logger.warning(f"[DEBUG] ДО обновления: status={building['status']}")
 
             building_id = building['id']
             current_level = building['current_level']
+
+            # ✅ ИСПРАВЛЕНИЕ: Коррекция уровня если обнаружено расхождение с игрой
+            if actual_level is not None and actual_level != current_level:
+                logger.warning(f"⚠️ Коррекция уровня: БД={current_level}, факт={actual_level}")
+                current_level = actual_level
+
             upgrading_to = current_level + 1
 
-            # Обновляем статус здания
+            # Обновляем статус здания + корректируем current_level
             if building_index is not None:
                 cursor.execute("""
                     UPDATE buildings 
-                    SET upgrading_to_level = ?,
+                    SET current_level = ?,
+                        upgrading_to_level = ?,
                         status = 'upgrading',
                         timer_finish = ?,
                         last_updated = CURRENT_TIMESTAMP
                     WHERE emulator_id = ? AND building_name = ? AND building_index = ?
-                """, (upgrading_to, timer_finish, emulator_id, building_name, building_index))
+                """, (current_level, upgrading_to, timer_finish, emulator_id, building_name, building_index))
             else:
                 cursor.execute("""
                     UPDATE buildings 
-                    SET upgrading_to_level = ?,
+                    SET current_level = ?,
+                        upgrading_to_level = ?,
                         status = 'upgrading',
                         timer_finish = ?,
                         last_updated = CURRENT_TIMESTAMP
                     WHERE emulator_id = ? AND building_name = ? AND building_index IS NULL
-                """, (upgrading_to, timer_finish, emulator_id, building_name))
+                """, (current_level, upgrading_to, timer_finish, emulator_id, building_name))
 
             # Занимаем строителя
             cursor.execute("""
@@ -1365,7 +1370,7 @@ class BuildingDatabase:
 
             self.conn.commit()
 
-            # 🐛 ЛОГИРОВАНИЕ ПОСЛЕ ОБНОВЛЕНИЯ
+            # Логирование после обновления
             updated_building = self.get_building(emulator_id, building_name, building_index)
             logger.warning(f"[DEBUG] ПОСЛЕ обновления: status={updated_building['status']}, "
                            f"upgrading_to={updated_building['upgrading_to_level']}")
