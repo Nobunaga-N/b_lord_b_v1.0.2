@@ -5,6 +5,7 @@ functions:
   building: true
   coop: false
   mail_rewards: false
+  ponds: true
   prime_times: false
   research: false
   shield: false

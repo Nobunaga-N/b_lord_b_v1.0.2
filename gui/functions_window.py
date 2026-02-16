@@ -83,6 +83,7 @@ class FunctionsWindow(ctk.CTkToplevel):
             ("research", "Исследования"),
             ("wilds", "Дикие"),
             ("coop", "Кооперации"),
+            ("ponds", "Пополнение прудов"),  # ← ДОБАВИТЬ
         ]
 
         # Функции для правой колонки

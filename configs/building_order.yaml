@@ -28,10 +28,10 @@ lord_10:
 
     - name: "Пруд"
       count: 4
-      target_level: 8
+      target_level: 7
       type: "multiple"
       action: "upgrade"
-      note: "4 пруда до 8 ур"
+      note: "4 пруда до 7 ур"
 
     - name: "Улей"
       count: 3
@@ -330,6 +330,13 @@ lord_12:
       type: "multiple"
       action: "upgrade"
       note: "4 куста до 12 ур"
+
+    - name: "Пруд"
+      count: 4
+      target_level: 8
+      type: "multiple"
+      action: "upgrade"
+      note: "4 пруда до 8 ур"
 
     - name: "Жилище Детенышей"
       count: 4
