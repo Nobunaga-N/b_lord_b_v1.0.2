@@ -62,7 +62,8 @@ class PondsFunction(BaseFunction):
 
     # Шаблоны изображений (ПЛЕЙСХОЛДЕРЫ — заменить на реальные скриншоты)
     TEMPLATES = {
-        'supply_icon': os.path.join(BASE_DIR, 'data', 'templates', 'ponds', 'supply_icon.png'),
+        'supply_icon_large': os.path.join(BASE_DIR, 'data', 'templates', 'ponds', 'supply_icon_large.png'),
+        'supply_icon_small': os.path.join(BASE_DIR, 'data', 'templates', 'ponds', 'supply_icon_small.png'),
         'delivery_button': os.path.join(BASE_DIR, 'data', 'templates', 'ponds', 'delivery_button.png'),
     }
 
@@ -368,14 +369,8 @@ class PondsFunction(BaseFunction):
         tap(self.emulator, x=self.BUILDING_CENTER[0], y=self.BUILDING_CENTER[1])
         time.sleep(1.5)  # Ожидание появления иконок вокруг здания
 
-        # Шаг 2: Поиск и клик иконки "Поставка"
-        supply_pos = self._find_template_with_retry(
-            self.TEMPLATES['supply_icon'],
-            self.THRESHOLD_ICON,
-            max_retries=3,
-            retry_delay=0.5,
-            description="Поставка"
-        )
+        # Шаг 2: Поиск и клик иконки "Поставка" (2 варианта размера)
+        supply_pos = self._find_supply_icon()
 
         if not supply_pos:
             logger.warning(f"[{self.emulator_name}] ⚠️ Иконка 'Поставка' не найдена для Пруд #{pond_index}")
@@ -409,6 +404,28 @@ class PondsFunction(BaseFunction):
         time.sleep(1.0)  # Окно закрывается автоматически
 
         return True
+
+    def _find_supply_icon(self) -> Optional[tuple]:
+        """
+        Найти иконку "Поставка" — проверяет оба варианта (крупная и мелкая)
+
+        Returns:
+            (x, y) координаты центра или None
+        """
+        for template_key, label in [('supply_icon_large', 'Поставка (крупная)'),
+                                     ('supply_icon_small', 'Поставка (мелкая)')]:
+            result = self._find_template_with_retry(
+                self.TEMPLATES[template_key],
+                self.THRESHOLD_ICON,
+                max_retries=2,
+                retry_delay=0.5,
+                description=label
+            )
+            if result:
+                logger.debug(f"[{self.emulator_name}] ✅ Найдена: {label}")
+                return result
+
+        return None
 
     def _find_template_with_retry(self, template_path: str, threshold: float,
                                    max_retries: int = 3, retry_delay: float = 0.5,
