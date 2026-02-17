@@ -92,6 +92,7 @@ class FunctionsWindow(ctk.CTkToplevel):
             ("prime_times", "Прайм таймы"),
             ("shield", "Щит"),
             ("mail_rewards", "Награды с почты"),
+            ("feeding_zone", "Пополнение Зоны Корм."),
         ]
 
         # Создать чекбоксы

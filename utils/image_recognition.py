@@ -228,3 +228,62 @@ def set_debug_mode(enabled):
     global DEBUG_MODE
     DEBUG_MODE = enabled
     logger.info(f"Debug режим распознавания: {'ВКЛ' if enabled else 'ВЫКЛ'}")
+
+
+def detect_feeding_zone_status(emulator, region=(8, 38, 48, 72)):
+    """
+    Определить статус Зоны Кормления по цвету обводки иконки лапки
+
+    Иконка находится в верхнем левом углу экрана.
+    Зелёная обводка = ресурсы есть, красная = пусто.
+
+    Args:
+        emulator: объект эмулятора
+        region: (x1, y1, x2, y2) регион иконки лапки
+
+    Returns:
+        'empty' — красная обводка (нужно пополнить)
+        'ok' — зелёная обводка (ресурсы есть)
+        None — не удалось определить
+    """
+    screenshot = get_screenshot(emulator)
+    if screenshot is None:
+        logger.error(f"Не удалось получить скриншот для проверки Зоны Кормления")
+        return None
+
+    x1, y1, x2, y2 = region
+    icon_crop = screenshot[y1:y2, x1:x2]
+
+    hsv = cv2.cvtColor(icon_crop, cv2.COLOR_BGR2HSV)
+
+    # Зелёный диапазон в HSV
+    green_mask = cv2.inRange(hsv, (35, 80, 80), (85, 255, 255))
+    # Красный диапазон (два поддиапазона, красный на границе H: 0-10 и 160-180)
+    red_mask1 = cv2.inRange(hsv, (0, 80, 80), (10, 255, 255))
+    red_mask2 = cv2.inRange(hsv, (160, 80, 80), (180, 255, 255))
+    red_mask = red_mask1 | red_mask2
+
+    green_count = cv2.countNonZero(green_mask)
+    red_count = cv2.countNonZero(red_mask)
+
+    # Debug логирование
+    if DEBUG_MODE:
+        logger.debug(f"🐾 Feeding zone icon: green={green_count}, red={red_count}")
+        # Сохранить debug скриншот региона
+        try:
+            debug_folder = "data/screenshots/debug"
+            os.makedirs(debug_folder, exist_ok=True)
+            emu_id = emulator.get('id', 0)
+            cv2.imwrite(f"{debug_folder}/emu{emu_id}_feeding_zone_crop.png", icon_crop)
+        except Exception:
+            pass
+
+    if green_count > red_count and green_count > 15:
+        logger.debug(f"🐾 Зона Кормления: 🟢 зелёная (green={green_count}, red={red_count})")
+        return 'ok'
+    elif red_count > green_count and red_count > 15:
+        logger.debug(f"🐾 Зона Кормления: 🔴 красная (green={green_count}, red={red_count})")
+        return 'empty'
+
+    logger.warning(f"🐾 Зона Кормления: ❓ неопределённый цвет (green={green_count}, red={red_count})")
+    return None

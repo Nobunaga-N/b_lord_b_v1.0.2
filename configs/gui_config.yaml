@@ -4,6 +4,7 @@ emulators:
 functions:
   building: true
   coop: false
+  feeding_zone: true
   mail_rewards: false
   ponds: true
   prime_times: false

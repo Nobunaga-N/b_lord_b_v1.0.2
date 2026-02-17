@@ -15,6 +15,7 @@ from functions.prime_times.prime_times import PrimeTimesFunction
 from functions.shield.shield import ShieldFunction
 from functions.mail_rewards.mail_rewards import MailRewardsFunction
 from functions.ponds.ponds import PondsFunction
+from functions.feeding_zone.feeding_zone import FeedingZoneFunction
 
 
 # Порядок выполнения функций (из ТЗ)
@@ -23,11 +24,12 @@ FUNCTION_ORDER = [
     'tiles',           # 2. Сбор с плиток (быстро, несколько раз в день)
     'shield',          # 3. Проверка щита (раз в 6 часов)
     'ponds',           # 4. Пополнение прудов (быстро, каждые 2.5-8ч)
-    'building',        # 5. Строительство (основное, постоянно)
-    'research',        # 6. Исследования (основное, постоянно)
-    'wilds',           # 7. Дикие (если есть энергия)
-    'coop',            # 8. Кооперации (если есть события)
-    'prime_times',     # 9. Прайм таймы (специальные действия в определенное время)
+    'feeding_zone',    # 5. Пополнение зоны кормления
+    'building',        # 6. Строительство (основное, постоянно)
+    'research',        # 7. Исследования (основное, постоянно)
+    'wilds',           # 8. Дикие (если есть энергия)
+    'coop',            # 9. Кооперации (если есть события)
+    'prime_times',     # 10. Прайм таймы (специальные действия в определенное время)
 ]
 
 # Маппинг имя → класс
@@ -41,6 +43,7 @@ FUNCTION_CLASSES = {
     'shield': ShieldFunction,
     'mail_rewards': MailRewardsFunction,
     'ponds': PondsFunction,               # ← ДОБАВИТЬ
+    'feeding_zone': FeedingZoneFunction,
 }
 
 
