@@ -1,0 +1,357 @@
+# Порядок прокачки технологий Эволюции
+# Строгий порядок внутри каждого уровня Лорда
+# Технологии качаются ТОЛЬКО когда Лорд достиг указанного уровня
+#
+# swipe_group:
+#   0 = технология видна как только бот зайдёт в раздел
+#   1 = нужен 1 свайп чтобы добраться
+#   2 = нужно 2 свайпа чтобы добраться
+
+# Конфигурация свайпов по разделам
+# Формат: [x1, y1, x2, y2] — координаты начала и конца свайпа
+swipe_config:
+  "Развитие Территории":
+    swipe_1: [270, 821, 270, 81]
+    swipe_2: [270, 849, 270, 95]
+  "Базовый Бой":
+    swipe_1: [270, 821, 270, 81]
+    swipe_2: [270, 821, 270, 81]
+
+# ============================================================
+# Лорд 10
+# ============================================================
+lord_10:
+  techs:
+    # --- Раздел: Развитие Территории ---
+    - name: "Изобилие Света"
+      section: "Развитие Территории"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Плодородная Почва"
+      section: "Развитие Территории"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Сапротрофное Удобрение"
+      section: "Развитие Территории"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Журчащий Источник"
+      section: "Развитие Территории"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Рыхлый Грунт"
+      section: "Развитие Территории"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Массивный Песчаник"
+      section: "Развитие Территории"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    # После свайпа 1
+    - name: "Гигантский Улей"
+      section: "Развитие Территории"
+      target_level: 10
+      max_level: 10
+      swipe_group: 1
+
+    - name: "Загруженный Сборщик"
+      section: "Развитие Территории"
+      target_level: 5
+      max_level: 5
+      swipe_group: 1
+
+    - name: "Резвый Подъем"
+      section: "Развитие Территории"
+      target_level: 10
+      max_level: 10
+      swipe_group: 1
+
+    - name: "Мягкая Почва"
+      section: "Развитие Территории"
+      target_level: 10
+      max_level: 10
+      swipe_group: 1
+
+    - name: "Скоростная Перевозка"
+      section: "Развитие Территории"
+      target_level: 10
+      max_level: 10
+      swipe_group: 1
+
+    # После свайпа 2
+    - name: "Меткая Резка"
+      section: "Развитие Территории"
+      target_level: 1
+      max_level: 1
+      swipe_group: 2
+
+    - name: "Накопитель"
+      section: "Развитие Территории"
+      target_level: 10
+      max_level: 10
+      swipe_group: 2
+
+# ============================================================
+# Лорд 13
+# ============================================================
+lord_13:
+  techs:
+    # --- Раздел: Базовый Бой ---
+    - name: "Похвала за Смелость"
+      section: "Базовый Бой"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    - name: "Мутация Травоядных I"
+      section: "Базовый Бой"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    - name: "Мутация Плотоядных I"
+      section: "Базовый Бой"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    - name: "Мутация Всеядных I"
+      section: "Базовый Бой"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    - name: "Сверх Грабеж"
+      section: "Базовый Бой"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    # После свайпа 1
+    - name: "Начальная Атака"
+      section: "Базовый Бой"
+      target_level: 3
+      max_level: 3
+      swipe_group: 1
+
+    - name: "Начальная Защита"
+      section: "Базовый Бой"
+      target_level: 3
+      max_level: 3
+      swipe_group: 1
+
+    - name: "Мутация Травоядных II"
+      section: "Базовый Бой"
+      target_level: 1
+      max_level: 1
+      swipe_group: 1
+
+    - name: "Мутация Плотоядных II"
+      section: "Базовый Бой"
+      target_level: 1
+      max_level: 1
+      swipe_group: 1
+
+    - name: "Мутация Всеядных II"
+      section: "Базовый Бой"
+      target_level: 1
+      max_level: 1
+      swipe_group: 1
+
+    - name: "Увеличение Опыта"
+      section: "Базовый Бой"
+      target_level: 3
+      max_level: 3
+      swipe_group: 1
+
+    # После свайпа 2
+    - name: "Средняя Атака"
+      section: "Базовый Бой"
+      target_level: 2
+      max_level: 2
+      swipe_group: 2
+
+    - name: "Средняя Защита"
+      section: "Базовый Бой"
+      target_level: 2
+      max_level: 2
+      swipe_group: 2
+
+    - name: "Навык Уклонения"
+      section: "Базовый Бой"
+      target_level: 5
+      max_level: 5
+      swipe_group: 2
+
+    - name: "Продвинутая Атака"
+      section: "Базовый Бой"
+      target_level: 5
+      max_level: 5
+      swipe_group: 2
+
+    - name: "Продвинутая Защита"
+      section: "Базовый Бой"
+      target_level: 3
+      max_level: 3
+      swipe_group: 2
+
+# ============================================================
+# Лорд 14
+# ============================================================
+lord_14:
+  techs:
+    # --- Раздел: Средний Бой ---
+    - name: "Групповой Укус"
+      section: "Средний Бой"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    # --- Раздел: Особый Отряд ---
+    - name: "Начальный Совместный Бой"
+      section: "Особый Отряд"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    - name: "Эффективный Сбор"
+      section: "Особый Отряд"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Увеличение Грузоподъемности"
+      section: "Особый Отряд"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+# ============================================================
+# Лорд 17
+# ============================================================
+lord_17:
+  techs:
+    # --- Раздел: Походный Отряд I ---
+    - name: "Начальный Совместный Бой"
+      section: "Походный Отряд I"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    - name: "Эффективный Сбор"
+      section: "Походный Отряд I"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Увеличение Грузоподъемности"
+      section: "Походный Отряд I"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    # --- Раздел: Поход Войска II ---
+    - name: "Начальный Совместный Бой"
+      section: "Поход Войска II"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    - name: "Эффективный Сбор"
+      section: "Поход Войска II"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Увеличение Грузоподъемности"
+      section: "Поход Войска II"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+# ============================================================
+# Лорд 18
+# ============================================================
+lord_18:
+  techs:
+    # --- Раздел: Развитие Района ---
+    - name: "Эффективный Сбор"
+      section: "Развитие Района"
+      target_level: 10
+      max_level: 10
+      swipe_group: 0
+
+    - name: "Доп. Награды"
+      section: "Развитие Района"
+      target_level: 10
+      max_level: 10
+      swipe_group: 0
+
+    - name: "Средние Награды"
+      section: "Развитие Района"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    # --- Раздел: Эволюция Плотоядных ---
+    - name: "Клыки и Когти I"
+      section: "Эволюция Плотоядных"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    # --- Раздел: Походный Отряд III ---
+    - name: "Начальный Совместный Бой"
+      section: "Походный Отряд III"
+      target_level: 1
+      max_level: 1
+      swipe_group: 0
+
+    - name: "Эффективный Сбор"
+      section: "Походный Отряд III"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Увеличение Грузоподъемности"
+      section: "Походный Отряд III"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    # --- Раздел: Эволюция Всеядных ---
+    - name: "Крепки Лапы I"
+      section: "Эволюция Всеядных"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Гибкое Тело I"
+      section: "Эволюция Всеядных"
+      target_level: 5
+      max_level: 5
+      swipe_group: 0
+
+    - name: "Преимущество скорости I"
+      section: "Эволюция Всеядных"
+      target_level: 10
+      max_level: 10
+      swipe_group: 0
+
+    - name: "Ловкие Конечности"
+      section: "Эволюция Всеядных"
+      target_level: 15
+      max_level: 15
+      swipe_group: 0
