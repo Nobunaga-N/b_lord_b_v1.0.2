@@ -2054,7 +2054,7 @@ class BuildingDatabase:
 
     # ===== ЗАМОРОЗКА ЭМУЛЯТОРА =====
 
-    def freeze_emulator(self, emulator_id: int, hours: int = 6, reason: str = "Нехватка ресурсов"):
+    def freeze_emulator(self, emulator_id: int, hours: int = 4, reason: str = "Нехватка ресурсов"):
         """
         Заморозить функцию СТРОИТЕЛЬСТВА на эмуляторе
 

@@ -33,6 +33,12 @@ lord_10:
       action: "upgrade"
       note: "4 пруда до 7 ур"
 
+    - name: "Жилище Детенышей"
+      count: 4
+      target_level: 10
+      type: "multiple"
+      action: "upgrade"
+
     - name: "Улей"
       count: 3
       target_level: 10
@@ -125,12 +131,6 @@ lord_10:
       type: "unique"
       action: "upgrade"
       note: "Источник 9 ур на 10 ур Лорда"
-
-    - name: "Жилище Детенышей"
-      count: 4
-      target_level: 10
-      type: "multiple"
-      action: "upgrade"
 
     - name: "Логово Всеядных"
       count: 1

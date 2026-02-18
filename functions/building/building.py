@@ -351,7 +351,7 @@ class BuildingFunction(BaseFunction):
                     logger.warning(f"[{self.emulator_name}] ❌ Недостаточно ресурсов для: {display_name}")
 
                     # Замораживаем эмулятор
-                    self.db.freeze_emulator(emulator_id, hours=6, reason="Нехватка ресурсов")
+                    self.db.freeze_emulator(emulator_id, hours=4, reason="Нехватка ресурсов")
                     break
 
             # Пауза между зданиями

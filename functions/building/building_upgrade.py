@@ -178,9 +178,9 @@ class BuildingUpgrade:
 
         Возможные сценарии:
         1. Кнопка "Улучшение" - ресурсов хватает
-        2. Кнопка "Пополнить ресурсы одним кликом" - автопополнение
-           2а. Окно "Пополнить ресурсы" - успешно
-           2б. Окно "Недостаточно ресурсов" - провал
+        2. Кнопка "Восполнить Ресурсы" - автопополнение из рюкзака
+           2а. После "Подтвердить" ресурсы распакованы → стройка началась
+           2б. После "Подтвердить" всё равно нехватка → окно "Недостаточно ресурсов"
 
         Returns:
             "started" - улучшение началось
@@ -193,7 +193,6 @@ class BuildingUpgrade:
                      threshold=self.THRESHOLD_BUTTON):
             logger.debug(f"[{emulator_name}] Найдена кнопка 'Улучшение'")
 
-            # Клик по кнопке
             result = find_image(emulator, self.TEMPLATES['button_upgrade'],
                               threshold=self.THRESHOLD_BUTTON)
             if result:
@@ -202,12 +201,11 @@ class BuildingUpgrade:
                 time.sleep(1.5)
                 return "started"
 
-        # ПРОВЕРКА 2: Кнопка "Пополнить ресурсы одним кликом"
+        # ПРОВЕРКА 2: Кнопка "Восполнить Ресурсы"
         if find_image(emulator, self.TEMPLATES['button_refill'],
                      threshold=self.THRESHOLD_BUTTON):
-            logger.debug(f"[{emulator_name}] Найдена кнопка 'Пополнить ресурсы'")
+            logger.debug(f"[{emulator_name}] Найдена кнопка 'Восполнить Ресурсы'")
 
-            # Клик по кнопке
             result = find_image(emulator, self.TEMPLATES['button_refill'],
                               threshold=self.THRESHOLD_BUTTON)
             if result:
@@ -215,7 +213,7 @@ class BuildingUpgrade:
                 tap(emulator, x=center_x, y=center_y)
                 time.sleep(1.5)
 
-            # Проверяем какое окно открылось
+            # Обработка окна подтверждения
             return self._handle_refill_window(emulator)
 
         logger.warning(f"[{emulator_name}] ⚠️ Не найдена кнопка улучшения")
@@ -223,11 +221,14 @@ class BuildingUpgrade:
 
     def _handle_refill_window(self, emulator: Dict) -> str:
         """
-        Обработать окно после клика "Пополнить ресурсы"
+        Обработать окно после клика "Восполнить Ресурсы"
 
-        2 варианта:
-        - Окно "Пополнить ресурсы одним кликом" - успех
-        - Окно "Недостаточно ресурсов" - провал
+        Три подсценария:
+        2а. Окно с "Подтвердить" → клик → стройка началась
+        2б. Окно с "Подтвердить" → клик → "Недостаточно ресурсов"
+            (часть ресурсов распакована, но остальных нет в рюкзаке)
+        2в. Сразу окно "Недостаточно ресурсов"
+            (в рюкзаке вообще нет нужных ресурсов)
 
         Returns:
             "started" - ресурсы пополнены, постройка началась
@@ -235,26 +236,13 @@ class BuildingUpgrade:
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        # ВАРИАНТ 1: Окно "Пополнить ресурсы одним кликом"
-        if find_image(emulator, self.TEMPLATES['window_refill'],
-                     threshold=self.THRESHOLD_WINDOW):
-            logger.debug(f"[{emulator_name}] Окно 'Пополнить ресурсы' - подтверждаем")
-
-            # Ищем и кликаем кнопку "Подтвердить"
-            result = find_image(emulator, self.TEMPLATES['button_confirm'],
-                              threshold=self.THRESHOLD_BUTTON)
-            if result:
-                center_x, center_y = result
-                tap(emulator, x=center_x, y=center_y)
-                time.sleep(2)
-                return "started"
-
-        # ВАРИАНТ 2: Окно "Недостаточно ресурсов"
+        # ШАГ 1: Проверяем — сразу "Недостаточно ресурсов"? (вариант 2в)
         if find_image(emulator, self.TEMPLATES['window_no_resources'],
                      threshold=self.THRESHOLD_WINDOW):
-            logger.warning(f"[{emulator_name}] ⚠️ Окно 'Недостаточно ресурсов'")
+            logger.warning(f"[{emulator_name}] ⚠️ Сразу окно 'Недостаточно ресурсов' — "
+                          f"в рюкзаке нет нужных ресурсов")
 
-            # 2x ESC для закрытия
+            # 2×ESC для закрытия
             press_key(emulator, "ESC")
             time.sleep(0.5)
             press_key(emulator, "ESC")
@@ -262,8 +250,40 @@ class BuildingUpgrade:
 
             return "no_resources"
 
-        logger.warning(f"[{emulator_name}] ⚠️ Неизвестное окно после пополнения")
-        return "error"
+        # ШАГ 2: Ищем кнопку "Подтвердить" (варианты 2а / 2б)
+        confirm_result = find_image(emulator, self.TEMPLATES['button_confirm'],
+                                   threshold=self.THRESHOLD_BUTTON)
+
+        if not confirm_result:
+            logger.warning(f"[{emulator_name}] ⚠️ Ни 'Недостаточно ресурсов', ни 'Подтвердить' не найдены")
+            press_key(emulator, "ESC")
+            time.sleep(0.5)
+            return "error"
+
+        # ШАГ 3: Клик "Подтвердить"
+        center_x, center_y = confirm_result
+        logger.debug(f"[{emulator_name}] Клик 'Подтвердить' ({center_x}, {center_y})")
+        tap(emulator, x=center_x, y=center_y)
+        time.sleep(2)
+
+        # ШАГ 4: Проверяем результат — что произошло после подтверждения?
+        # Вариант 2б: После распаковки всё равно нехватка
+        if find_image(emulator, self.TEMPLATES['window_no_resources'],
+                     threshold=self.THRESHOLD_WINDOW):
+            logger.warning(f"[{emulator_name}] ⚠️ Окно 'Недостаточно ресурсов' после распаковки — "
+                          f"часть ресурсов распакована, но остальных нет в рюкзаке")
+
+            # 2×ESC для закрытия
+            press_key(emulator, "ESC")
+            time.sleep(0.5)
+            press_key(emulator, "ESC")
+            time.sleep(0.5)
+
+            return "no_resources"
+
+        # Вариант 2а: Окна нехватки нет — стройка началась
+        logger.debug(f"[{emulator_name}] ✅ Ресурсы восполнены, стройка началась")
+        return "started"
 
     def _parse_upgrade_timer(self, emulator: Dict) -> Optional[int]:
         """
