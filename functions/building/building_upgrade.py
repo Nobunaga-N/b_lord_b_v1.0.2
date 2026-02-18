@@ -188,7 +188,17 @@ class BuildingUpgrade:
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        # ПРОВЕРКА 1: Кнопка "Улучшение"
+        # ПРОВЕРКА 0: Серая кнопка "Улучшение" (условие не выполнено — нет нужной постройки и т.д.)
+        if find_image(emulator, self.TEMPLATES['button_upgrade_grey'],
+                     threshold=self.THRESHOLD_BUTTON):
+            logger.warning(f"[{emulator_name}] ⚠️ Кнопка 'Улучшение' серая — "
+                          f"не выполнено условие (нет нужной постройки или другое требование)")
+            # 1×ESC чтобы закрыть окно улучшения
+            press_key(emulator, "ESC")
+            time.sleep(0.5)
+            return "requirements_not_met"
+
+        # ПРОВЕРКА 1: Кнопка "Улучшение" (зелёная — ресурсов хватает)
         if find_image(emulator, self.TEMPLATES['button_upgrade'],
                      threshold=self.THRESHOLD_BUTTON):
             logger.debug(f"[{emulator_name}] Найдена кнопка 'Улучшение'")
