@@ -56,6 +56,14 @@ class EvolutionUpgrade:
         "Эволюция Всеядных": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'evolyuciya_vseyadnykh.png'),
     }
 
+    # Разделы с одинаковыми иконками — навигация через OCR вместо шаблонов
+    OCR_NAVIGATION_SECTIONS = {
+        "Походный Отряд I",
+        "Особый Отряд",
+        "Поход Войска II",
+        "Походный Отряд III",
+    }
+
     # Пороги для template matching
     THRESHOLD_ICON = 0.75
     THRESHOLD_BUTTON = 0.85
@@ -173,6 +181,9 @@ class EvolutionUpgrade:
         """
         Перейти в нужный раздел эволюции
 
+        Для разделов с одинаковыми иконками (OCR_NAVIGATION_SECTIONS)
+        используется OCR-поиск текста. Для остальных — template matching.
+
         Args:
             section_name: название раздела
 
@@ -181,6 +192,12 @@ class EvolutionUpgrade:
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
+        # Разделы с одинаковыми иконками → OCR-навигация
+        if section_name in self.OCR_NAVIGATION_SECTIONS:
+            logger.debug(f"[{emu_name}] OCR-навигация для раздела: {section_name}")
+            return self._navigate_by_ocr(emulator, section_name)
+
+        # Стандартная навигация через template matching
         template_path = self.SECTION_TEMPLATES.get(section_name)
         if not template_path or not os.path.exists(template_path):
             logger.error(f"[{emu_name}] ❌ Шаблон раздела не найден: {section_name}")
@@ -188,7 +205,6 @@ class EvolutionUpgrade:
 
         logger.debug(f"[{emu_name}] Переход в раздел: {section_name}")
 
-        # Ищем и кликаем по шаблону раздела
         for attempt in range(3):
             result = find_image(emulator, template_path,
                                threshold=self.THRESHOLD_SECTION)
@@ -204,35 +220,262 @@ class EvolutionUpgrade:
         logger.error(f"[{emu_name}] ❌ Раздел не найден: {section_name}")
         return False
 
+    # ==================== НОВЫЙ МЕТОД: OCR-навигация по разделам ====================
+
+    # Вспомогательный паттерн для очистки текста (убирает не-буквы/не-цифры)
+    _CLEAN_TEXT_PATTERN = re.compile(r'[^\w\s]', re.UNICODE)
+
+    def _navigate_by_ocr(self, emulator: Dict, section_name: str) -> bool:
+        """
+        Найти и кликнуть по разделу через OCR-распознавание текста
+
+        Для разделов с одинаковыми иконками (Походный Отряд I/III,
+        Особый Отряд, Поход Войска II) — ищем текст названия на экране.
+
+        Алгоритм:
+        1. Скриншот экрана разделов
+        2. OCR → получаем все текстовые элементы
+        3. Склеиваем двухстрочные названия
+        4. Ищем совпадение с section_name
+        5. Кликаем чуть ВЫШЕ найденного текста (по иконке)
+
+        Returns:
+            bool: True если раздел найден и открыт
+        """
+        emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        # Подготовка: нормализуем target
+        target_clean = self._clean_for_comparison(section_name)
+
+        for attempt in range(3):
+            screenshot = get_screenshot(emulator)
+            if screenshot is None:
+                continue
+
+            elements = self.ocr.recognize_text(screenshot, min_confidence=0.3)
+            if not elements:
+                time.sleep(0.5)
+                continue
+
+            # Склеиваем многострочные названия
+            merged = self._merge_multiline_elements(elements)
+
+            best_match = None
+            best_ratio = 0.0
+
+            for elem in merged:
+                text_raw = self.ocr.normalize_cyrillic_text(elem['text'].strip())
+                text_clean = self._clean_for_comparison(text_raw)
+
+                # Точное совпадение (после очистки)
+                if target_clean == text_clean:
+                    best_match = elem
+                    best_ratio = 1.0
+                    break
+
+                # Содержание
+                if target_clean in text_clean or text_clean in target_clean:
+                    ratio = min(len(target_clean), len(text_clean)) / \
+                            max(len(target_clean), len(text_clean)) if text_clean else 0
+                    if ratio > best_ratio and ratio > 0.6:
+                        best_match = elem
+                        best_ratio = ratio
+                        continue
+
+                # Нечёткое совпадение
+                if len(target_clean) > 4 and len(text_clean) > 4:
+                    common = sum(1 for a, b in zip(target_clean, text_clean) if a == b)
+                    ratio = common / max(len(target_clean), len(text_clean))
+                    if ratio > best_ratio and ratio > 0.7:
+                        best_match = elem
+                        best_ratio = ratio
+
+            if best_match:
+                click_x = best_match['x']
+                click_y = best_match['y'] - 60  # Выше текста → по иконке
+
+                if click_y < 50:
+                    click_y = best_match['y']
+
+                logger.debug(f"[{emu_name}] OCR нашёл '{section_name}' → "
+                             f"OCR: '{best_match['text']}' (ratio={best_ratio:.2f}) "
+                             f"Клик: ({click_x}, {click_y})")
+
+                tap(emulator, x=click_x, y=click_y)
+                time.sleep(2)
+                logger.success(f"[{emu_name}] ✅ Раздел открыт (OCR): {section_name}")
+                return True
+
+            time.sleep(0.5)
+
+        logger.error(f"[{emu_name}] ❌ Раздел не найден через OCR: {section_name}")
+        return False
+
+    @staticmethod
+    def _clean_for_comparison(text: str) -> str:
+        """
+        Очистить текст для сравнения: убрать спецсимволы,
+        привести к нижнему регистру, убрать пробелы
+
+        "** Походный Отряд" → "походныйотряд"
+        "Походный Отряд I" → "походныйотрядi"
+        """
+        # Убираем всё кроме букв, цифр и пробелов
+        cleaned = re.sub(r'[^\w\s]', '', text, flags=re.UNICODE)
+        # Убираем подчёркивания (они тоже \w)
+        cleaned = cleaned.replace('_', '')
+        # Нижний регистр, без пробелов
+        return cleaned.lower().replace(' ', '')
+
+    # ==================== НОВЫЙ МЕТОД: склейка многострочных элементов ====================
+
+    def _merge_multiline_elements(self, elements: list,
+                                   y_threshold: int = 30,
+                                   x_threshold: int = 80) -> list:
+        """
+        Склеить OCR-элементы которые являются частями одного
+        многострочного названия (например "Походный" + "Отряд I")
+
+        Логика:
+        - Сначала фильтрует мусор (звёзды, проценты, уровни)
+        - Затем склеивает близкие текстовые элементы (до 2 строк)
+        - Римские цифры (I, II, III, IV, V) не отбрасываются
+
+        Args:
+            elements: список OCR-элементов
+            y_threshold: макс. расстояние по Y для склейки
+            x_threshold: макс. расстояние центров по X
+
+        Returns:
+            Новый список элементов где многострочные склеены в один
+        """
+        if not elements:
+            return []
+
+        # Паттерны для фильтрации
+        level_pattern = re.compile(r'^\d+\s*/\s*\d+$')
+        max_pattern = re.compile(r'^MAX$', re.IGNORECASE)
+        percent_pattern = re.compile(r'^\d+%$')
+        # Звёзды, спецсимволы — НЕ текст
+        star_pattern = re.compile(r'^[\*★☆✫✯⭐✰\s\.·•●○◆◇■□▪▫]+$')
+        # Римские цифры — СОХРАНЯЕМ (часть названий разделов/технологий)
+        roman_pattern = re.compile(r'^[IVXivx]{1,4}$')
+
+        # Разделяем на "текстовые" и "остальные"
+        text_elements = []
+        other_elements = []
+
+        for elem in elements:
+            txt = elem['text'].strip()
+
+            # Мусор: уровни, MAX, проценты, звёзды
+            if level_pattern.match(txt) or max_pattern.match(txt) or \
+               percent_pattern.match(txt) or star_pattern.match(txt):
+                other_elements.append(elem)
+                continue
+
+            # Короткий текст: пропускаем КРОМЕ римских цифр
+            if len(txt) < 2 and not roman_pattern.match(txt):
+                other_elements.append(elem)
+                continue
+
+            text_elements.append(elem)
+
+        # Сортируем по Y, потом по X
+        text_elements.sort(key=lambda e: (e['y'], e['x']))
+
+        merged = []
+        used = set()
+
+        for i, elem_a in enumerate(text_elements):
+            if i in used:
+                continue
+
+            # Ищем элемент для склейки (строкой ниже)
+            group = [elem_a]
+            used.add(i)
+
+            for j, elem_b in enumerate(text_elements):
+                if j in used or j == i:
+                    continue
+
+                # Проверяем близость по X (центры)
+                x_diff = abs(elem_a['x'] - elem_b['x'])
+                if x_diff > x_threshold:
+                    continue
+
+                # elem_b должен быть ниже elem_a и близко по Y
+                y_diff = elem_b['y'] - elem_a['y']
+                if 5 < y_diff < y_threshold:
+                    group.append(elem_b)
+                    used.add(j)
+                    break  # Максимум 2 строки
+
+            if len(group) == 1:
+                merged.append(elem_a)
+            else:
+                # Склеиваем
+                group.sort(key=lambda e: e['y'])
+                combined_text = ' '.join(g['text'].strip() for g in group)
+
+                # Координаты: X усредняем, Y берём от ВЕРХНЕГО элемента
+                # (чтобы не сбить привязку уровень→название)
+                avg_x = sum(g['x'] for g in group) // len(group)
+                top_y = group[0]['y']  # ← Y верхнего элемента, не среднее!
+
+                # Общий bbox
+                x_min = min(g.get('x_min', g['x'] - 30) for g in group)
+                y_min = min(g.get('y_min', g['y'] - 10) for g in group)
+                x_max = max(g.get('x_max', g['x'] + 30) for g in group)
+                y_max = max(g.get('y_max', g['y'] + 10) for g in group)
+
+                merged.append({
+                    'text': combined_text,
+                    'x': avg_x,
+                    'y': top_y,      # ← Y верхнего элемента
+                    'x_min': x_min,
+                    'y_min': y_min,
+                    'x_max': x_max,
+                    'y_max': y_max,
+                    'confidence': min(g.get('confidence', 0.5) for g in group),
+                    'merged': True,
+                })
+
+                logger.debug(f"🔗 Склеено: '{group[0]['text']}' + '{group[1]['text']}' "
+                           f"→ '{combined_text}'")
+
+        # Добавляем обратно "остальные" (уровни, MAX, звёзды)
+        merged.extend(other_elements)
+
+        return merged
+
     # ===== СВАЙПЫ ВНУТРИ РАЗДЕЛА =====
 
     def perform_swipes(self, emulator: Dict, swipe_config: Dict,
                        target_swipe_group: int):
         """
         Выполнить свайпы чтобы добраться до нужной группы технологий
-
-        Args:
-            swipe_config: конфигурация свайпов для раздела
-            target_swipe_group: до какой группы нужно доскроллить (1 или 2)
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
         if target_swipe_group == 0:
-            return  # Свайпы не нужны
+            return
 
         # Свайп 1
         if target_swipe_group >= 1 and 'swipe_1' in swipe_config:
             coords = swipe_config['swipe_1']
             logger.debug(f"[{emu_name}] Свайп 1: ({coords[0]},{coords[1]}) → ({coords[2]},{coords[3]})")
-            swipe(emulator, coords[0], coords[1], coords[2], coords[3], duration=500)
-            time.sleep(1)
+            swipe(emulator, coords[0], coords[1], coords[2], coords[3],
+                  duration=1200)  # ← БЫЛО 500
+            time.sleep(2.0)      # ← БЫЛО 1
 
         # Свайп 2
         if target_swipe_group >= 2 and 'swipe_2' in swipe_config:
             coords = swipe_config['swipe_2']
             logger.debug(f"[{emu_name}] Свайп 2: ({coords[0]},{coords[1]}) → ({coords[2]},{coords[3]})")
-            swipe(emulator, coords[0], coords[1], coords[2], coords[3], duration=500)
-            time.sleep(1)
+            swipe(emulator, coords[0], coords[1], coords[2], coords[3],
+                  duration=1200)  # ← БЫЛО 500
+            time.sleep(2.0)      # ← БЫЛО 1
 
     # ===== OCR ПАРСИНГ УРОВНЕЙ =====
 
@@ -241,7 +484,8 @@ class EvolutionUpgrade:
         Сканировать уровни технологий на текущем экране
 
         Распознаёт формат: "0/10", "3/5", "MAX"
-        Привязывает уровень к названию по Y-координатам.
+        Привязывает уровень к названию по Y и X координатам.
+        Поддерживает двухстрочные названия через склейку.
 
         Returns:
             Список dict: [{'name': str, 'current_level': int, 'max_level': int, 'y': int}]
@@ -261,11 +505,14 @@ class EvolutionUpgrade:
             logger.warning(f"[{emu_name}] ⚠️ OCR не распознал текст")
             return []
 
+        # Склеиваем двухстрочные названия
+        merged_elements = self._merge_multiline_elements(elements)
+
         # Разделяем на уровни и названия
         levels = []   # {'current': int, 'max': int, 'y': int, 'x': int}
         names = []    # {'text': str, 'y': int, 'x': int}
 
-        for elem in elements:
+        for elem in merged_elements:
             text = elem['text'].strip()
             y = elem['y']
             x = elem['x']
@@ -284,7 +531,6 @@ class EvolutionUpgrade:
                 continue
 
             # Всё остальное — потенциальное название технологии
-            # Фильтруем мусор (слишком короткие, цифры)
             cleaned = self.ocr.normalize_cyrillic_text(text)
             if len(cleaned) >= 3 and not cleaned.isdigit():
                 names.append({'text': cleaned, 'y': y, 'x': x})
@@ -292,7 +538,7 @@ class EvolutionUpgrade:
         logger.debug(f"[{emu_name}] OCR: найдено {len(levels)} уровней, {len(names)} названий")
 
         # Привязка: название находится НИЖЕ уровня
-        # Для каждого уровня ищем ближайшее название с Y > level.y
+        # Учитываем и Y-расстояние, и X-расстояние для точной привязки
         results = []
         used_names = set()
 
@@ -306,9 +552,16 @@ class EvolutionUpgrade:
 
                 # Название должно быть НИЖЕ уровня (Y больше) и не слишком далеко
                 y_diff = name['y'] - lvl['y']
-                if 5 < y_diff < 80:  # От 5 до 80 пикселей ниже
-                    if y_diff < best_dist:
-                        best_dist = y_diff
+                if 5 < y_diff < 80:
+                    # X-расстояние: название должно быть примерно под уровнем
+                    x_diff = abs(name['x'] - lvl['x'])
+                    if x_diff > 120:
+                        continue  # Слишком далеко по горизонтали — другая технология
+
+                    # Комбинированная дистанция (Y основной, X вспомогательный)
+                    combined_dist = y_diff + x_diff * 0.3
+                    if combined_dist < best_dist:
+                        best_dist = combined_dist
                         best_name = (i, name['text'])
 
             if best_name:
@@ -334,6 +587,7 @@ class EvolutionUpgrade:
                             tech_name: str) -> Optional[Tuple[int, int]]:
         """
         Найти технологию на экране по названию через OCR
+        Поддерживает двухстрочные названия.
 
         Returns:
             (x, y) координаты названия для клика, или None
@@ -346,27 +600,47 @@ class EvolutionUpgrade:
 
         elements = self.ocr.recognize_text(screenshot, min_confidence=0.3)
 
+        # Склеиваем двухстрочные названия
+        merged = self._merge_multiline_elements(elements)
+
         # Нормализуем искомое имя
         target_lower = tech_name.lower().replace(' ', '')
 
-        for elem in elements:
+        best_match = None
+        best_ratio = 0.0
+
+        for elem in merged:
             text = self.ocr.normalize_cyrillic_text(elem['text'].strip())
             text_lower = text.lower().replace(' ', '')
 
-            # Проверяем совпадение (допускаем частичное)
-            if target_lower in text_lower or text_lower in target_lower:
+            # Точное совпадение
+            if target_lower == text_lower:
                 logger.debug(f"[{emu_name}] ✅ Найдена технология '{tech_name}' → "
                            f"OCR: '{text}' на ({elem['x']}, {elem['y']})")
                 return (elem['x'], elem['y'])
 
-            # Проверяем нечёткое совпадение (>70% символов)
-            if len(target_lower) > 4:
+            # Содержание
+            if target_lower in text_lower or text_lower in target_lower:
+                ratio = min(len(target_lower), len(text_lower)) / \
+                        max(len(target_lower), len(text_lower))
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_match = elem
+
+            # Нечёткое совпадение (>70%)
+            if len(target_lower) > 4 and len(text_lower) > 4:
                 common = sum(1 for a, b in zip(target_lower, text_lower) if a == b)
                 ratio = common / max(len(target_lower), len(text_lower))
-                if ratio > 0.7:
-                    logger.debug(f"[{emu_name}] ✅ Нечёткое совпадение '{tech_name}' → "
-                               f"OCR: '{text}' (ratio={ratio:.2f})")
-                    return (elem['x'], elem['y'])
+                if ratio > best_ratio and ratio > 0.7:
+                    best_ratio = ratio
+                    best_match = elem
+
+        if best_match and best_ratio > 0.6:
+            text = best_match['text'].strip()
+            logger.debug(f"[{emu_name}] ✅ Найдена технология '{tech_name}' → "
+                       f"OCR: '{text}' (ratio={best_ratio:.2f}) "
+                       f"на ({best_match['x']}, {best_match['y']})")
+            return (best_match['x'], best_match['y'])
 
         logger.warning(f"[{emu_name}] ⚠️ Технология не найдена на экране: {tech_name}")
         return None
@@ -570,29 +844,19 @@ class EvolutionUpgrade:
                             max_swipe_group: int) -> List[Dict]:
         """
         Сканировать уровни всех технологий в разделе
-
         Делает OCR для каждой swipe_group (0, 1, 2).
-
-        Args:
-            section_name: название раздела
-            swipe_config: конфигурация свайпов
-            max_swipe_group: максимальная группа свайпов в разделе
-
-        Returns:
-            Объединённый список всех технологий с уровнями
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
         all_techs = []
 
         for group in range(max_swipe_group + 1):
             if group > 0:
-                # Свайп для текущей группы
                 swipe_key = f'swipe_{group}'
                 if swipe_key in swipe_config:
                     coords = swipe_config[swipe_key]
                     swipe(emulator, coords[0], coords[1], coords[2], coords[3],
-                          duration=500)
-                    time.sleep(1.5)
+                          duration=1200)  # ← БЫЛО 500, стало 1200
+                    time.sleep(2.0)      # ← БЫЛО 1.5, стало 2.0
 
             # OCR текущего экрана
             techs = self.scan_tech_levels(emulator)

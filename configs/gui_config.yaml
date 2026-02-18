@@ -1,14 +1,14 @@
 emulators:
   enabled:
-  - 2
+  - 0
 functions:
-  building: true
+  building: false
   coop: false
-  feeding_zone: true
+  feeding_zone: false
   mail_rewards: false
-  ponds: true
+  ponds: false
   prime_times: false
-  research: false
+  research: true
   shield: false
   tiles: false
   wilds: false

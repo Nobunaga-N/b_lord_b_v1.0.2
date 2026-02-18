@@ -115,6 +115,18 @@ class EvolutionDatabase:
                 )
             """)
 
+            # ===== ТАБЛИЦА СОСТОЯНИЯ ИНИЦИАЛИЗАЦИИ ЭВОЛЮЦИИ =====
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS evolution_init_state (
+                    emulator_id INTEGER PRIMARY KEY,
+                    db_initialized BOOLEAN NOT NULL DEFAULT 0,
+                    scan_complete BOOLEAN NOT NULL DEFAULT 0,
+                    last_scanned_section TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             # Миграция: если есть данные в старой emulator_freeze — перенести
             self._migrate_old_freeze(cursor)
 
@@ -293,23 +305,149 @@ class EvolutionDatabase:
         """
         Получить текущий уровень Лорда из таблицы buildings
 
+        Обрабатывает случай когда таблица buildings ещё не создана
+        (строительство не инициализировано).
+
         Returns:
             int: текущий уровень Лорда (по умолчанию 10)
         """
         with self.db_lock:
             cursor = self.conn.cursor()
-            cursor.execute("""
-                SELECT current_level FROM buildings 
-                WHERE emulator_id = ? AND building_name = 'Лорд'
-                LIMIT 1
-            """, (emulator_id,))
+            try:
+                # Проверяем существование таблицы buildings
+                cursor.execute("""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name='buildings'
+                """)
+                if not cursor.fetchone():
+                    logger.debug("⚠️ Таблица buildings не существует, "
+                                "возвращаем уровень Лорда по умолчанию (10)")
+                    return 10
 
-            row = cursor.fetchone()
-            if row:
-                return row['current_level']
+                cursor.execute("""
+                    SELECT current_level FROM buildings 
+                    WHERE emulator_id = ? AND building_name = 'Лорд'
+                    LIMIT 1
+                """, (emulator_id,))
 
-            # Если нет записи — Лорд начинается с 10
+                row = cursor.fetchone()
+                if row:
+                    return row['current_level']
+
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка получения уровня Лорда: {e}, "
+                              f"возвращаем 10 по умолчанию")
+
             return 10
+
+    #==================== НОВЫЕ МЕТОДЫ для инициализации ====================
+
+    # Разделы которые сканируются при первичной инициализации
+    INITIAL_SCAN_SECTIONS = [
+        "Развитие Территории",
+        "Базовый Бой",
+        "Средний Бой",
+        "Особый Отряд",
+        "Походный Отряд I",
+        "Развитие Района",
+        "Эволюция Плотоядных",
+        "Эволюция Всеядных",
+    ]
+
+    # Разделы которые сканируются позже (когда нужно качать технологии из них)
+    DEFERRED_SECTIONS = [
+        "Поход Войска II",
+        "Походный Отряд III",
+    ]
+
+    def mark_db_initialized(self, emulator_id: int):
+        """Отметить что записи в БД созданы (ШАГ 1 инициализации)"""
+        with self.db_lock:
+            self.conn.execute("""
+                INSERT OR REPLACE INTO evolution_init_state 
+                (emulator_id, db_initialized, scan_complete, updated_at)
+                VALUES (?, 1, 0, CURRENT_TIMESTAMP)
+            """, (emulator_id,))
+            self.conn.commit()
+
+    def is_scan_complete(self, emulator_id: int) -> bool:
+        """Проверить завершено ли первичное сканирование"""
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT scan_complete FROM evolution_init_state 
+                WHERE emulator_id = ?
+            """, (emulator_id,))
+            row = cursor.fetchone()
+            return bool(row and row['scan_complete'])
+
+    def mark_scan_complete(self, emulator_id: int):
+        """Отметить что первичное сканирование завершено"""
+        with self.db_lock:
+            self.conn.execute("""
+                UPDATE evolution_init_state 
+                SET scan_complete = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE emulator_id = ?
+            """, (emulator_id,))
+            self.conn.commit()
+
+    def update_last_scanned_section(self, emulator_id: int, section_name: str):
+        """Обновить последний отсканированный раздел (для recovery)"""
+        with self.db_lock:
+            self.conn.execute("""
+                UPDATE evolution_init_state 
+                SET last_scanned_section = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE emulator_id = ?
+            """, (section_name, emulator_id))
+            self.conn.commit()
+
+    def reset_initialization(self, emulator_id: int):
+        """
+        Сбросить инициализацию при неудачном первом запуске
+
+        Удаляет все записи эволюции для эмулятора и состояние инициализации,
+        чтобы следующий запуск начал с нуля.
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM evolutions WHERE emulator_id = ?",
+                           (emulator_id,))
+            cursor.execute("DELETE FROM evolution_slot WHERE emulator_id = ?",
+                           (emulator_id,))
+            cursor.execute("DELETE FROM evolution_init_state WHERE emulator_id = ?",
+                           (emulator_id,))
+            self.conn.commit()
+            logger.warning(f"🔄 Инициализация эволюции сброшена для эмулятора {emulator_id}")
+
+    def get_initial_scan_sections(self, emulator_id: int) -> list:
+        """
+        Получить разделы для ПЕРВИЧНОГО сканирования
+        (без отложенных разделов)
+        """
+        all_sections = self.get_unique_sections(emulator_id)
+        return [s for s in all_sections if s not in self.DEFERRED_SECTIONS]
+
+    def needs_deferred_scan(self, emulator_id: int, section_name: str) -> bool:
+        """
+        Проверить нужно ли отсканировать отложенный раздел
+
+        Возвращает True если:
+        - Раздел в списке отложенных
+        - Все технологии в разделе имеют current_level == 0 (ещё не сканировались)
+        """
+        if section_name not in self.DEFERRED_SECTIONS:
+            return False
+
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            # Проверяем есть ли хоть одна отсканированная технология в разделе
+            cursor.execute("""
+                SELECT COUNT(*) FROM evolutions 
+                WHERE emulator_id = ? AND section_name = ?
+                  AND (current_level > 0 OR status = 'completed')
+            """, (emulator_id, section_name))
+            scanned_count = cursor.fetchone()[0]
+            return scanned_count == 0
 
     # ===== ОПРЕДЕЛЕНИЕ СЛЕДУЮЩЕЙ ТЕХНОЛОГИИ =====
 

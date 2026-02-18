@@ -332,7 +332,7 @@ lord_18:
       swipe_group: 0
 
     # --- Раздел: Эволюция Всеядных ---
-    - name: "Крепки Лапы I"
+    - name: "Крепкие Лапы I"
       section: "Эволюция Всеядных"
       target_level: 5
       max_level: 5
@@ -344,7 +344,7 @@ lord_18:
       max_level: 5
       swipe_group: 0
 
-    - name: "Преимущество скорости I"
+    - name: "Преимущество Скорости I"
       section: "Эволюция Всеядных"
       target_level: 10
       max_level: 10
