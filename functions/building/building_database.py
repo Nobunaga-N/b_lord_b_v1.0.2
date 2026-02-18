@@ -131,6 +131,19 @@ class BuildingDatabase:
                 )
             """)
 
+            # Таблица пофункциональной заморозки (НОВАЯ)
+            # Позволяет замораживать функции НЕЗАВИСИМО друг от друга
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS function_freeze (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    emulator_id INTEGER NOT NULL,
+                    function_name TEXT NOT NULL,
+                    freeze_until TIMESTAMP NOT NULL,
+                    reason TEXT,
+                    UNIQUE(emulator_id, function_name)
+                )
+            """)
+
             self.conn.commit()
             logger.debug("✅ Таблицы БД проверены/созданы")
 
@@ -2043,7 +2056,11 @@ class BuildingDatabase:
 
     def freeze_emulator(self, emulator_id: int, hours: int = 6, reason: str = "Нехватка ресурсов"):
         """
-        Заморозить эмулятор на определенное время
+        Заморозить функцию СТРОИТЕЛЬСТВА на эмуляторе
+
+        ОБНОВЛЕНО: Теперь использует таблицу function_freeze
+        вместо emulator_freeze. Замораживает ТОЛЬКО строительство,
+        не влияя на эволюцию и другие функции.
 
         Args:
             emulator_id: ID эмулятора
@@ -2056,28 +2073,31 @@ class BuildingDatabase:
             freeze_until = datetime.now() + timedelta(hours=hours)
 
             cursor.execute("""
-                INSERT OR REPLACE INTO emulator_freeze 
-                (emulator_id, freeze_until, reason)
-                VALUES (?, ?, ?)
+                INSERT OR REPLACE INTO function_freeze 
+                (emulator_id, function_name, freeze_until, reason)
+                VALUES (?, 'building', ?, ?)
             """, (emulator_id, freeze_until, reason))
 
             self.conn.commit()
 
-            logger.warning(f"❄️ Эмулятор {emulator_id} заморожен до {freeze_until} ({reason})")
+            logger.warning(f"❄️ [building] Эмулятор {emulator_id} заморожен "
+                           f"до {freeze_until.strftime('%H:%M:%S')} ({reason})")
 
     def is_emulator_frozen(self, emulator_id: int) -> bool:
         """
-        Проверить заморожен ли эмулятор
+        Проверить заморожено ли СТРОИТЕЛЬСТВО на эмуляторе
+
+        ОБНОВЛЕНО: Проверяет function_freeze WHERE function_name='building'
 
         Returns:
-            bool: True если эмулятор заморожен
+            bool: True если строительство заморожено
         """
         with self.db_lock:
             cursor = self.conn.cursor()
 
             cursor.execute("""
-                SELECT freeze_until FROM emulator_freeze 
-                WHERE emulator_id = ?
+                SELECT freeze_until FROM function_freeze 
+                WHERE emulator_id = ? AND function_name = 'building'
             """, (emulator_id,))
 
             row = cursor.fetchone()
@@ -2085,21 +2105,26 @@ class BuildingDatabase:
             if not row:
                 return False
 
-            freeze_until = datetime.fromisoformat(row[0])
+            freeze_until = row['freeze_until'] if isinstance(row, dict) else row[0]
+            if isinstance(freeze_until, str):
+                freeze_until = datetime.fromisoformat(freeze_until)
 
             if datetime.now() < freeze_until:
                 return True
             else:
-                # Заморозка истекла - удаляем запись
+                # Заморозка истекла — удаляем запись
                 cursor.execute("""
-                    DELETE FROM emulator_freeze WHERE emulator_id = ?
+                    DELETE FROM function_freeze 
+                    WHERE emulator_id = ? AND function_name = 'building'
                 """, (emulator_id,))
                 self.conn.commit()
                 return False
 
     def unfreeze_emulator(self, emulator_id: int):
         """
-        Разморозить эмулятор принудительно
+        Разморозить СТРОИТЕЛЬСТВО принудительно
+
+        ОБНОВЛЕНО: Удаляет из function_freeze
 
         Args:
             emulator_id: ID эмулятора
@@ -2108,12 +2133,13 @@ class BuildingDatabase:
             cursor = self.conn.cursor()
 
             cursor.execute("""
-                DELETE FROM emulator_freeze WHERE emulator_id = ?
+                DELETE FROM function_freeze 
+                WHERE emulator_id = ? AND function_name = 'building'
             """, (emulator_id,))
 
             self.conn.commit()
 
-            logger.info(f"✅ Эмулятор {emulator_id} разморожен")
+            logger.info(f"✅ [building] Эмулятор {emulator_id} разморожен")
 
     # ===== МЕТОДЫ ДЛЯ ПЛАНИРОВЩИКА =====
 
@@ -2246,35 +2272,27 @@ class BuildingDatabase:
 
     def get_freeze_until(self, emulator_id: int) -> Optional[datetime]:
         """
-        Время разморозки эмулятора
+        Время разморозки СТРОИТЕЛЬСТВА на эмуляторе
 
-        Используется планировщиком для постановки в расписание:
-        замороженный эмулятор будет запланирован на время разморозки.
-
-        Если заморозка уже истекла — возвращает None (и НЕ удаляет запись,
-        это делает is_emulator_frozen() при следующем вызове).
-
-        Args:
-            emulator_id: ID эмулятора
+        ОБНОВЛЕНО: Читает из function_freeze
 
         Returns:
             datetime — время разморозки (в будущем)
-            None — эмулятор не заморожен или заморозка истекла
+            None — строительство не заморожено или заморозка истекла
         """
         with self.db_lock:
             cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT freeze_until FROM emulator_freeze WHERE emulator_id = ?",
-                (emulator_id,)
-            )
+            cursor.execute("""
+                SELECT freeze_until FROM function_freeze 
+                WHERE emulator_id = ? AND function_name = 'building'
+            """, (emulator_id,))
 
             row = cursor.fetchone()
 
             if not row:
                 return None
 
-            freeze_until = row['freeze_until']
-
+            freeze_until = row['freeze_until'] if isinstance(row, dict) else row[0]
             if isinstance(freeze_until, str):
                 freeze_until = datetime.fromisoformat(freeze_until)
 
