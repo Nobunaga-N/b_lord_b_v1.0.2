@@ -77,7 +77,7 @@ class EvolutionUpgrade:
 
     # Паттерны OCR для уровней
     LEVEL_PATTERN = re.compile(r'(\d+)\s*/\s*(\d+)')  # "0/10", "3/5"
-    MAX_PATTERN = re.compile(r'MAX', re.IGNORECASE)
+    MAX_PATTERN = re.compile(r'[MМ][AА][XХ]', re.IGNORECASE)  # Латиница + Кириллица
 
     def __init__(self):
         """Инициализация модуля"""
@@ -354,7 +354,7 @@ class EvolutionUpgrade:
 
         # Паттерны для фильтрации
         level_pattern = re.compile(r'^\d+\s*/\s*\d+$')
-        max_pattern = re.compile(r'^MAX$', re.IGNORECASE)
+        max_pattern = re.compile(r'^[MМ][AА][XХ]$', re.IGNORECASE)  # Латиница + Кириллица
         percent_pattern = re.compile(r'^\d+%$')
         # Звёзды, спецсимволы — НЕ текст
         star_pattern = re.compile(r'^[\*★☆✫✯⭐✰\s\.·•●○◆◇■□▪▫]+$')

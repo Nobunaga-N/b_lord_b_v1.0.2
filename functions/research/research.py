@@ -419,10 +419,40 @@ class ResearchFunction(BaseFunction):
     # ==================== НОВЫЙ МЕТОД: сопоставление сканированного с БД ====================
     # (Вынесен из _perform_initial_scan для переиспользования)
 
+    @staticmethod
+    def _normalize_for_matching(text: str) -> str:
+        """
+        Нормализация текста для сопоставления OCR ↔ БД
+
+        Обрабатывает типичные ошибки OCR:
+        - Кириллические lookalikes → Латиница (І→I, Г→I, С→C, и т.д.)
+        - Цифра 6 вместо буквы б (С6ор → Сбор)
+        - Приведение к нижнему регистру, удаление пробелов
+        """
+        result = text.lower().replace(' ', '')
+
+        # Кириллические lookalikes → латиница (для римских цифр)
+        replacements = {
+            'і': 'i',  # Украинская І → латинская i
+            'і': 'i',  # Ещё один вариант І
+            'г': 'г',  # Оставляем Г как есть (это не I)
+        }
+        for old, new in replacements.items():
+            result = result.replace(old, new)
+
+        # OCR ошибка: цифра 6 вместо буквы б
+        # "с6ор" → "сбор"
+        result = result.replace('6', 'б')
+
+        return result
+
     def _match_scanned_to_db(self, emulator_id: int, section_name: str,
                              scanned: list, techs_in_section: list) -> int:
         """
         Сопоставить отсканированные технологии с записями в БД
+
+        Использует поиск ЛУЧШЕГО совпадения (не первого выше порога)
+        и трекинг использованных записей для предотвращения дублей.
 
         Args:
             emulator_id: ID эмулятора
@@ -434,38 +464,53 @@ class ResearchFunction(BaseFunction):
             int: количество успешно сопоставленных технологий
         """
         matched = 0
+        used_tech_ids = set()  # Трекинг уже сопоставленных записей БД
 
         for scan_result in scanned:
             scan_name = scan_result['name']
             scan_level = scan_result['current_level']
+            scan_norm = self._normalize_for_matching(scan_name)
+
+            best_tech = None
+            best_ratio = 0.0
 
             for tech in techs_in_section:
-                db_name_lower = tech['tech_name'].lower().replace(' ', '')
-                scan_name_lower = scan_name.lower().replace(' ', '')
+                tech_id = tech['id']
+                if tech_id in used_tech_ids:
+                    continue
 
-                # Точное или частичное совпадение
-                if db_name_lower == scan_name_lower or \
-                        db_name_lower in scan_name_lower or \
-                        scan_name_lower in db_name_lower:
-                    self.db.update_tech_level(
-                        emulator_id, tech['tech_name'],
-                        section_name, scan_level
-                    )
-                    matched += 1
-                    break
+                db_norm = self._normalize_for_matching(tech['tech_name'])
 
-                # Нечёткое совпадение (>70%)
-                if len(db_name_lower) > 4 and len(scan_name_lower) > 4:
-                    common = sum(1 for a, b in zip(db_name_lower,
-                                                   scan_name_lower) if a == b)
-                    ratio = common / max(len(db_name_lower),
-                                         len(scan_name_lower))
-                    if ratio > 0.7:
-                        self.db.update_tech_level(
-                            emulator_id, tech['tech_name'],
-                            section_name, scan_level
-                        )
-                        matched += 1
-                        break
+                # Точное совпадение (после нормализации)
+                if db_norm == scan_norm:
+                    best_tech = tech
+                    best_ratio = 1.0
+                    break  # Лучше не бывает
+
+                # Вычисляем similarity
+                ratio = 0.0
+
+                # Содержание
+                if db_norm in scan_norm or scan_norm in db_norm:
+                    ratio = min(len(db_norm), len(scan_norm)) / \
+                            max(len(db_norm), len(scan_norm)) if db_norm else 0
+
+                # Нечёткое совпадение
+                if len(db_norm) > 4 and len(scan_norm) > 4:
+                    common = sum(1 for a, b in zip(db_norm, scan_norm) if a == b)
+                    fuzzy_ratio = common / max(len(db_norm), len(scan_norm))
+                    ratio = max(ratio, fuzzy_ratio)
+
+                if ratio > best_ratio and ratio > 0.7:
+                    best_ratio = ratio
+                    best_tech = tech
+
+            if best_tech:
+                used_tech_ids.add(best_tech['id'])
+                self.db.update_tech_level(
+                    emulator_id, best_tech['tech_name'],
+                    section_name, scan_level
+                )
+                matched += 1
 
         return matched

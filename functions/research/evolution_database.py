@@ -127,6 +127,13 @@ class EvolutionDatabase:
                 )
             """)
 
+            # Миграция: добавляем колонку scanned если её нет
+            try:
+                cursor.execute("ALTER TABLE evolutions ADD COLUMN scanned INTEGER DEFAULT 0")
+                logger.info("📦 Миграция: добавлена колонка 'scanned' в evolutions")
+            except Exception:
+                pass  # Колонка уже существует
+
             # Миграция: если есть данные в старой emulator_freeze — перенести
             self._migrate_old_freeze(cursor)
 
@@ -687,6 +694,7 @@ class EvolutionDatabase:
                     UPDATE evolutions 
                     SET current_level = target_level,
                         status = 'completed',
+                        scanned = 1,
                         last_updated = CURRENT_TIMESTAMP
                     WHERE emulator_id = ? AND tech_name = ? AND section_name = ?
                 """, (emulator_id, tech_name, section_name))
@@ -702,6 +710,7 @@ class EvolutionDatabase:
                     UPDATE evolutions 
                     SET current_level = ?,
                         status = ?,
+                        scanned = 1,
                         last_updated = CURRENT_TIMESTAMP
                     WHERE emulator_id = ? AND tech_name = ? AND section_name = ?
                 """, (level, new_status, emulator_id, tech_name, section_name))
@@ -734,12 +743,12 @@ class EvolutionDatabase:
             return [row['section_name'] for row in cursor.fetchall()]
 
     def get_unscanned_techs_count(self, emulator_id: int) -> int:
-        """Количество технологий с level=0 (не отсканированных)"""
+        """Количество технологий которые ещё не сканировались"""
         with self.db_lock:
             cursor = self.conn.cursor()
             cursor.execute("""
                 SELECT COUNT(*) FROM evolutions 
-                WHERE emulator_id = ? AND current_level = 0 AND status = 'idle'
+                WHERE emulator_id = ? AND scanned = 0
             """, (emulator_id,))
             return cursor.fetchone()[0]
 
