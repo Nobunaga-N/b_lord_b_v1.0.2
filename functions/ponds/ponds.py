@@ -122,8 +122,25 @@ class PondsFunction(BaseFunction):
             datetime — когда нужен эмулятор
             None — не нужен (ещё не инициализировано)
         """
+        from utils.function_freeze_manager import function_freeze_manager
+
+        # Проверка заморозки
+        if function_freeze_manager.is_frozen(emulator_id, 'ponds'):
+            unfreeze_at = function_freeze_manager.get_unfreeze_time(
+                emulator_id, 'ponds'
+            )
+            if unfreeze_at:
+                logger.debug(
+                    f"[Emulator {emulator_id}] 🧊 ponds заморожена "
+                    f"до {unfreeze_at.strftime('%H:%M:%S')}"
+                )
+                return unfreeze_at
+            return None
+
+        # --- Далее оригинальная логика БЕЗ ИЗМЕНЕНИЙ ---
         db_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))),
             'data', 'database', 'bot.db'
         )
 
@@ -132,39 +149,39 @@ class PondsFunction(BaseFunction):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # Проверяем существует ли таблица
             cursor.execute("""
-                SELECT name FROM sqlite_master 
-                WHERE type='table' AND name='pond_refills'
-            """)
+                        SELECT name FROM sqlite_master 
+                        WHERE type='table' AND name='pond_refills'
+                    """)
             if not cursor.fetchone():
                 conn.close()
                 return None
 
             cursor.execute("""
-                SELECT last_refill_time, pond_level 
-                FROM pond_refills 
-                WHERE emulator_id = ?
-            """, (emulator_id,))
+                        SELECT last_refill_time, pond_level 
+                        FROM pond_refills 
+                        WHERE emulator_id = ?
+                    """, (emulator_id,))
 
             row = cursor.fetchone()
             conn.close()
 
             if not row or not row['last_refill_time']:
-                return None  # Ещё не инициализировано
+                return None
 
             pond_level = row['pond_level'] or 7
-            intervals = PondsFunction.INTERVALS.get(pond_level, PondsFunction.INTERVALS[7])
+            intervals = PondsFunction.INTERVALS.get(
+                pond_level, PondsFunction.INTERVALS[7]
+            )
 
             last_refill = datetime.fromisoformat(row['last_refill_time'])
             deadline = last_refill + timedelta(seconds=intervals['max'])
 
             now = datetime.now()
-
             if deadline <= now:
-                return now  # Просрочено, нужен немедленно
+                return now
             else:
-                return deadline  # Запланировано
+                return deadline
 
         except Exception as e:
             logger.error(f"PondsFunction.get_next_event_time ошибка: {e}")
@@ -225,42 +242,62 @@ class PondsFunction(BaseFunction):
         5. ... для всех 4 прудов
         6. Сбросить nav_state
         7. Обновить last_refill_time в БД
+
+        КОНТРАКТ:
+        - return True  → хотя бы 1 пруд пополнен ИЛИ ситуация обработана
+        - return False → критическая ошибка → автозаморозка
         """
         emulator_id = self.emulator.get('id', 0)
 
-        logger.info(f"[{self.emulator_name}] 🌊 Начинаю пополнение прудов ({self.POND_COUNT} шт)")
+        logger.info(
+            f"[{self.emulator_name}] 🌊 Начинаю пополнение прудов "
+            f"({self.POND_COUNT} шт)"
+        )
 
         success_count = 0
 
         for pond_index in range(1, self.POND_COUNT + 1):
-            logger.info(f"[{self.emulator_name}] 🌊 Пруд #{pond_index}/{self.POND_COUNT}")
+            logger.info(
+                f"[{self.emulator_name}] 🌊 Пруд "
+                f"#{pond_index}/{self.POND_COUNT}"
+            )
 
             try:
                 if pond_index == 1:
-                    # Первый пруд — полная навигация через NavigationPanel
                     if not self._navigate_to_pond(pond_index):
-                        logger.error(f"[{self.emulator_name}] ❌ Не удалось перейти к Пруду #{pond_index}")
-                        continue
+                        logger.error(
+                            f"[{self.emulator_name}] ❌ Не удалось "
+                            f"перейти к Пруду #{pond_index}"
+                        )
+                        # Первый пруд не нашли — критично, дальше бесполезно
+                        break
                 else:
-                    # Последующие пруды — панель уже в подвкладке "Вода"
                     if not self._navigate_to_next_pond(pond_index):
-                        logger.error(f"[{self.emulator_name}] ❌ Не удалось перейти к Пруду #{pond_index}")
+                        logger.error(
+                            f"[{self.emulator_name}] ❌ Не удалось "
+                            f"перейти к Пруду #{pond_index}"
+                        )
                         continue
 
-                # Пополнить пруд
                 if self._refill_single_pond(pond_index):
                     success_count += 1
-                    logger.success(f"[{self.emulator_name}] ✅ Пруд #{pond_index} пополнен")
+                    logger.success(
+                        f"[{self.emulator_name}] ✅ Пруд "
+                        f"#{pond_index} пополнен"
+                    )
                 else:
-                    logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось пополнить Пруд #{pond_index}")
+                    logger.warning(
+                        f"[{self.emulator_name}] ⚠️ Не удалось "
+                        f"пополнить Пруд #{pond_index}"
+                    )
 
             except Exception as e:
-                logger.error(f"[{self.emulator_name}] ❌ Ошибка при пополнении Пруда #{pond_index}: {e}")
-                logger.exception(e)
+                logger.error(
+                    f"[{self.emulator_name}] ❌ Ошибка при пополнении "
+                    f"Пруда #{pond_index}: {e}"
+                )
 
-        # Сброс nav_state после завершения (мы в подвкладке "Вода")
-        # Чтобы следующая функция (например building) сделала полный ресет навигации
-        logger.info(f"[{self.emulator_name}] 🔄 Сброс состояния навигации после пополнения прудов")
+        # Сброс nav_state
         self.panel.nav_state.is_panel_open = False
         self.panel.nav_state.current_tab = None
         self.panel.nav_state.current_section = None
@@ -268,14 +305,25 @@ class PondsFunction(BaseFunction):
         self.panel.nav_state.is_collapsed = False
         self.panel.nav_state.is_scrolled_to_top = False
 
-        # Обновляем БД
-        self._update_refill_time(emulator_id)
+        # Обновляем БД (даже если не все пруды пополнены)
+        if success_count > 0:
+            self._update_refill_time(emulator_id)
+            self._sync_pond_level(emulator_id)
 
-        # Обновляем уровень прудов из таблицы buildings (если есть)
-        self._sync_pond_level(emulator_id)
+        logger.info(
+            f"[{self.emulator_name}] 🌊 Пополнение прудов завершено: "
+            f"{success_count}/{self.POND_COUNT}"
+        )
 
-        logger.info(f"[{self.emulator_name}] 🌊 Пополнение прудов завершено: "
-                    f"{success_count}/{self.POND_COUNT}")
+        # КОНТРАКТ: хотя бы 1 пруд пополнен = успех
+        # 0 из 4 = что-то серьёзно не так → False → автозаморозка
+        if success_count == 0:
+            logger.error(
+                f"[{self.emulator_name}] ❌ Ни один пруд не пополнен!"
+            )
+            return False
+
+        return True
 
     # ==================== НАВИГАЦИЯ ====================
 

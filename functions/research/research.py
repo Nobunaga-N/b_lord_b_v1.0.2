@@ -54,25 +54,19 @@ class ResearchFunction(BaseFunction):
         Вызывается планировщиком для определения времени запуска.
 
         Логика:
-        1. Нет записей в БД → datetime.min (новый эмулятор, первичное сканирование)
-        2. Эволюция заморожена → время разморозки
-        3. Слот исследования занят → время завершения
+        1. Функция заморожена → время разморозки
+        2. Нет записей / не завершено сканирование → datetime.min
+        3. Слот занят → время завершения
         4. Слот свободен + есть что качать → datetime.now()
         5. Всё прокачано → None
-
-        Обработка ошибок:
-        - Таблица buildings не существует → уровень Лорда 10 по умолчанию
-        - Незавершённая инициализация → datetime.min (повторить)
 
         Returns:
             datetime — когда нужен эмулятор
             None — эмулятор не нужен для эволюции
-
-        ИСПРАВЛЕНО: Проверяет function_freeze_manager (in-memory)
-        в первую очередь, ДО проверок через БД.
         """
         from utils.function_freeze_manager import function_freeze_manager
 
+        # 1. Единая проверка заморозки (менеджер = единственный источник)
         if function_freeze_manager.is_frozen(emulator_id, 'research'):
             unfreeze_at = function_freeze_manager.get_unfreeze_time(
                 emulator_id, 'research'
@@ -80,46 +74,47 @@ class ResearchFunction(BaseFunction):
             if unfreeze_at:
                 logger.debug(
                     f"[Emulator {emulator_id}] 🧊 research заморожена "
-                    f"(freeze_manager) до {unfreeze_at.strftime('%H:%M:%S')}"
+                    f"до {unfreeze_at.strftime('%H:%M:%S')}"
                 )
                 return unfreeze_at
             return None
-        # ===== КОНЕЦ НОВОГО БЛОКА =====
 
         db = EvolutionDatabase()
 
         try:
-            # 1. Проверяем состояние инициализации
+            # 2. Проверяем состояние инициализации
             if not db.has_evolutions(emulator_id):
                 return datetime.min
 
             if not db.is_scan_complete(emulator_id):
-                logger.debug(f"[Emulator {emulator_id}] Сканирование эволюции "
-                             f"не завершено — требуется повтор")
+                logger.debug(
+                    f"[Emulator {emulator_id}] Сканирование эволюции "
+                    f"не завершено — требуется повтор"
+                )
                 return datetime.min
 
-            # 2. Эволюция заморожена (через БД)?
-            if db.is_evolution_frozen(emulator_id):
-                freeze_until = db.get_evolution_freeze_until(emulator_id)
-                return freeze_until
+            # 3. УБРАНО: db.is_evolution_frozen() — больше не нужно!
+            #    Менеджер уже проверен выше.
 
-            # 3. Проверить слот
+            # 4. Проверить слот (auto-complete если таймер истёк)
             db.check_and_complete_research(emulator_id)
 
             if db.is_slot_busy(emulator_id):
                 finish_time = db.get_nearest_research_finish_time(emulator_id)
                 return finish_time
 
-            # 4. Слот свободен — есть что качать?
+            # 5. Слот свободен — есть что качать?
             if db.has_techs_to_research(emulator_id):
                 return datetime.now()
 
-            # 5. Всё прокачано
+            # 6. Всё прокачано
             return None
 
         except Exception as e:
-            logger.error(f"[Emulator {emulator_id}] Ошибка в "
-                         f"ResearchFunction.get_next_event_time: {e}")
+            logger.error(
+                f"[Emulator {emulator_id}] Ошибка в "
+                f"ResearchFunction.get_next_event_time: {e}"
+            )
             return datetime.min
 
     # ===== ПРОВЕРКА ГОТОВНОСТИ =====
@@ -141,11 +136,17 @@ class ResearchFunction(BaseFunction):
             return False
 
         # ПРОВЕРКА 1: Заморозка эволюции
-        if self.db.is_evolution_frozen(emulator_id):
-            freeze_until = self.db.get_evolution_freeze_until(emulator_id)
-            if freeze_until:
-                logger.debug(f"[{self.emulator_name}] ❄️ Эволюция заморожена "
-                           f"до {freeze_until.strftime('%H:%M:%S')}")
+        from utils.function_freeze_manager import function_freeze_manager
+
+        if function_freeze_manager.is_frozen(emulator_id, 'research'):
+            unfreeze_at = function_freeze_manager.get_unfreeze_time(
+                emulator_id, 'research'
+            )
+            if unfreeze_at:
+                logger.debug(
+                    f"[{self.emulator_name}] ❄️ Эволюция заморожена "
+                    f"до {unfreeze_at.strftime('%H:%M:%S')}"
+                )
             return False
 
         # ПРОВЕРКА 2: Auto-complete завершённых исследований

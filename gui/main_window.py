@@ -12,6 +12,7 @@ from gui.error_log_window import ErrorLogWindow
 from gui.bot_controller import BotController
 from utils.error_log_manager import error_log_manager
 from gui.schedule_window import ScheduleWindow
+from gui.freeze_window import FreezeWindow
 
 
 class MainWindow(ctk.CTk):
@@ -40,6 +41,7 @@ class MainWindow(ctk.CTk):
         # Окно журнала ошибок
         self.error_log_window = None
         self.schedule_window = None
+        self.freeze_window = None
 
         # Создание структуры окна
         self._create_layout()
@@ -164,6 +166,18 @@ class MainWindow(ctk.CTk):
         )
         self.btn_schedule.pack(pady=5)
 
+        # === Кнопка "Заморозки" ===
+        self.btn_freeze = ctk.CTkButton(
+            buttons_frame,
+            text="🧊 Заморозки",
+            command=self._open_freeze_window,
+            width=150,
+            height=35,
+            fg_color="#17A2B8",
+            hover_color="#138496"
+        )
+        self.btn_freeze.pack(pady=5)
+
         # ============ Нижняя часть: Статус ============
         self.status_panel = StatusPanel(self)
         self.status_panel.pack(fill="both", expand=True, **padding)
@@ -203,6 +217,14 @@ class MainWindow(ctk.CTk):
         else:
             # Создать новое окно
             self.schedule_window = ScheduleWindow(self, self.bot_controller)
+
+    def _open_freeze_window(self):
+        """Открыть окно управления заморозками"""
+        if self.freeze_window and self.freeze_window.winfo_exists():
+            self.freeze_window.lift()
+            self.freeze_window.focus()
+        else:
+            self.freeze_window = FreezeWindow(self)
 
     def _update_error_badge(self):
         """Обновить badge с количеством ошибок"""

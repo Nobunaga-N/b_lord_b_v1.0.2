@@ -23,6 +23,7 @@ from utils.logger import logger
 from utils.image_recognition import find_image, get_screenshot
 import re
 import threading
+from utils.function_freeze_manager import function_freeze_manager
 
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2066,80 +2067,23 @@ class BuildingDatabase:
             emulator_id: ID эмулятора
             hours: количество часов заморозки
             reason: причина заморозки
+
+        Заморозить СТРОИТЕЛЬСТВО — делегирует единому менеджеру
         """
-        with self.db_lock:
-            cursor = self.conn.cursor()
-
-            freeze_until = datetime.now() + timedelta(hours=hours)
-
-            cursor.execute("""
-                INSERT OR REPLACE INTO function_freeze 
-                (emulator_id, function_name, freeze_until, reason)
-                VALUES (?, 'building', ?, ?)
-            """, (emulator_id, freeze_until, reason))
-
-            self.conn.commit()
-
-            logger.warning(f"❄️ [building] Эмулятор {emulator_id} заморожен "
-                           f"до {freeze_until.strftime('%H:%M:%S')} ({reason})")
+        function_freeze_manager.freeze(
+            emulator_id=emulator_id,
+            function_name='building',
+            hours=hours,
+            reason=reason
+        )
 
     def is_emulator_frozen(self, emulator_id: int) -> bool:
-        """
-        Проверить заморожено ли СТРОИТЕЛЬСТВО на эмуляторе
-
-        ОБНОВЛЕНО: Проверяет function_freeze WHERE function_name='building'
-
-        Returns:
-            bool: True если строительство заморожено
-        """
-        with self.db_lock:
-            cursor = self.conn.cursor()
-
-            cursor.execute("""
-                SELECT freeze_until FROM function_freeze 
-                WHERE emulator_id = ? AND function_name = 'building'
-            """, (emulator_id,))
-
-            row = cursor.fetchone()
-
-            if not row:
-                return False
-
-            freeze_until = row['freeze_until'] if isinstance(row, dict) else row[0]
-            if isinstance(freeze_until, str):
-                freeze_until = datetime.fromisoformat(freeze_until)
-
-            if datetime.now() < freeze_until:
-                return True
-            else:
-                # Заморозка истекла — удаляем запись
-                cursor.execute("""
-                    DELETE FROM function_freeze 
-                    WHERE emulator_id = ? AND function_name = 'building'
-                """, (emulator_id,))
-                self.conn.commit()
-                return False
+        """Проверить заморожено ли СТРОИТЕЛЬСТВО — делегирует единому менеджеру"""
+        return function_freeze_manager.is_frozen(emulator_id, 'building')
 
     def unfreeze_emulator(self, emulator_id: int):
-        """
-        Разморозить СТРОИТЕЛЬСТВО принудительно
-
-        ОБНОВЛЕНО: Удаляет из function_freeze
-
-        Args:
-            emulator_id: ID эмулятора
-        """
-        with self.db_lock:
-            cursor = self.conn.cursor()
-
-            cursor.execute("""
-                DELETE FROM function_freeze 
-                WHERE emulator_id = ? AND function_name = 'building'
-            """, (emulator_id,))
-
-            self.conn.commit()
-
-            logger.info(f"✅ [building] Эмулятор {emulator_id} разморожен")
+        """Разморозить СТРОИТЕЛЬСТВО — делегирует единому менеджеру"""
+        function_freeze_manager.unfreeze(emulator_id, 'building')
 
     # ===== МЕТОДЫ ДЛЯ ПЛАНИРОВЩИКА =====
 
@@ -2270,34 +2214,6 @@ class BuildingDatabase:
 
             return times
 
-    def get_freeze_until(self, emulator_id: int) -> Optional[datetime]:
-        """
-        Время разморозки СТРОИТЕЛЬСТВА на эмуляторе
-
-        ОБНОВЛЕНО: Читает из function_freeze
-
-        Returns:
-            datetime — время разморозки (в будущем)
-            None — строительство не заморожено или заморозка истекла
-        """
-        with self.db_lock:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                SELECT freeze_until FROM function_freeze 
-                WHERE emulator_id = ? AND function_name = 'building'
-            """, (emulator_id,))
-
-            row = cursor.fetchone()
-
-            if not row:
-                return None
-
-            freeze_until = row['freeze_until'] if isinstance(row, dict) else row[0]
-            if isinstance(freeze_until, str):
-                freeze_until = datetime.fromisoformat(freeze_until)
-
-            # Возвращаем только если заморозка ещё действует
-            if freeze_until > datetime.now():
-                return freeze_until
-
-            return None
+    def get_freeze_until(self, emulator_id: int):
+        """Время разморозки строительства"""
+        return function_freeze_manager.get_unfreeze_time(emulator_id, 'building')

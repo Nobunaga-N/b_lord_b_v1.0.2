@@ -49,7 +49,7 @@ class BuildingFunction(BaseFunction):
         logger.info(f"[{self.emulator_name}] ✅ BuildingFunction инициализирована")
 
     @staticmethod
-    def get_next_event_time(emulator_id: int) -> Optional[datetime]:
+    def get_next_event_time(emulator_id: int):
         """
         Когда строительству потребуется эмулятор?
 
@@ -74,6 +74,7 @@ class BuildingFunction(BaseFunction):
         # ===== НОВОЕ: Проверка in-memory заморозки =====
         from utils.function_freeze_manager import function_freeze_manager
 
+        # Единая проверка заморозки
         if function_freeze_manager.is_frozen(emulator_id, 'building'):
             unfreeze_at = function_freeze_manager.get_unfreeze_time(
                 emulator_id, 'building'
@@ -81,25 +82,22 @@ class BuildingFunction(BaseFunction):
             if unfreeze_at:
                 logger.debug(
                     f"[Emulator {emulator_id}] 🧊 building заморожена "
-                    f"(freeze_manager) до {unfreeze_at.strftime('%H:%M:%S')}"
+                    f"до {unfreeze_at.strftime('%H:%M:%S')}"
                 )
                 return unfreeze_at
             return None
-        # ===== КОНЕЦ НОВОГО БЛОКА =====
 
         db = BuildingDatabase()
 
         try:
-            # 1. Новый эмулятор (нет записей в БД)?
+            # 1. Новый эмулятор?
             if not db.has_buildings(emulator_id):
                 return datetime.min
 
-            # 2. Заморожен (через БД)?
-            if db.is_emulator_frozen(emulator_id):
-                freeze_until = db.get_freeze_until(emulator_id)
-                return freeze_until
+            # 2. УБРАНО: db.is_emulator_frozen() — больше не нужно!
+            #    Менеджер уже проверен выше.
 
-            # 3. Сначала обновить завершённые постройки!
+            # 3. Свободный строитель?
             free_builder = db.get_free_builder(emulator_id)
 
             # 4. Есть что строить?
@@ -111,7 +109,7 @@ class BuildingFunction(BaseFunction):
             if free_builder is not None:
                 return datetime.now()
 
-            # 5. Все строители заняты → время ближайшего освобождения
+            # 5. Все заняты → ближайшее освобождение
             nearest = db.get_nearest_builder_finish_time(emulator_id)
             return nearest
 
@@ -176,16 +174,13 @@ class BuildingFunction(BaseFunction):
 
     def can_execute(self) -> bool:
         """
-        Проверить можно ли выполнить строительство
+        Можно ли строить сейчас?
 
-        Условия:
-        1. Инициализация при первом запуске
-        2. Эмулятор не заморожен (нехватка ресурсов)
-        3. Есть свободные строители
-        4. Есть здания для прокачки
-
-        Returns:
-            True если можно строить
+        Проверки:
+        0. Инициализация при первом запуске
+        1. Строительство не заморожено (через единый менеджер)
+        2. Есть свободные строители
+        3. Есть здания для прокачки
         """
         emulator_id = self.emulator.get('id', 0)
 
@@ -194,9 +189,18 @@ class BuildingFunction(BaseFunction):
             logger.error(f"[{self.emulator_name}] ❌ Ошибка инициализации")
             return False
 
-        # ПРОВЕРКА 1: Заморозка эмулятора
-        if self.db.is_emulator_frozen(emulator_id):
-            logger.debug(f"[{self.emulator_name}] ❄️ Эмулятор заморожен (нехватка ресурсов)")
+        # ПРОВЕРКА 1: Заморозка (ЕДИНЫЙ МЕНЕДЖЕР)
+        from utils.function_freeze_manager import function_freeze_manager
+
+        if function_freeze_manager.is_frozen(emulator_id, 'building'):
+            unfreeze_at = function_freeze_manager.get_unfreeze_time(
+                emulator_id, 'building'
+            )
+            if unfreeze_at:
+                logger.debug(
+                    f"[{self.emulator_name}] ❄️ Строительство заморожено "
+                    f"до {unfreeze_at.strftime('%H:%M:%S')}"
+                )
             return False
 
         # ПРОВЕРКА 2: Свободные строители
@@ -205,13 +209,20 @@ class BuildingFunction(BaseFunction):
             logger.debug(f"[{self.emulator_name}] 👷 Нет свободных строителей")
             return False
 
-        # ПРОВЕРКА 3: Есть ли что строить (с автосканированием)
-        next_building = self.db.get_next_building_to_upgrade(self.emulator, auto_scan=True)
+        # ПРОВЕРКА 3: Есть ли что строить
+        next_building = self.db.get_next_building_to_upgrade(
+            self.emulator, auto_scan=True
+        )
         if not next_building:
-            logger.debug(f"[{self.emulator_name}] 🎯 Все здания достигли целевого уровня")
+            logger.debug(
+                f"[{self.emulator_name}] 🎯 Все здания достигли целевого уровня"
+            )
             return False
 
-        logger.debug(f"[{self.emulator_name}] ✅ Можно строить: следующее здание - {next_building['name']}")
+        logger.debug(
+            f"[{self.emulator_name}] ✅ Можно строить: "
+            f"следующее здание - {next_building['name']}"
+        )
         return True
 
     def execute(self) -> bool:

@@ -17,6 +17,7 @@
 
 import os
 import time
+from datetime import datetime
 from typing import Optional
 
 from functions.base_function import BaseFunction
@@ -61,6 +62,31 @@ class FeedingZoneFunction(BaseFunction):
 
         logger.info(f"[{self.emulator_name}] ✅ FeedingZoneFunction инициализирована")
 
+    @staticmethod
+    def get_next_event_time(emulator_id: int) -> Optional[datetime]:
+        """
+        Когда зоне кормления потребуется эмулятор?
+
+        У FeedingZone нет таймеров в БД — проверка идёт визуально
+        через иконку лапки на главном экране в can_execute().
+
+        Логика:
+        1. Функция заморожена → время разморозки
+        2. Иначе → datetime.now() (всегда готова, can_execute отфильтрует)
+        """
+        from utils.function_freeze_manager import function_freeze_manager
+
+        if function_freeze_manager.is_frozen(emulator_id, 'feeding_zone'):
+            unfreeze_at = function_freeze_manager.get_unfreeze_time(
+                emulator_id, 'feeding_zone'
+            )
+            if unfreeze_at:
+                return unfreeze_at
+            return None
+
+        # Всегда "готова" — реальная проверка в can_execute()
+        return datetime.now()
+
     # ==================== can_execute / execute ====================
 
     def can_execute(self) -> bool:
@@ -95,25 +121,41 @@ class FeedingZoneFunction(BaseFunction):
         4. В окне: кнопка "Доставка" → клик → окно закрывается
         5. Альт: "Восполнить ресурсы" → клик → "Подтвердить" → клик
         6. Сброс nav_state
-        """
-        logger.info(f"[{self.emulator_name}] 🍎 Начинаю пополнение Зоны Кормления")
 
-        # Шаг 1: Навигация к Зоне Кормления
+        КОНТРАКТ:
+        - return True  → пополнено ИЛИ ситуация обработана
+        - return False → критическая ошибка → автозаморозка
+        """
+        logger.info(
+            f"[{self.emulator_name}] 🍎 Начинаю пополнение Зоны Кормления"
+        )
+
+        # Шаг 1: Навигация
         if not self._navigate_to_feeding_zone():
-            logger.error(f"[{self.emulator_name}] ❌ Не удалось перейти к Зоне Кормления")
+            logger.error(
+                f"[{self.emulator_name}] ❌ Не удалось перейти "
+                f"к Зоне Кормления"
+            )
             self._reset_nav_state()
-            return
+            return False  # ← Навигация не работает — критично
 
         # Шаг 2: Пополнение
         success = self._refill_feeding_zone()
 
-        if success:
-            logger.success(f"[{self.emulator_name}] ✅ Зона Кормления пополнена!")
-        else:
-            logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось пополнить Зону Кормления")
-
         # Шаг 3: Сброс nav_state
         self._reset_nav_state()
+
+        if success:
+            logger.success(
+                f"[{self.emulator_name}] ✅ Зона Кормления пополнена!"
+            )
+            return True
+        else:
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ Не удалось пополнить "
+                f"Зону Кормления"
+            )
+            return False  # ← Не смогли пополнить — автозаморозка
 
     # ==================== НАВИГАЦИЯ ====================
 

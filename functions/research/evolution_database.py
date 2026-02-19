@@ -19,6 +19,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple, Any
 from utils.logger import logger
+from utils.function_freeze_manager import function_freeze_manager
 
 # Определяем базовую директорию проекта
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -758,131 +759,35 @@ class EvolutionDatabase:
 
     @staticmethod
     def freeze_function(emulator_id: int, function_name: str,
-                        hours: int = 4, reason: str = "Нехватка ресурсов",
-                        db_path: str = None):
-        """
-        Заморозить конкретную функцию на эмуляторе
-
-        Args:
-            emulator_id: ID эмулятора
-            function_name: имя функции ('building', 'evolution', и т.д.)
-            hours: часы заморозки
-            reason: причина
-            db_path: путь к БД (для статических вызовов)
-        """
-        if db_path is None:
-            db_path = os.path.join(BASE_DIR, 'data', 'database', 'bot.db')
-
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        try:
-            freeze_until = datetime.now() + timedelta(hours=hours)
-            conn.execute("""
-                INSERT OR REPLACE INTO function_freeze 
-                (emulator_id, function_name, freeze_until, reason)
-                VALUES (?, ?, ?, ?)
-            """, (emulator_id, function_name, freeze_until, reason))
-            conn.commit()
-            logger.warning(f"❄️ [{function_name}] Эмулятор {emulator_id} заморожен "
-                          f"до {freeze_until.strftime('%H:%M:%S')} ({reason})")
-        finally:
-            conn.close()
+                    hours: int = 4, reason: str = "Нехватка ресурсов",
+                    db_path: str = None):
+        """Заморозить функцию — делегирует единому менеджеру"""
+        function_freeze_manager.freeze(
+            emulator_id=emulator_id,
+            function_name=function_name,
+            hours=hours,
+            reason=reason
+        )
 
     @staticmethod
     def is_function_frozen(emulator_id: int, function_name: str,
-                           db_path: str = None) -> bool:
-        """
-        Проверить заморожена ли функция на эмуляторе
-
-        Args:
-            emulator_id: ID эмулятора
-            function_name: имя функции
-
-        Returns:
-            bool: True если заморожена
-        """
-        if db_path is None:
-            db_path = os.path.join(BASE_DIR, 'data', 'database', 'bot.db')
-
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT freeze_until FROM function_freeze 
-                WHERE emulator_id = ? AND function_name = ?
-            """, (emulator_id, function_name))
-
-            row = cursor.fetchone()
-            if not row:
-                return False
-
-            freeze_until = row['freeze_until']
-            if isinstance(freeze_until, str):
-                freeze_until = datetime.fromisoformat(freeze_until)
-
-            if datetime.now() < freeze_until:
-                return True
-            else:
-                # Истекла — удаляем
-                cursor.execute("""
-                    DELETE FROM function_freeze 
-                    WHERE emulator_id = ? AND function_name = ?
-                """, (emulator_id, function_name))
-                conn.commit()
-                return False
-        finally:
-            conn.close()
+                       db_path: str = None) -> bool:
+        """Проверить заморожена ли функция — делегирует единому менеджеру"""
+        return function_freeze_manager.is_frozen(emulator_id, function_name)
 
     @staticmethod
     def get_function_freeze_until(emulator_id: int, function_name: str,
-                                  db_path: str = None) -> Optional[datetime]:
-        """
-        Время разморозки функции
-
-        Returns:
-            datetime или None
-        """
-        if db_path is None:
-            db_path = os.path.join(BASE_DIR, 'data', 'database', 'bot.db')
-
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT freeze_until FROM function_freeze 
-                WHERE emulator_id = ? AND function_name = ?
-            """, (emulator_id, function_name))
-
-            row = cursor.fetchone()
-            if not row:
-                return None
-
-            freeze_until = row['freeze_until']
-            if isinstance(freeze_until, str):
-                freeze_until = datetime.fromisoformat(freeze_until)
-
-            return freeze_until if freeze_until > datetime.now() else None
-        finally:
-            conn.close()
+                              db_path: str = None):
+        """Время разморозки — делегирует единому менеджеру"""
+        return function_freeze_manager.get_unfreeze_time(
+            emulator_id, function_name
+        )
 
     @staticmethod
     def unfreeze_function(emulator_id: int, function_name: str,
-                          db_path: str = None):
-        """Разморозить функцию принудительно"""
-        if db_path is None:
-            db_path = os.path.join(BASE_DIR, 'data', 'database', 'bot.db')
-
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        try:
-            conn.execute("""
-                DELETE FROM function_freeze 
-                WHERE emulator_id = ? AND function_name = ?
-            """, (emulator_id, function_name))
-            conn.commit()
-            logger.info(f"✅ [{function_name}] Эмулятор {emulator_id} разморожен")
-        finally:
-            conn.close()
+                      db_path: str = None):
+        """Разморозить функцию — делегирует единому менеджеру"""
+        function_freeze_manager.unfreeze(emulator_id, function_name)
 
     # ===== УДОБНЫЕ ОБЁРТКИ ДЛЯ ЭВОЛЮЦИИ =====
 
