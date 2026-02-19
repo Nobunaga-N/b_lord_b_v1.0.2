@@ -1,12 +1,27 @@
+# КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: run() автоматически замораживает при execute()→False
+#
+# Новый контракт execute():
+#   return True  = "отработал, ситуация обработана"
+#                  (включая "нет ресурсов → заморозил себя")
+#   return False = "сломался, нужна заморозка"
+#   raise        = "баг, нужна заморозка"
+#   return None  = трактуется как True (для совместимости)
+#
+# mark_failed() остаётся как ОПЦИОНАЛЬНЫЙ инструмент для передачи
+# конкретной причины. Но он НЕ ОБЯЗАТЕЛЕН — False сам по себе
+# запускает заморозку.
+#
+# Показан ПОЛНЫЙ файл.
+
 """
 Базовый класс для всех игровых функций
 
-ОБНОВЛЕНО:
-- Добавлен mark_failed() для сигнализации о критических ошибках
-- run() пробрасывает исключения в function_executor для заморозки
-- can_execute() ошибки НЕ пробрасываются (безопасный пропуск)
+ОБНОВЛЕНО v1.4:
+- run() автоматически замораживает при execute()→False
+- mark_failed() теперь ОПЦИОНАЛЕН (не нужен в каждой функции)
+- Новый контракт: True=обработано, False=ошибка, raise=баг
 
-Версия: 1.3
+Версия: 1.4
 Дата обновления: 2025-02-19
 """
 
@@ -25,7 +40,12 @@ class BaseFunction:
     2. Выполнять свою логику (execute)
     3. Логировать результаты
     4. Сообщать планировщику КОГДА потребуется эмулятор (get_next_event_time)
-    5. Вызывать self.mark_failed() при критических ошибках внутри execute()
+
+    Контракт execute():
+    - return True  → успех (или ситуация обработана, включая заморозку через БД)
+    - return False → критическая ошибка → run() автоматически заморозит
+    - return None  → трактуется как True (совместимость)
+    - raise        → run() пробросит → function_executor заморозит
     """
 
     def __init__(self, emulator):
@@ -35,7 +55,7 @@ class BaseFunction:
         )
         self.name = "BaseFunction"
 
-        # Флаг критической ошибки (для функций которые сами ловят ошибки)
+        # Флаг критической ошибки (опциональный, для передачи причины)
         self._failed = False
         self._fail_reason = ""
 
@@ -53,26 +73,27 @@ class BaseFunction:
         """
         Основная логика выполнения функции
         Переопределяется в дочерних классах
+
+        КОНТРАКТ:
+        - return True  → успех
+        - return False → критическая ошибка → автозаморозка
+        - return None  → считается как True (совместимость)
+        - raise        → function_executor заморозит
+
+        ВАЖНО для "нехватка ресурсов" и подобных:
+        Если функция САМА обработала ситуацию (заморозила через БД,
+        поставила таймер и т.д.) — возвращай True, а не False.
+        False = "я не смог обработать ситуацию, помогите".
         """
         raise NotImplementedError(f"{self.name}.execute() не реализован")
 
     def mark_failed(self, reason: str):
         """
-        Пометить функцию как неуспешную
+        ОПЦИОНАЛЬНО пометить функцию как неуспешную С ПРИЧИНОЙ
 
-        Вызывается из execute() дочернего класса когда произошла
-        критическая ошибка, но функция сама поймала исключение.
-
-        После завершения execute() метод run() проверит этот флаг
-        и пробросит исключение в function_executor для заморозки.
-
-        Пример использования в дочернем классе:
-            try:
-                self._do_something()
-            except Exception as e:
-                logger.error(f"Ошибка: {e}")
-                self.mark_failed(f"Ошибка: {e}")
-                return  # Не нужно raise — run() сделает это сам
+        Используй если хочешь передать конкретную причину заморозки.
+        Если не вызвать — run() всё равно заморозит при False,
+        но причина будет общей.
 
         Args:
             reason: причина ошибки (для лога и заморозки)
@@ -86,22 +107,21 @@ class BaseFunction:
 
     def run(self):
         """
-        Обертка для выполнения с логированием
+        Обёртка для выполнения с логированием и автозаморозкой
 
-        ЛОГИКА ПРОБРАСЫВАНИЯ ОШИБОК:
-        1. Ошибка в can_execute() → безопасный пропуск (return False)
+        ЛОГИКА:
+        1. can_execute() ошибка → безопасный пропуск (return False)
         2. NotImplementedError → заглушка (return True)
-        3. Exception в execute() → ПРОБРАСЫВАЕТСЯ в function_executor
-        4. mark_failed() → ПРОБРАСЫВАЕТСЯ как RuntimeError
-
-        function_executor ловит исключения и замораживает функцию на 4 часа.
+        3. Exception в execute() → ПРОБРАСЫВАЕТСЯ → заморозка
+        4. mark_failed() вызван → ПРОБРАСЫВАЕТСЯ → заморозка
+        5. execute() вернул False → ПРОБРАСЫВАЕТСЯ → заморозка  ← НОВОЕ
+        6. execute() вернул True/None → успех
 
         Returns:
             True — успешно выполнена
-            False — пропущена (can_execute=False или ошибка в can_execute)
+            False — пропущена (can_execute=False)
         Raises:
-            Exception — при ошибке в execute() (для заморозки в function_executor)
-            RuntimeError — при mark_failed() (для заморозки в function_executor)
+            Exception — при любой ошибке (для заморозки в function_executor)
         """
         # Сброс флага
         self._failed = False
@@ -126,7 +146,7 @@ class BaseFunction:
         logger.info(f"[{self.emulator_name}] Выполнение: {self.name}")
 
         try:
-            self.execute()
+            result = self.execute()
         except NotImplementedError:
             logger.debug(
                 f"[{self.emulator_name}] Функция {self.name} "
@@ -144,7 +164,7 @@ class BaseFunction:
             )
             raise  # ← function_executor поймает и заморозит
 
-        # Проверяем флаг mark_failed()
+        # Проверяем флаг mark_failed() (опционально, для причины)
         if self._failed:
             error_msg = (
                 f"{self.name}: критическая ошибка — {self._fail_reason}"
@@ -154,6 +174,18 @@ class BaseFunction:
             )
             raise RuntimeError(error_msg)  # ← function_executor заморозит
 
+        # ===== НОВОЕ: execute() вернул False → автозаморозка =====
+        if result is False:
+            error_msg = (
+                f"{self.name}: execute() вернул False "
+                f"(критическая ошибка в процессе выполнения)"
+            )
+            logger.error(
+                f"[{self.emulator_name}] ❌ {error_msg}"
+            )
+            raise RuntimeError(error_msg)  # ← function_executor заморозит
+
+        # Успех (True или None)
         logger.success(
             f"[{self.emulator_name}] Функция {self.name} завершена"
         )

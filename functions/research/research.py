@@ -67,26 +67,43 @@ class ResearchFunction(BaseFunction):
         Returns:
             datetime — когда нужен эмулятор
             None — эмулятор не нужен для эволюции
+
+        ИСПРАВЛЕНО: Проверяет function_freeze_manager (in-memory)
+        в первую очередь, ДО проверок через БД.
         """
+        from utils.function_freeze_manager import function_freeze_manager
+
+        if function_freeze_manager.is_frozen(emulator_id, 'research'):
+            unfreeze_at = function_freeze_manager.get_unfreeze_time(
+                emulator_id, 'research'
+            )
+            if unfreeze_at:
+                logger.debug(
+                    f"[Emulator {emulator_id}] 🧊 research заморожена "
+                    f"(freeze_manager) до {unfreeze_at.strftime('%H:%M:%S')}"
+                )
+                return unfreeze_at
+            return None
+        # ===== КОНЕЦ НОВОГО БЛОКА =====
+
         db = EvolutionDatabase()
 
         try:
             # 1. Проверяем состояние инициализации
             if not db.has_evolutions(emulator_id):
-                return datetime.min  # Первичная инициализация
+                return datetime.min
 
-            # 1.1 Записи есть, но сканирование не завершено?
             if not db.is_scan_complete(emulator_id):
                 logger.debug(f"[Emulator {emulator_id}] Сканирование эволюции "
                              f"не завершено — требуется повтор")
                 return datetime.min
 
-            # 2. Эволюция заморожена?
+            # 2. Эволюция заморожена (через БД)?
             if db.is_evolution_frozen(emulator_id):
                 freeze_until = db.get_evolution_freeze_until(emulator_id)
                 return freeze_until
 
-            # 3. Проверить слот (auto-complete если таймер истёк)
+            # 3. Проверить слот
             db.check_and_complete_research(emulator_id)
 
             if db.is_slot_busy(emulator_id):
@@ -103,8 +120,6 @@ class ResearchFunction(BaseFunction):
         except Exception as e:
             logger.error(f"[Emulator {emulator_id}] Ошибка в "
                          f"ResearchFunction.get_next_event_time: {e}")
-            # Вместо None возвращаем datetime.min чтобы попробовать
-            # инициализацию заново
             return datetime.min
 
     # ===== ПРОВЕРКА ГОТОВНОСТИ =====
@@ -168,6 +183,10 @@ class ResearchFunction(BaseFunction):
 
         Добавлена логика:
         - Если следующая технология в отложенном разделе → досканировать раздел
+
+        КОНТРАКТ:
+        - return True  → исследование начато ИЛИ ситуация обработана
+        - return False → критическая ошибка → автозаморозка через run()
         """
         emulator_id = self.emulator.get('id', 0)
 
@@ -188,7 +207,6 @@ class ResearchFunction(BaseFunction):
             if not self._scan_deferred_section(emulator_id, section_name):
                 logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось отсканировать "
                                f"{section_name} — пропускаем")
-                # Не фатально — бот продолжит с текущими данными
 
         logger.info(f"[{self.emulator_name}] 🧬 Следующая технология: "
                     f"{tech_name} ({section_name}) "
@@ -220,18 +238,23 @@ class ResearchFunction(BaseFunction):
                                f"ставим 7200с по умолчанию")
                 self.db.start_research(emulator_id, tech_name,
                                        section_name, 7200)
-            return True
+            return True  # ← Успех
 
         elif status == "no_resources":
             self.db.freeze_evolution(emulator_id, hours=4,
                                      reason="Нехватка ресурсов для эволюции")
             logger.warning(f"[{self.emulator_name}] ❄️ Эволюция заморожена на 4 часа "
                            f"(нехватка ресурсов)")
-            return False
+            # ===== ИЗМЕНЕНИЕ: True, не False! =====
+            # Ситуация ОБРАБОТАНА: заморозка через БД уже сделана.
+            # Планировщик увидит заморозку и не будет запускать.
+            return True
 
         else:  # "error"
             logger.error(f"[{self.emulator_name}] ❌ Ошибка при исследовании "
                          f"{tech_name}")
+            # ===== False → run() автоматически заморозит =====
+            # mark_failed() НЕ НУЖЕН — False достаточно.
             return False
 
     # ==================== НОВЫЙ МЕТОД: досканирование отложенного раздела ====================

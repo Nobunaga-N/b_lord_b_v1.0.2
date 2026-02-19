@@ -257,7 +257,10 @@ class BotOrchestrator:
             list[(datetime, emulator_dict, list[str])]
             Каждый элемент: (оптимальное_время_запуска, эмулятор, причины)
             Отсортировано по времени (datetime.min первые)
+            ИСПРАВЛЕНО: Проверяет function_freeze_manager для каждой функции.
         """
+        from utils.function_freeze_manager import function_freeze_manager
+
         schedule = []
 
         for emu in enabled_emulators:
@@ -268,9 +271,19 @@ class BotOrchestrator:
                 continue
 
             # Собрать события от всех функций
-            events = []  # [(datetime, func_name), ...]
+            events = []
 
             for func_name in active_functions:
+                # ===== НОВОЕ: Проверка заморозки ПЕРЕД get_next_event_time =====
+                if function_freeze_manager.is_frozen(emu_id, func_name):
+                    unfreeze_at = function_freeze_manager.get_unfreeze_time(
+                        emu_id, func_name
+                    )
+                    if unfreeze_at:
+                        events.append((unfreeze_at, func_name))
+                    continue
+                # ===== КОНЕЦ НОВОГО БЛОКА =====
+
                 func_class = FUNCTION_CLASSES.get(func_name)
                 if not func_class:
                     continue
@@ -280,17 +293,19 @@ class BotOrchestrator:
                     if event_time is not None:
                         events.append((event_time, func_name))
                 except Exception as e:
-                    logger.error(f"Ошибка get_next_event_time для {func_name} "
-                                 f"(emu {emu_id}): {e}")
+                    logger.error(
+                        f"Ошибка get_next_event_time для {func_name} "
+                        f"(emu {emu_id}): {e}"
+                    )
 
             if not events:
-                continue  # Нечего делать на этом эмуляторе
+                continue
 
             # Рассчитать оптимальное время с батчингом
             launch_time, reasons = self._calculate_optimal_launch(events)
             schedule.append((launch_time, emu, reasons))
 
-        # Сортировка: datetime.min первые, потом по времени
+        # Сортировка
         schedule.sort(key=lambda x: x[0])
 
         return schedule

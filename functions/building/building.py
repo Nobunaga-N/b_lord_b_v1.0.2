@@ -67,41 +67,57 @@ class BuildingFunction(BaseFunction):
         Returns:
             datetime — когда нужен эмулятор
             None — эмулятор не нужен для строительства
+
+        ИСПРАВЛЕНО: Проверяет function_freeze_manager (in-memory)
+        в первую очередь, ДО проверок через БД.
         """
+        # ===== НОВОЕ: Проверка in-memory заморозки =====
+        from utils.function_freeze_manager import function_freeze_manager
+
+        if function_freeze_manager.is_frozen(emulator_id, 'building'):
+            unfreeze_at = function_freeze_manager.get_unfreeze_time(
+                emulator_id, 'building'
+            )
+            if unfreeze_at:
+                logger.debug(
+                    f"[Emulator {emulator_id}] 🧊 building заморожена "
+                    f"(freeze_manager) до {unfreeze_at.strftime('%H:%M:%S')}"
+                )
+                return unfreeze_at
+            return None
+        # ===== КОНЕЦ НОВОГО БЛОКА =====
+
         db = BuildingDatabase()
 
         try:
             # 1. Новый эмулятор (нет записей в БД)?
             if not db.has_buildings(emulator_id):
-                return datetime.min  # Максимальный приоритет
+                return datetime.min
 
-            # 2. Заморожен?
+            # 2. Заморожен (через БД)?
             if db.is_emulator_frozen(emulator_id):
                 freeze_until = db.get_freeze_until(emulator_id)
-                return freeze_until  # Время разморозки или None если истекла
+                return freeze_until
 
             # 3. Сначала обновить завершённые постройки!
-            #    КРИТИЧНО: get_free_builder() переводит здания из 'upgrading' в 'idle',
-            #    поэтому ДОЛЖЕН вызываться ДО has_buildings_to_upgrade()
-
             free_builder = db.get_free_builder(emulator_id)
 
             # 4. Есть что строить?
             has_work = db.has_buildings_to_upgrade(emulator_id)
 
             if not has_work:
-                return None  # Все здания на максимуме
+                return None
 
             if free_builder is not None:
-                # Строитель свободен и есть что строить → нужен СЕЙЧАС
                 return datetime.now()
 
             # 5. Все строители заняты → время ближайшего освобождения
             nearest = db.get_nearest_builder_finish_time(emulator_id)
-            return nearest  # datetime или None
+            return nearest
 
         except Exception as e:
-            logger.error(f"[Emulator {emulator_id}] Ошибка в BuildingFunction.get_next_event_time: {e}")
+            logger.error(f"[Emulator {emulator_id}] Ошибка в "
+                         f"BuildingFunction.get_next_event_time: {e}")
             return None
 
     def _first_time_initialization(self) -> bool:
@@ -209,23 +225,28 @@ class BuildingFunction(BaseFunction):
         4. Обновить БД
         5. Повторить
 
-        Returns:
-            True если хотя бы одно здание улучшено/построено
-        """
+        КОНТРАКТ:
+        - return True  → хотя бы одно здание обработано
+                     ИЛИ ситуация обработана (заморозка через БД)
+        - return False → критическая ошибка → автозаморозка через run()
+         """
+
         emulator_id = self.emulator.get('id', 0)
 
         logger.info(f"[{self.emulator_name}] 🏗️ Начало цикла строительства")
 
         completed_count = self.db.check_and_update_completed_buildings(emulator_id)
         if completed_count > 0:
-            logger.info(f"[{self.emulator_name}] 🎉 Завершено построек с прошлого цикла: {completed_count}")
+            logger.info(f"[{self.emulator_name}] 🎉 Завершено построек с прошлого "
+                        f"цикла: {completed_count}")
 
         upgraded_count = 0
         constructed_count = 0
+        failed = False  # Флаг: была ли критическая ошибка
+        resources_frozen = False  # Флаг: заморозка из-за ресурсов
 
         # Цикл пока есть свободные строители
         while True:
-            # Проверяем условия (без инициализации - она уже выполнена)
             if self.db.is_emulator_frozen(emulator_id):
                 logger.info(f"[{self.emulator_name}] ❄️ Эмулятор заморожен")
                 break
@@ -235,10 +256,12 @@ class BuildingFunction(BaseFunction):
                 logger.info(f"[{self.emulator_name}] 👷 Нет свободных строителей")
                 break
 
-            # Получаем следующее здание (с автосканированием)
-            next_building = self.db.get_next_building_to_upgrade(self.emulator, auto_scan=True)
+            next_building = self.db.get_next_building_to_upgrade(
+                self.emulator, auto_scan=True
+            )
             if not next_building:
-                logger.info(f"[{self.emulator_name}] ✅ Все здания достигли целевого уровня")
+                logger.info(f"[{self.emulator_name}] ✅ Все здания достигли "
+                            f"целевого уровня")
                 break
 
             building_name = next_building['name']
@@ -252,121 +275,115 @@ class BuildingFunction(BaseFunction):
                 display_name += f" #{building_index}"
 
             logger.info(f"[{self.emulator_name}] 🎯 Следующее здание: {display_name} "
-                       f"(Lv.{current_level} → Lv.{target_level}) [action={action}]")
+                        f"(Lv.{current_level} → Lv.{target_level}) [action={action}]")
 
-            # ШАГ 1: Перейти к зданию (для upgrade) или открыть меню постройки (для construct)
             if action == 'build':
-                # ПОСТРОЙКА НОВОГО ЗДАНИЯ (МГНОВЕННАЯ, БЕЗ РЕСУРСОВ, БЕЗ СТРОИТЕЛЯ)
-                logger.info(f"[{self.emulator_name}] 🏗️ Постройка нового здания: {display_name}")
+                # ПОСТРОЙКА НОВОГО ЗДАНИЯ
+                logger.info(f"[{self.emulator_name}] 🏗️ Постройка: {display_name}")
 
-                # Закрываем панель навигации если открыта
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
 
-                # Строим здание через BuildingConstruction
                 success, actual_level = self.construction.construct_building(
                     self.emulator, building_name, building_index
                 )
 
                 if success:
-                    logger.success(f"[{self.emulator_name}] ✅ Здание построено: {display_name}")
-
-                    # Обновляем БД с РЕАЛЬНЫМ уровнем (без повторного сканирования!)
+                    logger.success(f"[{self.emulator_name}] ✅ Здание построено: "
+                                   f"{display_name}")
                     self.db.update_building_after_construction(
-                        emulator_id, building_name, building_index, actual_level
+                        emulator_id, building_name, building_index,
+                        actual_level=actual_level
                     )
-
                     constructed_count += 1
+                    continue
                 else:
-                    # Технический сбой (не нашли шаблоны, и т.д.)
-                    logger.error(f"[{self.emulator_name}] ❌ Технический сбой постройки: {display_name}")
-                    # НЕ замораживаем эмулятор - просто прерываем цикл
+                    logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось построить "
+                                   f"{display_name}")
+                    failed = True
                     break
-
 
             else:
                 # УЛУЧШЕНИЕ СУЩЕСТВУЮЩЕГО ЗДАНИЯ
-                if not self.panel.open_navigation_panel(self.emulator):
-                    logger.error(f"[{self.emulator_name}] ❌ Не удалось открыть панель навигации")
-                    break
-
-                if not self.panel.navigate_to_building(self.emulator, building_name, building_index,
-                                                       expected_level=current_level):
-                    logger.error(f"[{self.emulator_name}] ❌ Не удалось перейти к зданию: {display_name}")
-                    break
-
-                # Получаем фактический уровень, обнаруженный при навигации
-                actual_level = self.panel.last_detected_level
-
-                time.sleep(1.5)
-
-                # ШАГ 2: Улучшить здание
-                success, timer_seconds = self.upgrade.upgrade_building(
-                    self.emulator, building_name, building_index
+                expected_level = current_level
+                success = self.panel.navigate_to_building(
+                    self.emulator, building_name,
+                    building_index=building_index,
+                    expected_level=expected_level
                 )
 
-                # ШАГ 3: Обработка результата
-                if success:
-                    if timer_seconds == 0:
-                        # Быстрое завершение (помощь альянса)
-                        logger.success(f"[{self.emulator_name}] 🚀 Мгновенное улучшение: {display_name}")
-
-                        # Обновляем уровень сразу (используем actual_level если БД устарела)
-                        base_level = actual_level if actual_level is not None else current_level
-                        new_level = base_level + 1
-                        self.db.update_building_level(
-                            emulator_id, building_name, building_index, new_level
-                        )
-
-                        # Проверяем нужно ли добавить 4-й слот строителя
-                        if building_name == "Жилище Лемуров" and building_index == 4 and new_level >= 1:
-                            self.db.initialize_builders(emulator_id, slots=4)
-                            logger.success(f"[{self.emulator_name}] 🔨 Добавлен 4-й строитель!")
-
-                        upgraded_count += 1
-
-                    else:
-                        # Обычное улучшение с таймером
-                        timer_finish = datetime.now() + timedelta(seconds=timer_seconds)
-
-                        # Получаем свободный слот строителя
-                        builder_slot = self.db.get_free_builder(emulator_id)
-                        if builder_slot is None:
-                            logger.error(f"[{self.emulator_name}] ❌ Нет свободных строителей в БД")
-                            break
-
-                        # Обновляем БД (передаём actual_level для коррекции при расхождении
-                        self.db.set_building_upgrading(
-                            emulator_id, building_name, building_index,
-                            timer_finish, builder_slot, actual_level=actual_level
-                        )
-
-                        logger.success(f"[{self.emulator_name}] ✅ Улучшение началось: {display_name}")
-                        logger.info(f"[{self.emulator_name}] ⏱️ Таймер: {self._format_time(timer_seconds)}")
-
-                        upgraded_count += 1
-
-                else:
-                    # Не удалось улучшить (нехватка ресурсов)
-                    logger.warning(f"[{self.emulator_name}] ❌ Недостаточно ресурсов для: {display_name}")
-
-                    # Замораживаем эмулятор
-                    self.db.freeze_emulator(emulator_id, hours=4, reason="Нехватка ресурсов")
+                if not success:
+                    logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось перейти "
+                                   f"к {display_name}")
+                    failed = True
                     break
 
-            # Пауза между зданиями
-            time.sleep(2)
+                detected_level = self.panel.last_detected_level
 
-        # Итоги
+                result = self.upgrade.upgrade_building(
+                    self.emulator,
+                    building_name=building_name,
+                    building_index=building_index,
+                    emulator_id=emulator_id
+                )
+
+                if result and result.get('status') == 'started':
+                    timer_finish = result.get('timer_finish')
+                    if timer_finish:
+                        self.db.set_building_upgrading(
+                            emulator_id, building_name, building_index,
+                            timer_finish, free_builder,
+                            actual_level=detected_level
+                        )
+                        upgraded_count += 1
+                        logger.success(f"[{self.emulator_name}] ✅ {display_name} "
+                                       f"улучшение начато")
+                    else:
+                        logger.warning(f"[{self.emulator_name}] ⚠️ Таймер не получен")
+                        failed = True
+                        break
+
+                elif result and result.get('status') == 'no_resources':
+                    self.db.freeze_emulator(emulator_id, hours=6,
+                                            reason="Нехватка ресурсов")
+                    logger.warning(f"[{self.emulator_name}] ❄️ Заморозка на 6 часов")
+                    resources_frozen = True  # ← Ситуация обработана!
+                    break
+
+                elif result and result.get('status') == 'instant_complete':
+                    new_level = result.get('new_level', current_level + 1)
+                    self.db.update_building_level(
+                        emulator_id, building_name, building_index, new_level
+                    )
+                    upgraded_count += 1
+                    logger.success(f"[{self.emulator_name}] ⚡ {display_name} "
+                                   f"мгновенное улучшение → Lv.{new_level}")
+                else:
+                    logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось улучшить "
+                                   f"{display_name}")
+                    failed = True
+                    break
+
+        # === ИТОГ ===
         total = upgraded_count + constructed_count
+        logger.info(f"[{self.emulator_name}] 📊 Строительство: "
+                    f"улучшено={upgraded_count}, построено={constructed_count}")
 
-        if total > 0:
-            logger.success(f"[{self.emulator_name}] 🎉 Цикл строительства завершен!")
-            logger.info(f"[{self.emulator_name}] 📊 Улучшено: {upgraded_count}, Построено: {constructed_count}")
+        # Ситуация обработана (ресурсы закончились, заморозка уже в БД)
+        if resources_frozen:
             return True
-        else:
-            logger.info(f"[{self.emulator_name}] ℹ️ Ничего не построено в этом цикле")
-            return False
+
+        # Хотя бы одно здание обработано — успех
+        if total > 0:
+            return True
+
+        # Ничего не сделали, но и ошибок не было (всё построено / нет строителей)
+        if not failed:
+            return True
+
+        # ===== Критическая ошибка: ничего не сделали + был провал =====
+        # return False → run() автоматически заморозит
+        return False
 
     def _format_time(self, seconds: int) -> str:
         """Форматировать секунды в читаемый вид"""
