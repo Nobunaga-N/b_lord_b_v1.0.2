@@ -46,6 +46,7 @@ class BuildingUpgrade:
         'speedup_icon': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'speedup_icon.png'),
 
         # Кнопки
+        'button_upgrade_grey': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'button_upgrade_grey.png'),
         'button_upgrade': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'button_upgrade.png'),
         'button_refill': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'button_refill.png'),
         'button_confirm': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'button_confirm.png'),

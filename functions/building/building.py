@@ -229,8 +229,7 @@ class BuildingFunction(BaseFunction):
         - return True  → хотя бы одно здание обработано
                      ИЛИ ситуация обработана (заморозка через БД)
         - return False → критическая ошибка → автозаморозка через run()
-         """
-
+        """
         emulator_id = self.emulator.get('id', 0)
 
         logger.info(f"[{self.emulator_name}] 🏗️ Начало цикла строительства")
@@ -242,8 +241,8 @@ class BuildingFunction(BaseFunction):
 
         upgraded_count = 0
         constructed_count = 0
-        failed = False  # Флаг: была ли критическая ошибка
-        resources_frozen = False  # Флаг: заморозка из-за ресурсов
+        failed = False
+        resources_frozen = False
 
         # Цикл пока есть свободные строители
         while True:
@@ -320,48 +319,42 @@ class BuildingFunction(BaseFunction):
 
                 detected_level = self.panel.last_detected_level
 
-                result = self.upgrade.upgrade_building(
+                # ✅ ИСПРАВЛЕНО: убран лишний emulator_id, распаковка tuple
+                upgrade_success, timer_seconds = self.upgrade.upgrade_building(
                     self.emulator,
                     building_name=building_name,
-                    building_index=building_index,
-                    emulator_id=emulator_id
+                    building_index=building_index
                 )
 
-                if result and result.get('status') == 'started':
-                    timer_finish = result.get('timer_finish')
-                    if timer_finish:
-                        self.db.set_building_upgrading(
-                            emulator_id, building_name, building_index,
-                            timer_finish, free_builder,
-                            actual_level=detected_level
-                        )
-                        upgraded_count += 1
-                        logger.success(f"[{self.emulator_name}] ✅ {display_name} "
-                                       f"улучшение начато")
-                    else:
-                        logger.warning(f"[{self.emulator_name}] ⚠️ Таймер не получен")
-                        failed = True
-                        break
+                if upgrade_success and timer_seconds and timer_seconds > 0:
+                    # Улучшение началось с таймером
+                    timer_finish = datetime.now() + timedelta(seconds=timer_seconds)
+                    self.db.set_building_upgrading(
+                        emulator_id, building_name, building_index,
+                        timer_finish, free_builder,
+                        actual_level=detected_level
+                    )
+                    upgraded_count += 1
+                    logger.success(f"[{self.emulator_name}] ✅ {display_name} "
+                                   f"улучшение начато "
+                                   f"({self._format_time(timer_seconds)})")
 
-                elif result and result.get('status') == 'no_resources':
-                    self.db.freeze_emulator(emulator_id, hours=6,
-                                            reason="Нехватка ресурсов")
-                    logger.warning(f"[{self.emulator_name}] ❄️ Заморозка на 6 часов")
-                    resources_frozen = True  # ← Ситуация обработана!
-                    break
-
-                elif result and result.get('status') == 'instant_complete':
-                    new_level = result.get('new_level', current_level + 1)
+                elif upgrade_success and (timer_seconds == 0 or timer_seconds is None):
+                    # Мгновенное завершение (помощь альянса)
+                    new_level = (detected_level or current_level) + 1
                     self.db.update_building_level(
                         emulator_id, building_name, building_index, new_level
                     )
                     upgraded_count += 1
                     logger.success(f"[{self.emulator_name}] ⚡ {display_name} "
                                    f"мгновенное улучшение → Lv.{new_level}")
+
                 else:
-                    logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось улучшить "
-                                   f"{display_name}")
-                    failed = True
+                    # Неудача (нехватка ресурсов или ошибка)
+                    self.db.freeze_emulator(emulator_id, hours=6,
+                                            reason="Нехватка ресурсов")
+                    logger.warning(f"[{self.emulator_name}] ❄️ Заморозка на 6 часов")
+                    resources_frozen = True
                     break
 
         # === ИТОГ ===
