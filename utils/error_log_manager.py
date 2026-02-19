@@ -1,13 +1,25 @@
 """
 Менеджер журнала критических ошибок
 Собирает ERROR и CRITICAL логи с контекстом для анализа
+
+ОБНОВЛЕНО:
+- Thread-safe флаг вместо прямого GUI callback
+- Персистентное хранение в JSON файл (переживает перезапуск)
 """
 
 import os
+import json
 import threading
 from datetime import datetime
 from typing import List, Dict, Optional
 from collections import deque
+
+
+# Путь к файлу журнала ошибок
+ERROR_JOURNAL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'data', 'logs', 'error_journal.json'
+)
 
 
 class ErrorLogManager:
@@ -19,15 +31,11 @@ class ErrorLogManager:
     - Хранение ±20 строк контекста вокруг ошибки
     - Привязка к ID и названию эмулятора
     - Thread-safe операции
+    - Персистентное хранение в JSON (переживает перезапуск)
+    - Thread-safe уведомление GUI через флаг
     """
 
     def __init__(self, context_lines: int = 20):
-        """
-        Инициализация менеджера
-
-        Args:
-            context_lines: количество строк контекста до и после ошибки
-        """
         self.context_lines = context_lines
 
         # Хранилище ошибок
@@ -38,63 +46,107 @@ class ErrorLogManager:
 
         # Буфер для строк после ошибки
         self._after_error_buffer = []
-        self._collecting_after = 0  # Счетчик строк после ошибки
+        self._collecting_after = 0
 
         # Блокировка для thread-safety
         self._lock = threading.Lock()
 
-        # Колбэк для обновления GUI
-        self._gui_callback = None
+        # Thread-safe флаг для GUI
+        self._has_new_errors = False
 
-    def set_gui_callback(self, callback):
+        # Загрузить ошибки из файла при старте
+        self._load_from_file()
+
+    # ===== ПЕРСИСТЕНТНОЕ ХРАНЕНИЕ =====
+
+    def _load_from_file(self):
+        """Загрузить ошибки из JSON файла при старте"""
+        try:
+            if os.path.exists(ERROR_JOURNAL_PATH):
+                with open(ERROR_JOURNAL_PATH, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                for entry in data:
+                    # Восстанавливаем datetime из строки
+                    entry['timestamp'] = datetime.fromisoformat(
+                        entry['timestamp']
+                    )
+                    self._errors.append(entry)
+
+                if self._errors:
+                    self._has_new_errors = True
+
+        except Exception as e:
+            # Не ломаем запуск из-за битого файла
+            print(f"⚠️ Не удалось загрузить журнал ошибок: {e}")
+            self._errors = []
+
+    def _save_to_file(self):
         """
-        Установить колбэк для обновления GUI при новой ошибке
+        Сохранить ошибки в JSON файл
 
-        Args:
-            callback: функция без параметров
+        Вызывается ВНУТРИ lock (из add_error и clear_errors).
         """
-        self._gui_callback = callback
+        try:
+            # Создать директорию если нет
+            os.makedirs(os.path.dirname(ERROR_JOURNAL_PATH), exist_ok=True)
 
-    def add_log_line(self, log_line: str):
+            # Конвертируем для JSON
+            data = []
+            for entry in self._errors:
+                json_entry = dict(entry)
+                json_entry['timestamp'] = entry['timestamp'].isoformat()
+                data.append(json_entry)
+
+            with open(ERROR_JOURNAL_PATH, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+        except Exception:
+            pass  # Не ломаем работу из-за ошибки сохранения
+
+    # ===== GUI ВЗАИМОДЕЙСТВИЕ =====
+
+    def check_new_errors(self) -> bool:
         """
-        Добавить строку лога в буфер
+        Проверить есть ли новые ошибки (вызывается из GUI потока)
 
-        Args:
-            log_line: строка из лога
+        Возвращает True и сбрасывает флаг.
         """
         with self._lock:
-            # Если собираем строки после ошибки
+            if self._has_new_errors:
+                self._has_new_errors = False
+                return True
+            return False
+
+    # ===== ОСНОВНЫЕ МЕТОДЫ =====
+
+    def add_log_line(self, log_line: str):
+        """Добавить строку лога в буфер"""
+        with self._lock:
             if self._collecting_after > 0:
                 self._after_error_buffer.append(log_line)
                 self._collecting_after -= 1
 
-                # Если собрали все строки после ошибки
                 if self._collecting_after == 0:
-                    # Добавляем их к последней ошибке
                     if self._errors:
-                        self._errors[-1]['context_after'] = list(self._after_error_buffer)
+                        self._errors[-1]['context_after'] = list(
+                            self._after_error_buffer
+                        )
+                        # Сохранить обновлённый контекст
+                        self._save_to_file()
                     self._after_error_buffer.clear()
 
-            # Добавляем в буфер контекста
             self._log_buffer.append(log_line)
 
     def add_error(self, log_line: str, level: str, message: str,
                   emulator_id: Optional[int] = None,
                   emulator_name: Optional[str] = None):
-        """
-        Добавить критическую ошибку в журнал
-
-        Args:
-            log_line: полная строка лога с ошибкой
-            level: уровень (ERROR, CRITICAL)
-            message: текст ошибки
-            emulator_id: ID эмулятора
-            emulator_name: название эмулятора
-        """
+        """Добавить критическую ошибку в журнал"""
         with self._lock:
-            # Извлекаем эмулятор из сообщения если не передан
             if emulator_id is None or emulator_name is None:
-                extracted_id, extracted_name = self._extract_emulator_info(message)
+                extracted_id, extracted_name = (
+                    self._extract_emulator_info(message)
+                )
                 if emulator_id is None:
                     emulator_id = extracted_id
                 if emulator_name is None:
@@ -106,8 +158,8 @@ class ErrorLogManager:
                 'message': message,
                 'emulator_id': emulator_id,
                 'emulator_name': emulator_name or 'Unknown',
-                'context_before': list(self._log_buffer),  # Копируем буфер
-                'context_after': [],  # Будет заполнено позже
+                'context_before': list(self._log_buffer),
+                'context_after': [],
                 'log_line': log_line
             }
 
@@ -117,30 +169,19 @@ class ErrorLogManager:
             self._collecting_after = self.context_lines
             self._after_error_buffer.clear()
 
-            # Уведомляем GUI если есть колбэк
-            if self._gui_callback:
-                try:
-                    self._gui_callback()
-                except Exception:
-                    pass  # Игнорируем ошибки в колбэке
+            # Флаг для GUI
+            self._has_new_errors = True
+
+            # Сохранить в файл
+            self._save_to_file()
 
     def _extract_emulator_info(self, message: str) -> tuple:
-        """
-        Извлечь ID и название эмулятора из сообщения
-
-        Args:
-            message: текст сообщения
-
-        Returns:
-            (emulator_id, emulator_name)
-        """
+        """Извлечь ID и название эмулятора из сообщения"""
         import re
 
-        # Паттерн: [Название эмулятора]
         name_match = re.search(r'\[([^\]]+)\]', message)
         emulator_name = name_match.group(1) if name_match else None
 
-        # Паттерн для ID: LDPlayer-X или id:X или (id:X)
         id_patterns = [
             r'LDPlayer-(\d+)',
             r'id[:\s]+(\d+)',
@@ -160,34 +201,17 @@ class ErrorLogManager:
         return emulator_id, emulator_name
 
     def get_errors(self, limit: Optional[int] = None) -> List[Dict]:
-        """
-        Получить список ошибок
-
-        Args:
-            limit: максимальное количество ошибок (None = все)
-
-        Returns:
-            Список ошибок (от новых к старым)
-        """
+        """Получить список ошибок (от новых к старым)"""
         with self._lock:
-            errors = list(reversed(self._errors))  # От новых к старым
+            errors = list(reversed(self._errors))
             if limit:
                 return errors[:limit]
             return errors
 
     def get_error(self, index: int) -> Optional[Dict]:
-        """
-        Получить конкретную ошибку по индексу
-
-        Args:
-            index: индекс ошибки (0 = самая новая)
-
-        Returns:
-            Словарь с данными ошибки или None
-        """
+        """Получить конкретную ошибку по индексу (0 = самая новая)"""
         with self._lock:
             if 0 <= index < len(self._errors):
-                # Индекс с конца (0 = последняя ошибка)
                 return self._errors[-(index + 1)]
             return None
 
@@ -200,50 +224,46 @@ class ErrorLogManager:
         """Очистить все ошибки"""
         with self._lock:
             self._errors.clear()
-            if self._gui_callback:
-                try:
-                    self._gui_callback()
-                except Exception:
-                    pass
+            self._has_new_errors = True
+            self._save_to_file()
 
     def format_error_context(self, error: Dict) -> str:
-        """
-        Отформатировать ошибку с контекстом для отображения
-
-        Args:
-            error: словарь с данными ошибки
-
-        Returns:
-            Отформатированный текст
-        """
+        """Отформатировать ошибку с контекстом для отображения"""
         lines = []
 
-        # Заголовок
         lines.append("=" * 80)
-        lines.append(f"ОШИБКА: {error['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(
+            f"ОШИБКА: {error['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"
+        )
         lines.append(f"Уровень: {error['level']}")
         if error['emulator_id']:
-            lines.append(f"Эмулятор: {error['emulator_name']} (ID: {error['emulator_id']})")
+            lines.append(
+                f"Эмулятор: {error['emulator_name']} "
+                f"(ID: {error['emulator_id']})"
+            )
         else:
             lines.append(f"Эмулятор: {error['emulator_name']}")
         lines.append("=" * 80)
         lines.append("")
 
-        # Контекст ДО ошибки
         if error['context_before']:
-            lines.append(f"--- Контекст ДО ошибки ({len(error['context_before'])} строк) ---")
+            lines.append(
+                f"--- Контекст ДО ошибки "
+                f"({len(error['context_before'])} строк) ---"
+            )
             for line in error['context_before']:
                 lines.append(line.rstrip())
             lines.append("")
 
-        # Сама ошибка (выделена)
         lines.append(">>> ОШИБКА <<<")
         lines.append(error['log_line'].rstrip())
         lines.append("")
 
-        # Контекст ПОСЛЕ ошибки
         if error['context_after']:
-            lines.append(f"--- Контекст ПОСЛЕ ошибки ({len(error['context_after'])} строк) ---")
+            lines.append(
+                f"--- Контекст ПОСЛЕ ошибки "
+                f"({len(error['context_after'])} строк) ---"
+            )
             for line in error['context_after']:
                 lines.append(line.rstrip())
 

@@ -1,9 +1,13 @@
 """
 Выполнение игровых функций
+
+ОБНОВЛЕНО: Изоляция ошибок каждой функции + заморозка при критических ошибках
 """
 
 import time
+import traceback
 from utils.logger import logger
+from utils.function_freeze_manager import function_freeze_manager
 
 # Импорты классов функций
 from functions.building.building import BuildingFunction
@@ -51,6 +55,12 @@ def execute_functions(emulator, active_functions):
     """
     Выполняет активные функции по порядку
 
+    ОБНОВЛЕНО:
+    - Каждая функция изолирована в try/except
+    - При ошибке функция замораживается на 4 часа
+    - Выполнение ПРОДОЛЖАЕТСЯ к следующим функциям
+    - Функция НИКОГДА не бросает исключение наружу
+
     Args:
         emulator: словарь с данными эмулятора (id, name, port)
         active_functions: список названий активных функций (из конфига)
@@ -64,37 +74,92 @@ def execute_functions(emulator, active_functions):
     """
 
     emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+    emulator_id = emulator.get('id')
 
-    # Проверка входных данных
     if not active_functions:
-        logger.warning(f"[{emulator_name}] Нет активных функций для выполнения")
+        logger.warning(
+            f"[{emulator_name}] Нет активных функций для выполнения"
+        )
         return
 
     # Фильтруем порядок только активными функциями
     ordered_active = [f for f in FUNCTION_ORDER if f in active_functions]
 
     if not ordered_active:
-        logger.warning(f"[{emulator_name}] Активные функции не найдены в FUNCTION_ORDER: {active_functions}")
+        logger.warning(
+            f"[{emulator_name}] Активные функции не найдены "
+            f"в FUNCTION_ORDER: {active_functions}"
+        )
         return
 
     logger.info(f"[{emulator_name}] Порядок выполнения: {ordered_active}")
 
-    # Выполняем функции по порядку
+    # Счётчики для итогового лога
+    executed = 0
+    skipped_frozen = 0
+    failed = 0
+
     for function_name in ordered_active:
-        # Получить класс функции
-        function_class = FUNCTION_CLASSES.get(function_name)
+        try:
+            # === ПРОВЕРКА ЗАМОРОЗКИ ===
+            if function_freeze_manager.is_frozen(emulator_id, function_name):
+                unfreeze_at = function_freeze_manager.get_unfreeze_time(
+                    emulator_id, function_name
+                )
+                time_str = (
+                    unfreeze_at.strftime('%H:%M:%S') if unfreeze_at
+                    else '?'
+                )
+                logger.warning(
+                    f"[{emulator_name}] 🧊 Функция {function_name} "
+                    f"заморожена до {time_str}, пропускаю"
+                )
+                skipped_frozen += 1
+                continue
 
-        if not function_class:
-            logger.error(f"[{emulator_name}] Функция {function_name} не найдена в FUNCTION_CLASSES")
-            continue
+            # Получить класс функции
+            function_class = FUNCTION_CLASSES.get(function_name)
+            if not function_class:
+                logger.error(
+                    f"[{emulator_name}] Функция {function_name} "
+                    f"не найдена в FUNCTION_CLASSES"
+                )
+                continue
 
-        # Создать экземпляр функции
-        function = function_class(emulator)
+            # Создать экземпляр и запустить
+            function = function_class(emulator)
+            function.run()
+            executed += 1
 
-        # Запустить функцию (с логированием внутри)
-        function.run()
+        except Exception as e:
+            # === КРИТИЧЕСКАЯ ОШИБКА В ФУНКЦИИ ===
+            failed += 1
+            tb = traceback.format_exc()
 
-        # Небольшая пауза между функциями
+            logger.error(
+                f"[{emulator_name}] ❌ КРИТИЧЕСКАЯ ОШИБКА "
+                f"в функции {function_name}: {e}"
+            )
+            logger.error(f"[{emulator_name}] Traceback:\n{tb}")
+
+            # Заморозить функцию на 4 часа
+            function_freeze_manager.freeze(
+                emulator_id=emulator_id,
+                function_name=function_name,
+                hours=4,
+                reason=str(e)
+            )
+
+            # ПРОДОЛЖАЕМ к следующей функции!
+            logger.info(
+                f"[{emulator_name}] ➡️ Продолжаю к следующей функции..."
+            )
+
+        # Пауза между функциями
         time.sleep(1)
 
-    logger.info(f"[{emulator_name}] Все функции выполнены")
+    # Итоговый лог
+    logger.info(
+        f"[{emulator_name}] 📊 Итого: выполнено={executed}, "
+        f"заморожено={skipped_frozen}, ошибок={failed}"
+    )

@@ -141,15 +141,18 @@ class BotOrchestrator:
         4. Запустить готовые (до max_concurrent)
         5. Умное ожидание до ближайшего события
         6. Повторить
+
+        ИСПРАВЛЕНО: try/except ВНУТРИ цикла while.
+        Ошибка в одной итерации НЕ убивает весь планировщик.
         """
-        try:
-            logger.info("🔄 Планировщик запущен")
+        logger.info("🔄 Планировщик запущен")
 
-            while self.is_running:
-
+        while self.is_running:
+            try:
                 # 1. Загрузить актуальный конфиг
-                #    (подхватит новые эмуляторы, изменения функций)
-                enabled_emulators, self.max_concurrent, active_functions = self._load_config()
+                enabled_emulators, self.max_concurrent, active_functions = (
+                    self._load_config()
+                )
 
                 if not enabled_emulators:
                     logger.warning("Нет включённых эмуляторов, ожидание...")
@@ -168,7 +171,9 @@ class BotOrchestrator:
                 self._check_restart_requests()
 
                 # 4. Рассчитать расписание
-                schedule = self._build_schedule(enabled_emulators, active_functions)
+                schedule = self._build_schedule(
+                    enabled_emulators, active_functions
+                )
 
                 # 5. Обновить данные расписания для GUI
                 self._update_schedule_data(schedule, enabled_emulators)
@@ -183,7 +188,7 @@ class BotOrchestrator:
                     if len(self.active_slots) >= self.max_concurrent:
                         break
                     if launch_time > now:
-                        break  # Остальные ещё не готовы (список отсортирован)
+                        break
 
                     # Запуск в потоке
                     thread = threading.Thread(
@@ -206,25 +211,32 @@ class BotOrchestrator:
                 self._update_gui()
 
                 if launched > 0:
-                    logger.info(f"📊 Запущено: {launched}, "
-                                f"активно: {len(self.active_slots)}/{self.max_concurrent}")
+                    logger.info(
+                        f"📊 Запущено: {launched}, "
+                        f"активно: {len(self.active_slots)}"
+                        f"/{self.max_concurrent}"
+                    )
 
                 # 7. Умное ожидание
                 sleep_seconds = self._calculate_sleep_time(schedule)
-                logger.debug(f"💤 Следующая проверка через {sleep_seconds}с")
+                logger.debug(
+                    f"💤 Следующая проверка через {sleep_seconds}с"
+                )
                 self._sleep_interruptible(sleep_seconds)
 
-            # Завершение
-            self._wait_all_slots_finish()
-            logger.info("🔄 Планировщик остановлен")
-            self.is_running = False
-            self._update_gui()
+            except Exception as e:
+                # === ИСПРАВЛЕНО: Ошибка в итерации НЕ убивает планировщик ===
+                logger.error(
+                    f"⚠️ Ошибка в итерации планировщика: {e}"
+                )
+                logger.exception(e)
+                # Пауза перед повторной попыткой, НЕ останавливаем бота
+                self._sleep_interruptible(self.check_interval)
 
-        except Exception as e:
-            logger.error(f"Критическая ошибка в планировщике: {e}")
-            logger.exception(e)
-            self.is_running = False
-            self._update_gui()
+            # Завершение (только когда is_running = False через stop())
+        self._wait_all_slots_finish()
+        logger.info("🔄 Планировщик остановлен")
+        self._update_gui()
 
     # ===== ЛОГИКА РАСПИСАНИЯ =====
 

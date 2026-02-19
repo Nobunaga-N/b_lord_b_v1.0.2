@@ -50,8 +50,8 @@ class MainWindow(ctk.CTk):
         # Установить начальное состояние кнопок
         self._update_button_states()
 
-        # Настроить колбэк для обновления badge ошибок
-        error_log_manager.set_gui_callback(self._update_error_badge)
+        # УБРАН прямой callback (не thread-safe для tkinter)
+        # Badge обновляется через _start_periodic_update() каждые 500ms
 
         # Запустить периодическое обновление кнопок
         self._start_periodic_update()
@@ -241,7 +241,10 @@ class MainWindow(ctk.CTk):
     def _start_periodic_update(self):
         """Запускает периодическое обновление UI"""
         self._update_button_states()
-        self._update_error_badge()
+
+        # Проверяем флаг новых ошибок (thread-safe)
+        if error_log_manager.check_new_errors():
+            self._update_error_badge()
 
         # Обновлять каждые 500 мс
         self.after(500, self._start_periodic_update)
