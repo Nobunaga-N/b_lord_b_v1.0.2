@@ -6,6 +6,7 @@
 
 import time
 import traceback
+from utils.config_manager import load_config
 from utils.logger import logger
 from utils.function_freeze_manager import function_freeze_manager
 
@@ -100,6 +101,15 @@ def execute_functions(emulator, active_functions):
     failed = 0
 
     for function_name in ordered_active:
+
+        # === ПРОВЕРКА ПАУЗЫ ЭМУЛЯТОРА ===
+        if _is_emulator_paused(emulator_id):
+            logger.info(
+                f"[{emulator_name}] ⏸ Эмулятор на паузе, "
+                f"прерываю выполнение (после завершения предыдущей функции)"
+            )
+            break
+
         try:
             # === ПРОВЕРКА ЗАМОРОЗКИ ===
             if function_freeze_manager.is_frozen(emulator_id, function_name):
@@ -163,3 +173,27 @@ def execute_functions(emulator, active_functions):
         f"[{emulator_name}] 📊 Итого: выполнено={executed}, "
         f"заморожено={skipped_frozen}, ошибок={failed}"
     )
+
+
+def _is_emulator_paused(emulator_id):
+    """
+    Проверяет на паузе ли эмулятор (читает из gui_config.yaml)
+
+    Args:
+        emulator_id: ID эмулятора
+
+    Returns:
+        bool: True если эмулятор на паузе
+    """
+    try:
+        gui_config = load_config("configs/gui_config.yaml", silent=True)
+        if not gui_config:
+            return False
+        emu_settings = gui_config.get("emulator_settings", {})
+        settings = emu_settings.get(
+            str(emulator_id),
+            emu_settings.get(emulator_id, {})
+        )
+        return settings.get("paused", False)
+    except Exception:
+        return False

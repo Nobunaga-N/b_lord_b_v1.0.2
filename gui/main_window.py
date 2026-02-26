@@ -47,7 +47,7 @@ class MainWindow(ctk.CTk):
         self._create_layout()
 
         # Инициализация контроллера бота (после создания status_panel)
-        self.bot_controller = BotController(gui_callback=self.status_panel.update_bot_state)
+        self.bot_controller = BotController(gui_callback=self._on_bot_state_update)
 
         # Установить начальное состояние кнопок
         self._update_button_states()
@@ -153,6 +153,41 @@ class MainWindow(ctk.CTk):
             height=20
         )
         # Изначально скрыт
+
+        # === Кнопка "Уведомления" с мигающим badge ===
+        notif_btn_frame = ctk.CTkFrame(buttons_frame, fg_color="transparent")
+        notif_btn_frame.pack(pady=5)
+
+        self.btn_notifications = ctk.CTkButton(
+            notif_btn_frame,
+            text="🔔 Уведомления",
+            command=self._open_notifications,
+            width=150,
+            height=35,
+            fg_color="#6C757D",
+            hover_color="#5A6268"
+        )
+        self.btn_notifications.pack()
+
+        # Badge счётчик
+        self.notif_badge = ctk.CTkLabel(
+            notif_btn_frame,
+            text="",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color="#FFFFFF",
+            fg_color="#DC3545",
+            corner_radius=8,
+            width=24,
+            height=18
+        )
+        # Не показываем badge если нет уведомлений (place не вызывается)
+
+        # Состояние мигания
+        self._notif_blink_state = False
+        self._notif_blink_job = None
+
+        # Запустить проверку уведомлений
+        self._check_notifications()
 
         # === Кнопка "Расписание" ===
         self.btn_schedule = ctk.CTkButton(
@@ -260,6 +295,25 @@ class MainWindow(ctk.CTk):
                 self.btn_start.configure(state="normal")
                 self.btn_stop.configure(state="disabled")
 
+    def _on_bot_state_update(self, bot_state):
+        """
+        Единый callback от BotOrchestrator
+        Распределяет данные по всем панелям GUI
+
+        Args:
+            bot_state: dict от оркестратора
+        """
+        # 1. Обновить StatusPanel (как было раньше)
+        self.status_panel.update_bot_state(bot_state)
+
+        # 2. Обновить индикаторы в EmulatorPanel
+        active_ids = {emu["id"] for emu in bot_state.get("active_emulators", [])}
+        running_ids = bot_state.get("running_ids", set())
+        self.emulator_panel.update_indicators(
+            active_ids=active_ids,
+            running_ids=running_ids
+        )
+
     def _start_periodic_update(self):
         """Запускает периодическое обновление UI"""
         self._update_button_states()
@@ -270,3 +324,51 @@ class MainWindow(ctk.CTk):
 
         # Обновлять каждые 500 мс
         self.after(500, self._start_periodic_update)
+
+    # ===== УВЕДОМЛЕНИЯ =====
+
+    def _open_notifications(self):
+        """Открывает окно уведомлений"""
+        from gui.notifications_window import NotificationsWindow
+        NotificationsWindow(self)
+
+    def _check_notifications(self):
+        """Периодическая проверка новых уведомлений (каждые 3 сек)"""
+        from gui.notifications_window import get_new_notification_count
+        count = get_new_notification_count()
+        self._update_notif_badge(count)
+        self.after(3000, self._check_notifications)
+
+    def _update_notif_badge(self, count):
+        """Обновляет badge и мигание"""
+        if count > 0:
+            self.notif_badge.configure(text=str(count))
+            self.notif_badge.place(relx=1.0, rely=0.0, anchor="ne", x=-5, y=-3)
+            # Запустить мигание
+            if self._notif_blink_job is None:
+                self._blink_notification_button()
+        else:
+            self.notif_badge.place_forget()
+            self.btn_notifications.configure(fg_color="#6C757D")
+            if self._notif_blink_job is not None:
+                self.after_cancel(self._notif_blink_job)
+                self._notif_blink_job = None
+
+    def _blink_notification_button(self):
+        """Мигание кнопки уведомлений"""
+        from gui.notifications_window import get_new_notification_count
+        if get_new_notification_count() == 0:
+            self.btn_notifications.configure(fg_color="#6C757D")
+            self._notif_blink_job = None
+            return
+
+        self._notif_blink_state = not self._notif_blink_state
+        color = "#DC3545" if self._notif_blink_state else "#6C757D"
+        self.btn_notifications.configure(fg_color=color)
+        self._notif_blink_job = self.after(800, self._blink_notification_button)
+
+    def update_notification_badge(self):
+        """Вызывается извне для обновления badge"""
+        from gui.notifications_window import get_new_notification_count
+        count = get_new_notification_count()
+        self._update_notif_badge(count)

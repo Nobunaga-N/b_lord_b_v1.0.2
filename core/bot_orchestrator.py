@@ -266,6 +266,10 @@ class BotOrchestrator:
         for emu in enabled_emulators:
             emu_id = emu['id']
 
+            # Пропустить запауженные эмуляторы
+            if self._is_paused(emu_id):
+                continue
+
             # Пропустить уже обрабатываемые
             if emu_id in self.processing_ids:
                 continue
@@ -701,9 +705,11 @@ class BotOrchestrator:
 
     def _update_gui(self):
         """Обновляет GUI через callback"""
-
         if not self.gui_callback:
             return
+
+        # Собрать ID запущенных эмуляторов (все в active_slots)
+        running_ids = {emu['id'] for emu, _ in self.active_slots}
 
         bot_state = {
             "is_running": self.is_running,
@@ -713,6 +719,7 @@ class BotOrchestrator:
                 {"id": emu['id'], "name": emu['name']}
                 for emu, _ in self.active_slots
             ],
+            "running_ids": running_ids,  # ← НОВОЕ: для жёлтых индикаторов
             "schedule_count": len(self.schedule_data.get('queue', []))
             if isinstance(self.schedule_data, dict) else 0,
         }
@@ -721,3 +728,18 @@ class BotOrchestrator:
             self.gui_callback(bot_state)
         except Exception as e:
             logger.error(f"Ошибка при обновлении GUI: {e}")
+
+    def _is_paused(self, emulator_id):
+        """Проверяет на паузе ли эмулятор"""
+        try:
+            gui_config = load_config("configs/gui_config.yaml", silent=True)
+            if not gui_config:
+                return False
+            emu_settings = gui_config.get("emulator_settings", {})
+            settings = emu_settings.get(
+                str(emulator_id),
+                emu_settings.get(emulator_id, {})
+            )
+            return settings.get("paused", False)
+        except Exception:
+            return False

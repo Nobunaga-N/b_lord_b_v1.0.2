@@ -1,12 +1,28 @@
+emulator_settings:
+  '0':
+    paused: false
+    squads:
+      special:
+        enabled: true
+        wild_level: 15
+      squad_1:
+        enabled: true
+        wild_level: 1
+      squad_2:
+        enabled: true
+        wild_level: 1
+      squad_3:
+        enabled: false
+        wild_level: 1
 emulators:
   enabled:
   - 0
 functions:
-  building: true
+  building: false
   coop: false
   feeding_zone: true
   mail_rewards: false
-  ponds: false
+  ponds: true
   prime_times: false
   research: false
   shield: false
