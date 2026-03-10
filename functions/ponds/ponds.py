@@ -74,9 +74,8 @@ class PondsFunction(BaseFunction):
     # БД
     DB_PATH = os.path.join(BASE_DIR, 'data', 'database', 'bot.db')
 
-    def __init__(self, emulator):
-        """Инициализация функции пополнения прудов"""
-        super().__init__(emulator)
+    def __init__(self, emulator, session_state=None):
+        super().__init__(emulator, session_state)
         self.name = "PondsFunction"
         self.panel = NavigationPanel()
 

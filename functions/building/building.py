@@ -35,12 +35,12 @@ class BuildingFunction(BaseFunction):
     8. Повторить пока есть свободные строители
     """
 
-    def __init__(self, emulator):
+    def __init__(self, emulator, session_state=None):
         """Инициализация функции строительства"""
-        super().__init__(emulator)
+        super().__init__(emulator, session_state)
         self.name = "BuildingFunction"
 
-        # Инициализация компонентов
+        # Инициализация компонентов (БЕЗ ИЗМЕНЕНИЙ)
         self.panel = NavigationPanel()
         self.upgrade = BuildingUpgrade()
         self.construction = BuildingConstruction()

@@ -32,9 +32,8 @@ class ResearchFunction(BaseFunction):
     1 слот исследования на все уровни Лорда.
     """
 
-    def __init__(self, emulator):
-        """Инициализация функции эволюции"""
-        super().__init__(emulator)
+    def __init__(self, emulator, session_state=None):
+        super().__init__(emulator, session_state)
         self.name = "ResearchFunction"
 
         # Компоненты

@@ -54,9 +54,9 @@ class FeedingZoneFunction(BaseFunction):
     THRESHOLD_ICON = 0.8
     THRESHOLD_BUTTON = 0.85
 
-    def __init__(self, emulator):
+    def __init__(self, emulator, session_state=None):
         """Инициализация функции пополнения Зоны Кормления"""
-        super().__init__(emulator)
+        super().__init__(emulator, session_state)
         self.name = "FeedingZoneFunction"
         self.panel = NavigationPanel()
 

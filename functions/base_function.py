@@ -1,28 +1,27 @@
-# КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: run() автоматически замораживает при execute()→False
+# КЛЮЧЕВОЕ ИЗМЕНЕНИЕ v1.5: Добавлен session_state для мульти-pass (Wilds)
 #
-# Новый контракт execute():
+# session_state — словарь, который живёт пока эмулятор запущен.
+# Передаётся между проходами function_executor.
+# Каждая функция может читать/писать свою секцию:
+#   self.session_state['wilds'] = { 'hunt_active': True, ... }
+#
+# Контракт execute() НЕ ИЗМЕНИЛСЯ:
 #   return True  = "отработал, ситуация обработана"
-#                  (включая "нет ресурсов → заморозил себя")
 #   return False = "сломался, нужна заморозка"
 #   raise        = "баг, нужна заморозка"
 #   return None  = трактуется как True (для совместимости)
-#
-# mark_failed() остаётся как ОПЦИОНАЛЬНЫЙ инструмент для передачи
-# конкретной причины. Но он НЕ ОБЯЗАТЕЛЕН — False сам по себе
-# запускает заморозку.
-#
-# Показан ПОЛНЫЙ файл.
 
 """
 Базовый класс для всех игровых функций
 
-ОБНОВЛЕНО v1.4:
-- run() автоматически замораживает при execute()→False
-- mark_failed() теперь ОПЦИОНАЛЕН (не нужен в каждой функции)
-- Новый контракт: True=обработано, False=ошибка, raise=баг
+ОБНОВЛЕНО v1.5:
+- Добавлен session_state (dict) — общее состояние сессии эмулятора
+- session_state передаётся между проходами function_executor
+- Используется для мульти-pass логики (Wilds автоохота)
+- Обратная совместимость: session_state опционален
 
-Версия: 1.4
-Дата обновления: 2025-02-19
+Версия: 1.5
+Дата обновления: 2025-03-10
 """
 
 import traceback
@@ -48,12 +47,21 @@ class BaseFunction:
     - raise        → run() пробросит → function_executor заморозит
     """
 
-    def __init__(self, emulator):
+    def __init__(self, emulator, session_state=None):
+        """
+        Args:
+            emulator: dict с данными эмулятора (id, name, port)
+            session_state: dict — общее состояние сессии эмулятора,
+                           живёт пока эмулятор запущен, передаётся
+                           между проходами function_executor.
+                           Если None — создаётся пустой dict.
+        """
         self.emulator = emulator
         self.emulator_name = emulator.get(
             'name', f"id:{emulator.get('id', '?')}"
         )
         self.name = "BaseFunction"
+        self.session_state = session_state if session_state is not None else {}
 
         # Флаг критической ошибки (опциональный, для передачи причины)
         self._failed = False
@@ -92,8 +100,7 @@ class BaseFunction:
         ОПЦИОНАЛЬНО пометить функцию как неуспешную С ПРИЧИНОЙ
 
         Используй если хочешь передать конкретную причину заморозки.
-        Если не вызвать — run() всё равно заморозит при False,
-        но причина будет общей.
+        Но можно просто return False из execute().
 
         Args:
             reason: причина ошибки (для лога и заморозки)
@@ -114,7 +121,7 @@ class BaseFunction:
         2. NotImplementedError → заглушка (return True)
         3. Exception в execute() → ПРОБРАСЫВАЕТСЯ → заморозка
         4. mark_failed() вызван → ПРОБРАСЫВАЕТСЯ → заморозка
-        5. execute() вернул False → ПРОБРАСЫВАЕТСЯ → заморозка  ← НОВОЕ
+        5. execute() вернул False → ПРОБРАСЫВАЕТСЯ → заморозка
         6. execute() вернул True/None → успех
 
         Returns:
@@ -162,9 +169,9 @@ class BaseFunction:
                 f"[{self.emulator_name}] Traceback:\n"
                 f"{traceback.format_exc()}"
             )
-            raise  # ← function_executor поймает и заморозит
+            raise
 
-        # Проверяем флаг mark_failed() (опционально, для причины)
+        # Проверяем флаг mark_failed()
         if self._failed:
             error_msg = (
                 f"{self.name}: критическая ошибка — {self._fail_reason}"
@@ -172,9 +179,9 @@ class BaseFunction:
             logger.error(
                 f"[{self.emulator_name}] ❌ {error_msg}"
             )
-            raise RuntimeError(error_msg)  # ← function_executor заморозит
+            raise RuntimeError(error_msg)
 
-        # ===== НОВОЕ: execute() вернул False → автозаморозка =====
+        # execute() вернул False → автозаморозка
         if result is False:
             error_msg = (
                 f"{self.name}: execute() вернул False "
@@ -183,7 +190,7 @@ class BaseFunction:
             logger.error(
                 f"[{self.emulator_name}] ❌ {error_msg}"
             )
-            raise RuntimeError(error_msg)  # ← function_executor заморозит
+            raise RuntimeError(error_msg)
 
         # Успех (True или None)
         logger.success(
@@ -198,18 +205,11 @@ class BaseFunction:
         """
         Лёгкая проверка: КОГДА этой функции потребуется эмулятор?
 
-        Вызывается планировщиком в главном цикле БЕЗ запуска эмулятора.
-        Работает ТОЛЬКО с БД / конфигами / текущим временем.
-        НЕ использует OCR, ADB, скриншоты — ничего, что требует работающий эмулятор.
-
-        Переопределяется в дочерних классах при реализации функционала.
-        Функции-заглушки (ещё не реализованные) возвращают None —
-        планировщик не будет запускать эмулятор ради них.
+        Вызывается планировщиком без запуска эмулятора.
+        Переопределяется в дочерних классах.
 
         Returns:
-            datetime.min      → НЕМЕДЛЕННО (новый эмулятор, первичное сканирование)
-            datetime (прошлое) → ПРОСРОЧЕНО (событие уже наступило, нужен сейчас)
-            datetime (будущее) → ЗАПЛАНИРОВАНО (событие наступит в указанное время)
-            None               → НЕ НУЖЕН (всё сделано / функция не реализована)
+            datetime — когда нужен эмулятор
+            None — эмулятор не нужен для этой функции
         """
         return None

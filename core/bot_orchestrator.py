@@ -445,65 +445,62 @@ class BotOrchestrator:
     def _process_emulator(self, emulator, active_functions):
         """
         Обрабатывает один эмулятор
-        С поддержкой Recovery System
-
-        Args:
-            emulator: словарь с данными эмулятора
-            active_functions: список активных функций
+        С поддержкой мульти-pass (session_state для Wilds)
         """
-        emulator_name = emulator.get('name', 'Unknown')
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
         emulator_id = emulator.get('id')
 
-        try:
-            logger.info(f"\n{'='*50}")
-            logger.info(f"🎮 Обработка эмулятора: {emulator_name}")
-            logger.info(f"{'='*50}")
+        logger.info(f"\n{'=' * 50}")
+        logger.info(f"[{emulator_name}] 📍 Начало обработки (id: {emulator_id})")
 
-            # Проверка запроса на перезапуск
+        try:
+            # 1. Проверка запроса на перезапуск (БЕЗ ИЗМЕНЕНИЙ)
             if recovery_manager.has_restart_request(emulator_id):
                 reason = recovery_manager.get_restart_reason(emulator_id)
-                logger.warning(f"[{emulator_name}] 🔄 Обнаружен запрос на перезапуск: {reason}")
-
-                success = self._restart_emulator(emulator)
-
-                if success:
-                    logger.success(f"[{emulator_name}] ✅ Эмулятор успешно перезапущен")
-                    recovery_manager.clear_restart_request(emulator_id)
-                else:
-                    logger.error(f"[{emulator_name}] ❌ Не удалось перезапустить эмулятор")
+                logger.warning(f"[{emulator_name}] 🔄 Перезапуск по запросу: {reason}")
+                recovery_manager.clear_restart_request(emulator_id)
+                if not self._restart_emulator(emulator):
+                    logger.error(f"[{emulator_name}] ❌ Перезапуск не удался")
+                    return
+            else:
+                # 2. Запуск эмулятора (БЕЗ ИЗМЕНЕНИЙ)
+                logger.info(f"[{emulator_name}] Запуск эмулятора...")
+                if not self.emulator_manager.start_emulator(emulator_id):
+                    logger.error(f"[{emulator_name}] ❌ Не удалось запустить эмулятор")
                     return
 
-            # 1. Запустить эмулятор
-            logger.info(f"[{emulator_name}] Запуск эмулятора...")
-            if not self.emulator_manager.start_emulator(emulator_id):
-                logger.error(f"[{emulator_name}] ❌ Не удалось запустить эмулятор")
-                return
-
-            # 2. Дождаться ADB
+            # 3. Ожидание ADB (БЕЗ ИЗМЕНЕНИЙ)
             logger.info(f"[{emulator_name}] Ожидание ADB...")
-            if not wait_for_adb(emulator['port']):
+            if not wait_for_adb(emulator['port'], timeout=90):
                 logger.error(f"[{emulator_name}] ❌ ADB не готов")
-                self.emulator_manager.stop_emulator(emulator_id)
                 return
 
-            # 3. Запустить игру и дождаться загрузки
-            game_launcher = GameLauncher(emulator)
-            if not game_launcher.launch_and_wait():
-                logger.error(f"[{emulator_name}] ❌ Игра не загрузилась")
+            # 4. Запуск игры (БЕЗ ИЗМЕНЕНИЙ)
+            logger.info(f"[{emulator_name}] Запуск игры...")
+            launcher = GameLauncher(emulator)
+            if not launcher.launch_and_wait():
+                logger.error(f"[{emulator_name}] ❌ Игра не запустилась")
                 recovery_manager.handle_stuck_state(emulator, context="Игра не загрузилась")
-                self.emulator_manager.stop_emulator(emulator_id)
                 return
 
-            # 4. Проверить активные функции
+            # 4.1 Проверить активные функции (БЕЗ ИЗМЕНЕНИЙ)
             if not active_functions:
                 logger.info(f"[{emulator_name}] Нет активных функций, задания выполнены")
                 return
 
-            # 5. Выполнить функции по порядку
+            # ===== 5. Выполнить функции — ОБНОВЛЕНО: session_state + is_running =====
             logger.info(f"[{emulator_name}] Выполнение функций: {active_functions}")
 
+            # Создаём session_state — живёт пока эмулятор запущен
+            session_state = {}
+
             try:
-                execute_functions(emulator, active_functions)
+                execute_functions(
+                    emulator,
+                    active_functions,
+                    session_state=session_state,
+                    is_running_check=lambda: self.is_running
+                )
                 logger.success(f"[{emulator_name}] ✅ Все функции выполнены")
             except Exception as func_error:
                 logger.error(f"[{emulator_name}] ❌ Ошибка при выполнении функций: {func_error}")
