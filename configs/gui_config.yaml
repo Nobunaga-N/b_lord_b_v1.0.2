@@ -14,6 +14,8 @@ emulator_settings:
       squad_3:
         enabled: false
         wild_level: 1
+    wilds:
+      use_sheet_2: false
   '5':
     paused: false
 emulators:

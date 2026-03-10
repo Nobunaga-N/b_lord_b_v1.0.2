@@ -8,8 +8,13 @@
 - Отряд III (выключен, открывается на 18 ур Лорда)
 
 Каждый отряд имеет поле для ввода уровня диких (1-15).
+Чекбокс "Активировать Лист 2" — переключение листа формаций (доступен с 16 ур Лорда).
 
-Версия: 1.0
+Версия: 1.1
+Дата обновления: 2025-03-11
+Изменения:
+- Добавлен чекбокс "Активировать Лист 2" (use_sheet_2)
+- Увеличена высота окна
 """
 
 import customtkinter as ctk
@@ -43,9 +48,10 @@ class LeadersWindow(ctk.CTkToplevel):
         self.squad_vars = {}    # {squad_key: BooleanVar}
         self.level_vars = {}    # {squad_key: StringVar}
         self.level_entries = {} # {squad_key: CTkEntry}
+        self.sheet2_var = None  # BooleanVar для Лист 2
 
-        # Размер и позиция
-        w, h = 400, 380
+        # Размер и позиция (увеличена высота для чекбокса Лист 2)
+        w, h = 400, 440
         self._center_window(parent, w, h)
 
         # UI
@@ -156,6 +162,20 @@ class LeadersWindow(ctk.CTkToplevel):
             justify="left"
         ).pack(anchor="w")
 
+        # === ЧЕКБОКС "ЛИСТ 2" ===
+        sheet2_frame = ctk.CTkFrame(self, fg_color="transparent")
+        sheet2_frame.pack(fill="x", padx=20, pady=(10, 0))
+
+        self.sheet2_var = ctk.BooleanVar(value=False)
+        sheet2_cb = ctk.CTkCheckBox(
+            sheet2_frame,
+            text="📋 Активировать Лист 2 (с 16 ур. Лорда)",
+            variable=self.sheet2_var,
+            font=ctk.CTkFont(size=12),
+            command=self._on_change
+        )
+        sheet2_cb.pack(anchor="w")
+
         # Кнопка сохранить
         btn_save = ctk.CTkButton(
             self,
@@ -202,6 +222,10 @@ class LeadersWindow(ctk.CTkToplevel):
             level = max(1, min(15, level))
             self.level_vars[squad_key].set(str(level))
 
+        # Загрузить Лист 2
+        wilds_settings = settings.get("wilds", {})
+        self.sheet2_var.set(wilds_settings.get("use_sheet_2", False))
+
     def _auto_save(self):
         """Сохраняет настройки отрядов в gui_config.yaml"""
         gui_config = load_config("configs/gui_config.yaml", silent=True) or {}
@@ -227,6 +251,14 @@ class LeadersWindow(ctk.CTkToplevel):
             }
 
         gui_config["emulator_settings"][emu_key]["squads"] = squads_data
+
+        # Сохранить Лист 2 в секцию wilds
+        if "wilds" not in gui_config["emulator_settings"][emu_key]:
+            gui_config["emulator_settings"][emu_key]["wilds"] = {}
+
+        gui_config["emulator_settings"][emu_key]["wilds"]["use_sheet_2"] = \
+            self.sheet2_var.get()
+
         save_config("configs/gui_config.yaml", gui_config, silent=True)
 
     def _save_and_close(self):

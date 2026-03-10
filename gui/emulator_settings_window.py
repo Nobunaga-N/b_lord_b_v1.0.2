@@ -2,9 +2,15 @@
 Окно настроек конкретного эмулятора
 
 Открывается по клику на ⚙️ в панели эмуляторов.
-Содержит кнопку "Вожаки" (и в будущем другие настройки).
+Содержит кнопки:
+- "Вожаки" — настройка отрядов и уровней диких
+- "Дикие" — настройка ресурсов для автоохоты
 
-Версия: 1.0
+Версия: 1.1
+Дата обновления: 2025-03-11
+Изменения:
+- Добавлена кнопка "Дикие (Ресурсы)"
+- Убран текст "Будущие настройки"
 """
 
 import customtkinter as ctk
@@ -25,7 +31,7 @@ class EmulatorSettingsWindow(ctk.CTkToplevel):
         self.grab_set()
 
         # Размер и позиция
-        w, h = 300, 200
+        w, h = 300, 240
         self._center_window(parent, w, h)
 
         # UI
@@ -66,14 +72,18 @@ class EmulatorSettingsWindow(ctk.CTkToplevel):
         )
         btn_leaders.pack(pady=5)
 
-        # Разделитель
-        sep = ctk.CTkLabel(
+        # Кнопка "Дикие"
+        btn_wilds = ctk.CTkButton(
             self,
-            text="— Будущие настройки —",
-            font=ctk.CTkFont(size=11),
-            text_color="#6C757D"
+            text="🐻 Дикие (Ресурсы)",
+            width=200,
+            height=40,
+            font=ctk.CTkFont(size=14),
+            fg_color="#8B6914",
+            hover_color="#6B5010",
+            command=self._open_wilds_settings
         )
-        sep.pack(pady=(20, 5))
+        btn_wilds.pack(pady=5)
 
         # Закрыть
         btn_close = ctk.CTkButton(
@@ -85,9 +95,14 @@ class EmulatorSettingsWindow(ctk.CTkToplevel):
             hover_color="#5A6268",
             command=self.destroy
         )
-        btn_close.pack(pady=10)
+        btn_close.pack(pady=(20, 10))
 
     def _open_leaders(self):
         """Открывает окно настройки вожаков/отрядов"""
         from gui.leaders_window import LeadersWindow
         LeadersWindow(self, self.emulator_id, self.emulator_name)
+
+    def _open_wilds_settings(self):
+        """Открывает окно настройки ресурсов для охоты на диких"""
+        from gui.wilds_settings_window import WildsSettingsWindow
+        WildsSettingsWindow(self, self.emulator_id, self.emulator_name)
