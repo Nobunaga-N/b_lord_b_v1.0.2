@@ -684,7 +684,7 @@ class WildsAutoHunt:
             )
             return {
                 'status': 'active',
-                'remaining_attempts': remaining if remaining is not None else 0
+                'remaining_attempts': remaining  # None если не спарсилось
             }
 
         if state == 'restart':
@@ -1051,9 +1051,15 @@ class WildsAutoHunt:
 
     def _parse_remaining_attempts(self, emulator: Dict) -> Optional[int]:
         """
-        Спарсить "Оставшиеся Попытки:" из окна автоохоты
+        Спарсить "Оставшиеся Попытки:" из окна автоохоты.
 
-        Формат: "X раз(а)" по Y ≈ 321
+        Алгоритм:
+        1. OCR по широкой области окна автоохоты
+        2. Найти элемент содержащий "Оставшиеся" или "Попытки"
+        3. На той же строке (по Y ±20px) найти число
+        4. Вернуть число
+
+        Формат в игре: "Оставшиеся Попытки:  7 Раз(а)"
 
         Returns:
             int: количество оставшихся попыток или None
@@ -1062,8 +1068,8 @@ class WildsAutoHunt:
         if screenshot is None:
             return None
 
-        # Область для парсинга оставшихся попыток
-        region = (200, 305, 400, 340)
+        # Широкая область — всё окно автоохоты (информационная часть)
+        region = (0, 150, 540, 500)
 
         elements = self.ocr.recognize_text(
             screenshot,
@@ -1071,13 +1077,67 @@ class WildsAutoHunt:
             min_confidence=0.3
         )
 
-        full_text = ' '.join(e.get('text', '') for e in elements)
-        logger.debug(f"  Remaining OCR: '{full_text}'")
+        if not elements:
+            logger.debug("  Remaining: OCR не нашёл текста")
+            return None
 
-        # Ищем число
-        match = re.search(r'(\d+)', full_text)
+        # Логируем все элементы для отладки
+        for e in elements:
+            logger.debug(
+                f"  Remaining elem: '{e.get('text', '')}' "
+                f"y={e.get('y', '?')} x={e.get('x', '?')}"
+            )
+
+        # 1. Найти элемент "Оставшиеся" или "Попытки"
+        target_elem = None
+        for e in elements:
+            text = e.get('text', '')
+            if re.search(r'[Оо]ставш', text, re.IGNORECASE):
+                target_elem = e
+                break
+
+        if target_elem is None:
+            # Fallback: может OCR склеил всё в одну строку
+            # Ищем паттерн "число + раз" среди всех элементов
+            for e in elements:
+                text = e.get('text', '')
+                match = re.search(r'(\d+)\s*[Рр]аз', text)
+                if match:
+                    val = int(match.group(1))
+                    logger.debug(f"  Remaining (fallback раз): {val}")
+                    return val
+
+            all_texts = [e.get('text', '') for e in elements]
+            logger.debug(f"  Remaining: 'Оставшиеся' не найдено. Тексты: {all_texts}")
+            return None
+
+        target_y = target_elem.get('y', 0)
+        logger.debug(f"  Remaining: найдено '{target_elem.get('text', '')}' на Y={target_y}")
+
+        # 2. Собрать все тексты на той же строке (Y ± 20px)
+        line_texts = []
+        for e in elements:
+            if abs(e.get('y', 0) - target_y) <= 20:
+                line_texts.append(e.get('text', ''))
+
+        combined = ' '.join(line_texts)
+        logger.debug(f"  Remaining line: '{combined}'")
+
+        # 3. Извлечь число — ищем "X раз(а)" или просто число
+        # Приоритет: паттерн "число + раз"
+        match = re.search(r'(\d+)\s*[Рр]аз', combined)
         if match:
-            return int(match.group(1))
+            val = int(match.group(1))
+            logger.debug(f"  Remaining parsed: {val}")
+            return val
+
+        # Fallback: просто любое число на этой строке
+        # Но исключаем числа из "Оставшиеся Попытки:" (их нет)
+        match = re.search(r'(\d+)', combined)
+        if match:
+            val = int(match.group(1))
+            logger.debug(f"  Remaining parsed (fallback): {val}")
+            return val
 
         return None
 

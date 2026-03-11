@@ -70,7 +70,8 @@ class WildsResourceManager:
 
     # Область OCR для парсинга строки "Сохранено" после клика по ресурсу
     # Формат: (x1, y1, x2, y2)
-    OCR_REGION_STORED = (0, 70, 540, 130)  # TODO: уточнить по скриншоту
+    OCR_REGION_STORED = (0, 250, 540, 700)
+    Y_TOLERANCE = 20
 
     def __init__(self):
         self.db = WildsDatabase()
@@ -332,43 +333,124 @@ class WildsResourceManager:
 
     def _parse_stored_line(self, emulator: Dict) -> Tuple[Optional[float], Optional[float]]:
         """
-        Спарсить строку "Сохранено" из всплывающего окна ресурса
+        Спарсить строку "Сохранено" из всплывающего окна ресурса.
 
-        Формат: 783.8К/17.5М  или  783.8К/830.0К
-        К = тысячи, М = миллионы
+        Алгоритм:
+        1. OCR по широкой области всего всплывающего окна
+        2. Найти элемент содержащий "Сохранено" (или похожее)
+        3. По Y этого элемента найти значение (другой элемент на той же строке)
+        4. Распарсить формат: 783.8К/17.5М или 6.0M/6.0M
 
         Returns:
-            (stored_k, capacity_k) — оба значения в тысячах (K)
+            (stored_k, capacity_k) — оба в тысячах (K)
             (None, None) если парсинг не удался
         """
         screenshot = get_screenshot(emulator)
         if screenshot is None:
             return None, None
 
+        # 1. OCR по широкой области
         elements = self.ocr.recognize_text(
             screenshot,
             region=self.OCR_REGION_STORED,
             min_confidence=0.3
         )
 
-        full_text = ' '.join(e.get('text', '') for e in elements)
-        logger.debug(f"  Stored OCR raw: '{full_text}'")
+        if not elements:
+            logger.debug("  Stored: OCR не нашёл текста в области окна")
+            return None, None
 
-        # Нормализация: убираем пробелы, запятые → точки
-        text = full_text.replace(' ', '').replace(',', '.')
+        # Логируем все найденные элементы для отладки
+        for e in elements:
+            logger.debug(
+                f"  OCR elem: '{e.get('text', '')}' "
+                f"y={e.get('y', '?')} x={e.get('x', '?')}"
+            )
 
-        # Паттерн: число + буква (К/M) / число + буква (К/M)
-        # Поддерживаем кириллицу (К, М) и латиницу (K, M)
+        # 2. Найти элемент "Сохранено"
+        stored_elem = None
+        for e in elements:
+            text = e.get('text', '').strip()
+            # Толерантный поиск: "Сохранено", "Сохранен", "Cохранено" (лат C)
+            if re.search(r'[СсCc]охранен', text, re.IGNORECASE):
+                stored_elem = e
+                break
+
+        if stored_elem is None:
+            all_texts = [e.get('text', '') for e in elements]
+            logger.debug(
+                f"  Stored: слово 'Сохранено' не найдено. "
+                f"Все тексты: {all_texts}"
+            )
+            return None, None
+
+        stored_y = stored_elem.get('y', 0)
+        logger.debug(
+            f"  Stored: найдено 'Сохранено' на Y={stored_y}"
+        )
+
+        # 3. Найти значение на той же строке (по Y ± допуск)
+        #    Значение — это другой элемент правее, содержащий цифры и K/M
+        value_text = None
+        for e in elements:
+            if e is stored_elem:
+                continue
+            if abs(e.get('y', 0) - stored_y) <= self.Y_TOLERANCE:
+                candidate = e.get('text', '').strip()
+                # Проверяем что это похоже на значение (содержит цифры и слэш или K/M)
+                if re.search(r'\d', candidate) and (
+                    '/' in candidate
+                    or re.search(r'[КKкkМMмm]', candidate)
+                ):
+                    value_text = candidate
+                    logger.debug(f"  Stored: значение на той же строке: '{value_text}'")
+                    break
+
+        # 4. Если не нашли отдельный элемент — может быть в самом "Сохранено"
+        #    Например OCR мог склеить: "Сохранено 6.0M/6.0M"
+        if value_text is None:
+            full_stored_text = stored_elem.get('text', '')
+            if re.search(r'\d', full_stored_text) and '/' in full_stored_text:
+                value_text = full_stored_text
+                logger.debug(
+                    f"  Stored: значение внутри элемента 'Сохранено': '{value_text}'"
+                )
+
+        if value_text is None:
+            logger.debug(
+                f"  Stored: не найдено значение рядом с 'Сохранено' (Y={stored_y})"
+            )
+            return None, None
+
+        # 5. Парсинг значения
+        return self._parse_resource_value(value_text)
+
+    def _parse_resource_value(self, text: str) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Распарсить строку вида '6.0M/6.0M', '783.8К/17.5М', '1.4M/14.5M'
+
+        Поддерживает:
+        - Кириллицу (К, М) и латиницу (K, M)
+        - Точки и запятые как разделитель дробной части
+        - Пробелы вокруг слэша
+
+        Returns:
+            (stored_k, capacity_k) — оба в тысячах (K)
+            (None, None) если не удалось
+        """
+        # Нормализация
+        normalized = text.replace(',', '.').replace(' ', '')
+
+        # Паттерн: число + единица / число + единица
         pattern = r'(\d+\.?\d*)\s*([КKкkМMмm])\s*/\s*(\d+\.?\d*)\s*([КKкkМMмm])'
-        match = re.search(pattern, text)
+        match = re.search(pattern, normalized)
 
         if not match:
-            # Пробуем без удаления пробелов
-            text_loose = full_text.replace(',', '.')
-            match = re.search(pattern, text_loose)
+            # Попробуем с оригинальным текстом (без удаления пробелов)
+            match = re.search(pattern, text.replace(',', '.'))
 
         if not match:
-            logger.debug(f"  Stored: не удалось распарсить '{full_text}'")
+            logger.debug(f"  Stored: regex не сматчил '{text}'")
             return None, None
 
         val1_str, unit1, val2_str, unit2 = match.groups()
@@ -376,8 +458,12 @@ class WildsResourceManager:
         try:
             stored = self._to_thousands(float(val1_str), unit1)
             capacity = self._to_thousands(float(val2_str), unit2)
+            logger.debug(
+                f"  Stored: parsed {stored:.1f}K / {capacity:.1f}K"
+            )
             return stored, capacity
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.debug(f"  Stored: ошибка конвертации: {e}")
             return None, None
 
     # ==================== УТИЛИТЫ ====================

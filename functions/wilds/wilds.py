@@ -118,10 +118,9 @@ class WildsFunction(BaseFunction):
 
         # Автоохота активна → проверяем пора ли мониторить
         if wilds_state.get('hunt_active'):
-            estimated = wilds_state.get('estimated_finish')
-            if estimated and datetime.now() < estimated - timedelta(minutes=1):
-                # Ещё рано проверять — автоохота не должна закончиться
-                return False
+            # Автоохота активна — всегда разрешаем проверку.
+            # Таймингом между проходами управляет function_executor
+            # через _calculate_sleep_time() и sleep между pass-ами.
             return True
 
         # Новая охота: проверяем энергию через БД
@@ -303,21 +302,53 @@ class WildsFunction(BaseFunction):
 
     # ==================== ОБРАБОТЧИКИ СОСТОЯНИЙ ====================
 
-    def _handle_active(self, remaining: int):
-        """Автоохота идёт — обновить таймер, вернуться в поместье"""
+    def _handle_active(self, remaining):
+        """
+        Автоохота идёт — обновить таймер, вернуться в поместье.
+
+        Args:
+            remaining: int — кол-во оставшихся попыток,
+                       None — если OCR не смог спарсить
+
+        Returns:
+            True всегда (ситуация обработана)
+        """
         wilds_state = self.session_state['wilds']
         squads_used = wilds_state.get('squads_used', 1)
 
-        # Пересчитать estimated_finish
-        rounds = math.ceil(remaining / squads_used) if squads_used > 0 else remaining
-        finish = datetime.now() + timedelta(minutes=rounds * self.ATTACK_DURATION_MINUTES)
-        wilds_state['estimated_finish'] = finish
+        if remaining is not None and remaining > 0:
+            # Успешно спарсили, есть попытки — пересчитываем таймер
+            rounds = math.ceil(remaining / squads_used) if squads_used > 0 else remaining
+            finish = datetime.now() + timedelta(
+                minutes=rounds * self.ATTACK_DURATION_MINUTES
+            )
+            wilds_state['estimated_finish'] = finish
 
-        logger.info(
-            f"[{self.emulator_name}] ⏳ Автоохота идёт: "
-            f"осталось {remaining} попыток, "
-            f"ожидаемое завершение ~{finish.strftime('%H:%M:%S')}"
-        )
+            logger.info(
+                f"[{self.emulator_name}] ⏳ Автоохота идёт: "
+                f"осталось {remaining} попыток, "
+                f"завершение ~{finish.strftime('%H:%M:%S')}"
+            )
+
+        elif remaining == 0:
+            # 0 попыток но кнопка "Остановить" ещё видна —
+            # отряды возвращаются, скоро появится "Начать Заново"
+            wilds_state['estimated_finish'] = (
+                    datetime.now() + timedelta(seconds=60)
+            )
+            logger.info(
+                f"[{self.emulator_name}] ⏳ Автоохота идёт: "
+                f"0 попыток осталось, скоро завершится"
+            )
+
+        else:
+            # None — OCR не смог спарсить попытки.
+            # НЕ трогаем estimated_finish — оставляем предыдущий таймер,
+            # чтобы function_executor корректно рассчитал sleep.
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ Не удалось спарсить "
+                f"оставшиеся попытки, сохраняю предыдущий таймер"
+            )
 
         self.navigation.close_autohunt_window(self.emulator)
         self.navigation.ensure_in_estate(self.emulator)
