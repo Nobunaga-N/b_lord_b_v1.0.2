@@ -687,7 +687,12 @@ class WildsFunction(BaseFunction):
         # Парсим оставшиеся попытки
         remaining = self.auto_hunt._parse_remaining_attempts(self.emulator)
         if remaining is None:
-            remaining = 0
+            # Не удалось спарсить — ставим дефолт, чтобы не сбить таймер
+            remaining = 10
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ Не удалось спарсить попытки "
+                f"при подхвате, используем дефолт={remaining}"
+            )
 
         # Загрузить настройки отрядов из GUI
         squad_settings = self._load_squad_settings(emu_id)
