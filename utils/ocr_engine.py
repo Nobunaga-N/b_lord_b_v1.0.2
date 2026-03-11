@@ -33,6 +33,7 @@ class OCREngine:
     - Парсинг уровней зданий (Lv.X)
     - Парсинг таймеров (HH:MM:SS)
     - Построчная группировка элементов
+    - Коррекция римских цифр через анализ изображения
     - Debug режим с сохранением bbox
     """
 
@@ -79,17 +80,15 @@ class OCREngine:
             if lang == 'ru':
                 logger.info("🔧 Загружаю славянскую модель с кириллицей...")
 
-                # ПРАВИЛЬНАЯ ИНИЦИАЛИЗАЦИЯ для кириллицы в PaddleOCR 3.x
                 self.ocr = PaddleOCR(
-                    text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",  # Славянская модель
-                    use_doc_orientation_classify=False,  # Отключаем лишние модули для скорости
+                    text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",
+                    use_doc_orientation_classify=False,
                     use_doc_unwarping=False,
-                    use_textline_orientation=True,  # Включаем определение ориентации строк
+                    use_textline_orientation=True,
                     device=device,
                 )
                 logger.success(f"✅ OCR инициализирован (модель: eslav, устройство: {device})")
             else:
-                # Для других языков - стандартная модель
                 self.ocr = PaddleOCR(
                     lang=lang,
                     device=device,
@@ -114,62 +113,26 @@ class OCREngine:
         """
         Нормализация текста: заменяет визуально похожие латинские символы на кириллицу
 
-        Проблема: OCR иногда путает визуально похожие символы кириллицы и латиницы.
-        Решение: Заменяем латинские буквы на кириллические аналоги.
-
         Применяется к ВСЕМУ распознанному тексту, кроме аббревиатур уровней (Lv.).
-
-        Args:
-            text: Исходный текст
-
-        Returns:
-            Нормализованный текст с кириллицей
-
-        Examples:
-            >>> normalize_cyrillic_text("Ресyрсы")
-            "Ресурсы"
-            >>> normalize_cyrillic_text("Ферма Песka")
-            "Ферма Песка"
-            >>> normalize_cyrillic_text("Lv.10")  # Не трогаем Lv
-            "Lv.10"
         """
-        # Сохраняем аббревиатуры уровней "Lv." (они должны остаться латинскими)
+        # Сохраняем аббревиатуры уровней "Lv."
         level_match = re.search(r'[LlЛл][vVуУyYвВ]\.?\s*\d+', text, flags=re.IGNORECASE)
         level_text = level_match.group() if level_match else None
 
-        # Заменяем похожие латинские символы на кириллицу
         replacements = {
-            'y': 'у',  # латинская y → кириллическая у
-            'p': 'р',  # латинская p → кириллическая р
-            'c': 'с',  # латинская c → кириллическая с
-            'o': 'о',  # латинская o → кириллическая о
-            'a': 'а',  # латинская a → кириллическая а
-            'e': 'е',  # латинская e → кириллическая е
-            'x': 'х',  # латинская x → кириллическая х
-            'k': 'к',  # латинская k → кириллическая к
-            'B': 'В',  # латинская B → кириллическая В
-            'H': 'Н',  # латинская H → кириллическая Н
-            'P': 'Р',  # латинская P → кириллическая Р
-            'C': 'С',  # латинская C → кириллическая С
-            'T': 'Т',  # латинская T → кириллическая Т
-            'Y': 'У',  # латинская Y → кириллическая У
-            'O': 'О',  # латинская O → кириллическая О
-            'A': 'А',  # латинская A → кириллическая А
-            'E': 'Е',  # латинская E → кириллическая Е
-            'X': 'Х',  # латинская X → кириллическая Х
-            'K': 'К',  # латинская K → кириллическая К
+            'y': 'у', 'p': 'р', 'c': 'с', 'o': 'о', 'a': 'а',
+            'e': 'е', 'x': 'х', 'k': 'к',
+            'B': 'В', 'H': 'Н', 'P': 'Р', 'C': 'С', 'T': 'Т',
+            'Y': 'У', 'O': 'О', 'A': 'А', 'E': 'Е', 'X': 'Х', 'K': 'К',
         }
 
         normalized = text
         for lat, cyr in replacements.items():
             normalized = normalized.replace(lat, cyr)
 
-        # Восстанавливаем оригинальную аббревиатуру уровня, если была
         if level_text:
-            # Ищем нормализованную версию
             normalized_level = re.search(r'[LlЛл][vVуУyYвВ]\.?\s*\d+', normalized, flags=re.IGNORECASE)
             if normalized_level:
-                # Заменяем нормализованную версию на оригинал
                 normalized = normalized.replace(normalized_level.group(), level_text)
 
         return normalized
@@ -191,7 +154,6 @@ class OCREngine:
         Returns:
             Список элементов с текстом, bbox и координатами
         """
-        # Извлечь регион если указан
         if region:
             x1, y1, x2, y2 = region
             crop = image[y1:y2, x1:x2]
@@ -199,14 +161,10 @@ class OCREngine:
             crop = image
             x1, y1 = 0, 0
 
-        # Запуск OCR (PaddleOCR 3.x API)
         try:
-            # В PaddleOCR 3.x метод predict возвращает список результатов
             result = self.ocr.predict(crop)
-
             logger.debug(f"🔍 OCR result type: {type(result)}")
 
-            # result - это список OCRResult объектов (генератор)
             if hasattr(result, '__iter__') and not isinstance(result, (list, dict)):
                 result = list(result)
                 logger.debug(f"🔍 Converted generator to list, length: {len(result)}")
@@ -217,71 +175,56 @@ class OCREngine:
             logger.error(traceback.format_exc())
             return []
 
-        # Парсинг результатов (PaddleOCR 3.x)
         elements = []
 
         try:
             if isinstance(result, list) and len(result) > 0:
                 ocr_result = result[0]
-
                 logger.debug(f"🔍 OCRResult type: {type(ocr_result)}")
 
-                # OCRResult это dict-like объект
                 boxes = None
                 texts = None
                 scores = None
 
-                # Извлечение данных из результата
                 if hasattr(ocr_result, 'keys'):
                     logger.debug(f"🔍 OCRResult keys: {list(ocr_result.keys())}")
 
-                    # dt_polys - координаты bbox
                     if 'dt_polys' in ocr_result:
                         boxes = ocr_result['dt_polys']
                         logger.debug(f"🔍 Found dt_polys: type={type(boxes)}, len={len(boxes)}")
-
-                    # rec_texts - распознанные тексты
                     if 'rec_texts' in ocr_result:
                         texts = ocr_result['rec_texts']
                         logger.debug(f"🔍 Found rec_texts: type={type(texts)}, len={len(texts)}")
-
-                    # rec_scores - уверенность распознавания
                     if 'rec_scores' in ocr_result:
                         scores = ocr_result['rec_scores']
                         logger.debug(f"🔍 Found rec_scores: type={type(scores)}, len={len(scores)}")
 
                 logger.debug(f"📦 Final data - boxes: {boxes is not None}, texts: {texts is not None}, scores: {scores is not None}")
 
-                # Обработка данных
                 if texts is not None and boxes is not None and scores is not None:
                     try:
                         logger.debug(f"📦 Найдено элементов: {len(texts)}")
 
                         for idx, (text, box, score) in enumerate(zip(texts, boxes, scores)):
-                            # Фильтр по confidence
                             if score < min_confidence:
                                 continue
 
-                            # Преобразуем box в формат [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
                             if isinstance(box, np.ndarray):
-                                # Находим минимальные и максимальные координаты
                                 xs = box[:, 0]
                                 ys = box[:, 1]
                                 x_min, x_max = int(np.min(xs)), int(np.max(xs))
                                 y_min, y_max = int(np.min(ys)), int(np.max(ys))
                             else:
-                                # Если box уже в формате списка координат
                                 x_min = min(p[0] for p in box)
                                 x_max = max(p[0] for p in box)
                                 y_min = min(p[1] for p in box)
                                 y_max = max(p[1] for p in box)
 
-                            # Координаты центра относительно оригинального изображения
                             center_x = x1 + (x_min + x_max) // 2
                             center_y = y1 + (y_min + y_max) // 2
 
                             elements.append({
-                                'text': self.normalize_cyrillic_text(text),  # ← ДОБАВИТЬ normalize_cyrillic_text()
+                                'text': self.normalize_cyrillic_text(text),
                                 'confidence': float(score),
                                 'bbox': box.tolist() if isinstance(box, np.ndarray) else box,
                                 'x': center_x,
@@ -303,38 +246,241 @@ class OCREngine:
             import traceback
             logger.error(traceback.format_exc())
 
-        # Debug режим - сохранение скриншота с bbox
         if self.debug_mode and elements:
             self._save_debug_screenshot(crop, elements, region)
 
         return elements
 
+    # ==================== КОРРЕКЦИЯ РИМСКИХ ЦИФР ====================
+
+    def _count_vertical_strokes(self, screenshot: np.ndarray,
+                                x1: int, y1: int, x2: int, y2: int) -> int:
+        """
+        Подсчёт вертикальных штрихов в области изображения.
+
+        Используется для определения римской цифры (I=1, II=2, III=3).
+        PaddleOCR корректно ДЕТЕКТИРУЕТ bbox вокруг "III", но РАСПОЗНАЁТ
+        как "I" из-за повторяющихся тонких штрихов.
+
+        Алгоритм:
+        1. Кроп области из скриншота
+        2. Перевод в grayscale + бинаризация (Otsu)
+        3. Вертикальная проекция (сумма по столбцам)
+        4. Подсчёт пиков (переходов фон→штрих)
+
+        Args:
+            screenshot: Полный скриншот (BGR)
+            x1, y1, x2, y2: Координаты области с римской цифрой
+
+        Returns:
+            Количество вертикальных штрихов (0 если не удалось определить)
+        """
+        h, w = screenshot.shape[:2]
+
+        # Защита от выхода за границы + небольшой padding
+        pad = 2
+        x1 = max(0, x1 - pad)
+        y1 = max(0, y1 - pad)
+        x2 = min(w, x2 + pad)
+        y2 = min(h, y2 + pad)
+
+        crop = screenshot[y1:y2, x1:x2]
+        if crop.size == 0 or (x2 - x1) < 3 or (y2 - y1) < 3:
+            return 0
+
+        # Grayscale
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
+
+        # Бинаризация (Otsu автоматически выбирает порог)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # В игре текст СВЕТЛЫЙ на ТЁМНОМ фоне
+        # Если среднее яркое — значит текст уже белый, ОК
+        # Если среднее тёмное — инвертируем чтобы штрихи стали белыми
+        if np.mean(binary) < 127:
+            binary = cv2.bitwise_not(binary)
+
+        # Вертикальная проекция: сумма пикселей по каждому столбцу
+        projection = np.sum(binary, axis=0).astype(float)
+
+        if projection.max() == 0:
+            return 0
+
+        # Порог для определения "это штрих" — 30% от максимума проекции
+        threshold = projection.max() * 0.3
+
+        # Подсчёт штрихов (переходов ниже_порога → выше_порога)
+        strokes = 0
+        in_stroke = False
+        stroke_width = 0
+        min_stroke_width = 2  # Минимум 2 пикселя ширины для штриха
+
+        for val in projection:
+            if val > threshold:
+                if not in_stroke:
+                    in_stroke = True
+                    stroke_width = 1
+                else:
+                    stroke_width += 1
+            else:
+                if in_stroke and stroke_width >= min_stroke_width:
+                    strokes += 1
+                in_stroke = False
+                stroke_width = 0
+
+        # Последний штрих (если закончился на краю)
+        if in_stroke and stroke_width >= min_stroke_width:
+            strokes += 1
+
+        return strokes
+
+    def _correct_roman_numeral(self, screenshot: np.ndarray,
+                               row: List[Dict[str, Any]]) -> Optional[str]:
+        """
+        Определить реальную римскую цифру в строке здания через анализ изображения.
+
+        СТРАТЕГИЯ 1: Ищет отдельный OCR-элемент с римской цифрой (I/l/1/|),
+                     кропает его bbox и считает вертикальные штрихи.
+
+        СТРАТЕГИЯ 2 (НОВАЯ): Если отдельного элемента нет (OCR склеил
+                     "Лемуров III" → "Лемуров I"), сканирует область
+                     СЛЕВА от элемента "Lv." — именно там на экране
+                     находится римская цифра.
+
+        Args:
+            screenshot: Полный скриншот (BGR)
+            row: Список OCR-элементов одной строки
+
+        Returns:
+            Скорректированная римская цифра ("I", "II", "III", "IV") или None
+        """
+        # ─── Находим элемент "Lv." для привязки координат ───
+        lv_elem = None
+        for elem in row:
+            if re.search(r'[LlЛл][vVуУyYвВ]', elem['text']):
+                lv_elem = elem
+                break
+
+        if lv_elem is None:
+            return None
+
+        lv_x_min = lv_elem['x_min']
+
+        # ═══════════════════════════════════════════════════════
+        # СТРАТЕГИЯ 1: Отдельный OCR-элемент с римской цифрой
+        # ═══════════════════════════════════════════════════════
+        roman_elem = None
+        for elem in row:
+            text = elem['text'].strip()
+
+            # Пропускаем элементы после "Lv." — это не римская цифра
+            if elem['x_min'] >= lv_x_min:
+                continue
+
+            # Пропускаем элементы с кириллицей (это слова, не цифры)
+            if re.search(r'[а-яА-ЯёЁ]', text):
+                continue
+
+            # Проверяем: элемент похож на римскую цифру?
+            if re.match(r'^[IiІі1lL|]{1,4}$', text):
+                roman_elem = elem
+                break
+
+        if roman_elem:
+            # Считаем штрихи в bbox отдельного элемента
+            strokes = self._count_vertical_strokes(
+                screenshot,
+                roman_elem['x_min'], roman_elem['y_min'],
+                roman_elem['x_max'], roman_elem['y_max']
+            )
+
+            if strokes > 0:
+                return self._strokes_to_roman(strokes, roman_elem['text'])
+
+        # ═══════════════════════════════════════════════════════
+        # СТРАТЕГИЯ 2: Сканируем область СЛЕВА от "Lv."
+        # OCR склеил римскую цифру с названием здания
+        # ═══════════════════════════════════════════════════════
+
+        # Проверяем: есть ли в строке хотя бы один элемент с кириллицей
+        # (т.е. это строка здания, а не заголовок/кнопка)
+        has_cyrillic_name = False
+        for elem in row:
+            if elem['x_min'] >= lv_x_min:
+                continue
+            if re.search(r'[а-яА-ЯёЁ]', elem['text']):
+                has_cyrillic_name = True
+                break
+
+        if not has_cyrillic_name:
+            return None
+
+        # Область сканирования: фиксированная ширина слева от "Lv."
+        # Римские цифры I/II/III/IV занимают ~5-35 пикселей на 540x960
+        # Берём 45px запаса, чтобы точно захватить все штрихи
+        scan_width = 45
+        scan_x2 = lv_x_min - 2   # 2px отступ от Lv.
+        scan_x1 = max(0, scan_x2 - scan_width)
+        scan_y1 = lv_elem['y_min']
+        scan_y2 = lv_elem['y_max']
+
+        if scan_x2 - scan_x1 < 5:
+            return None
+
+        strokes = self._count_vertical_strokes(
+            screenshot, scan_x1, scan_y1, scan_x2, scan_y2
+        )
+
+        if strokes > 0:
+            result = self._strokes_to_roman(strokes, f"(область слева от Lv.)")
+
+            if result:
+                logger.info(f"🔧 Стратегия 2: обнаружено {strokes} штрихов "
+                            f"в области [{scan_x1}-{scan_x2}]x[{scan_y1}-{scan_y2}] → '{result}'")
+
+            return result
+
+        return None
+
+    def _strokes_to_roman(self, strokes: int, source_text: str = "") -> Optional[str]:
+        """
+        Преобразовать количество штрихов в римскую цифру.
+
+        Args:
+            strokes: Количество вертикальных штрихов
+            source_text: Исходный текст OCR (для логирования)
+
+        Returns:
+            Римская цифра ("I", "II", "III", "IV") или None
+        """
+        roman_map = {1: "I", 2: "II", 3: "III", 4: "IV"}
+        result = roman_map.get(strokes)
+
+        if result is None:
+            logger.warning(f"🔧 Необычное количество штрихов: {strokes}, "
+                           f"источник: '{source_text}'")
+            return None
+
+        # Логируем только если произошла коррекция
+        source_clean = source_text.strip()
+        if source_clean and source_clean not in ("I", "II", "III", "IV") \
+                and result != source_clean:
+            logger.info(f"🔧 Коррекция римской цифры: '{source_clean}' → '{result}' "
+                        f"(штрихов: {strokes})")
+
+        return result
+
+    # ==================== ПАРСИНГ ====================
+
     def parse_level(self, text: str) -> Optional[int]:
         """
         Парсинг уровня здания из текста (толерантен к ошибкам OCR)
-
-        Args:
-            text: Текст для парсинга
-
-        Returns:
-            Уровень здания или None
-
-        Examples:
-            >>> parse_level("Lv.10")
-            10
-            >>> parse_level("Ly.5")  # OCR ошибка: v → y
-            5
-            >>> parse_level("Lу.7")  # OCR ошибка: v → у (кириллица)
-            7
-            >>> parse_level("Level 3")
-            3
         """
-        # Толерантные паттерны (учитываем ошибки OCR)
         patterns = [
-            r'[LlЛл][vVуУyYвВ]\.?\s*(\d+)',  # Lv, Ly, Lу, LУ и т.д.
-            r'Level\s*(\d+)',                 # Level 10
-            r'Ур\.?\s*(\d+)',                 # Ур. 10
-            r'уровень\s*(\d+)',               # уровень 10
+            r'[LlЛл][vVуУyYвВ]\.?\s*(\d+)',
+            r'Level\s*(\d+)',
+            r'Ур\.?\s*(\d+)',
+            r'уровень\s*(\d+)',
         ]
 
         for pattern in patterns:
@@ -347,40 +493,23 @@ class OCREngine:
     def parse_timer(self, text: str) -> Optional[Dict[str, int]]:
         """
         Парсинг таймера из текста
-
-        Args:
-            text: Текст для парсинга
-
-        Returns:
-            Словарь с часами, минутами, секундами или None
-
-        Examples:
-            >>> parse_timer("10:41:48")
-            {'hours': 10, 'minutes': 41, 'seconds': 48, 'total_seconds': 38508}
-            >>> parse_timer("05:30")
-            {'hours': 0, 'minutes': 5, 'seconds': 30, 'total_seconds': 330}
         """
-        # Паттерны для таймеров
         patterns = [
-            r'(\d{1,2}):(\d{2}):(\d{2})',  # HH:MM:SS
-            r'(\d{1,2}):(\d{2})',          # MM:SS
+            r'(\d{1,2}):(\d{2}):(\d{2})',
+            r'(\d{1,2}):(\d{2})',
         ]
 
         for pattern in patterns:
             match = re.search(pattern, text)
             if match:
                 groups = match.groups()
-
                 if len(groups) == 3:
-                    # HH:MM:SS
                     hours, minutes, seconds = map(int, groups)
                 else:
-                    # MM:SS
                     hours = 0
                     minutes, seconds = map(int, groups)
 
                 total_seconds = hours * 3600 + minutes * 60 + seconds
-
                 return {
                     'hours': hours,
                     'minutes': minutes,
@@ -393,65 +522,32 @@ class OCREngine:
     def parse_building_name(self, text: str) -> str:
         """
         Парсинг названия здания (убирает уровни и кнопки, но сохраняет римские цифры)
-
-        Args:
-            text: Текст для парсинга
-
-        Returns:
-            Очищенное название здания
-
-        Examples:
-            >>> parse_building_name("Жилище Лемуров I Lv.10 Перейти")
-            "Жилище Лемуров I"
-            >>> parse_building_name("Логово Хищников II Ly.5 Перейти")
-            "Логово Хищников II"
         """
-        # Убираем уровни (Lv.X, Ly.X и т.д.)
         text = re.sub(r'[LlЛл][vVуУyYвВ]\.?\s*\d+', '', text, flags=re.IGNORECASE)
-
-        # Убираем "Перейти" и его варианты
         text = re.sub(r'[ПпPp][еeЕE][рpРP][еeЕE][йиĭІі][тtТT][иiІі]', '', text, flags=re.IGNORECASE)
-
-        # НЕ убираем римские цифры - они часть названия здания!
-        # Они отличают разные экземпляры одного типа (Жилище I, Жилище II, и т.д.)
-
-        # Убираем лишние пробелы
         text = ' '.join(text.split())
-
         return text.strip()
 
     def group_by_rows(self, elements: List[Dict[str, Any]], y_threshold: int = 20) -> List[List[Dict[str, Any]]]:
         """
         Группировка элементов по строкам на основе Y-координат
-
-        Args:
-            elements: Список элементов с координатами
-            y_threshold: Порог для группировки (пиксели)
-
-        Returns:
-            Список строк (каждая строка - список элементов)
         """
         if not elements:
             return []
 
-        # Сортируем по Y
         sorted_elements = sorted(elements, key=lambda e: e['y'])
 
         rows = []
         current_row = [sorted_elements[0]]
 
         for elem in sorted_elements[1:]:
-            # Если элемент близко по Y к текущей строке - добавляем
             if abs(elem['y'] - current_row[0]['y']) <= y_threshold:
                 current_row.append(elem)
             else:
-                # Новая строка
-                # Сортируем элементы в строке по X
                 current_row.sort(key=lambda e: e['x'])
                 rows.append(current_row)
                 current_row = [elem]
 
-        # Добавляем последнюю строку
         if current_row:
             current_row.sort(key=lambda e: e['x'])
             rows.append(current_row)
@@ -467,6 +563,11 @@ class OCREngine:
         """
         Полный парсинг панели навигации (список зданий)
 
+        ИЗМЕНЕНИЕ v2: Добавлена двухуровневая коррекция римских цифр.
+        1. Стратегия 1 — отдельный OCR-элемент (как раньше)
+        2. Стратегия 2 — сканирование области слева от "Lv." (НОВОЕ)
+        3. Если в имени нет римской цифры, но штрихи найдены — ДОБАВЛЯЕМ (НОВОЕ)
+
         Args:
             screenshot: Скриншот экрана
             emulator_id: ID эмулятора (для debug)
@@ -474,20 +575,17 @@ class OCREngine:
         Returns:
             Список зданий с координатами кнопки "Перейти"
         """
-        # Распознаём весь текст на экране
         elements = self.recognize_text(screenshot, min_confidence=0.3)
 
         if not elements:
             logger.warning("⚠️ OCR не распознал ни одного элемента")
             return []
 
-        # Группируем по строкам
         rows = self.group_by_rows(elements, y_threshold=20)
 
         buildings = []
 
         for row in rows:
-            # Собираем текст строки
             row_text = ' '.join([elem['text'] for elem in row])
             logger.debug(f"📝 Строка: {row_text}")
 
@@ -505,13 +603,42 @@ class OCREngine:
             if not has_button:
                 continue
 
-            # Парсим название здания
+            # Парсим название здания (из текста OCR)
             building_name = self.parse_building_name(row_text)
 
             if not building_name:
                 continue
 
-            # Координаты кнопки "Перейти" (обычно последний элемент в строке)
+            # ═══════════════════════════════════════════════════
+            # КОРРЕКЦИЯ РИМСКИХ ЦИФР через анализ изображения
+            # ═══════════════════════════════════════════════════
+            corrected_roman = self._correct_roman_numeral(screenshot, row)
+
+            if corrected_roman:
+                # Ищем римскую цифру в конце названия здания
+                roman_pattern = re.search(r'\s+(I{1,4}|IV|V|VI{0,3})\s*$', building_name)
+
+                if roman_pattern:
+                    # Римская цифра ЕСТЬ — проверяем, нужна ли замена
+                    ocr_roman = roman_pattern.group(1)
+
+                    if ocr_roman != corrected_roman:
+                        old_name = building_name
+                        building_name = (building_name[:roman_pattern.start(1)]
+                                         + corrected_roman
+                                         + building_name[roman_pattern.end(1):])
+                        building_name = building_name.strip()
+                        logger.info(f"🔧 Исправлено название: '{old_name}' → '{building_name}'")
+                else:
+                    # Римской цифры НЕТ в имени (OCR проглотил полностью),
+                    # но штрихи обнаружены — ДОБАВЛЯЕМ, только если > 1 штрих
+                    # (одиночный штрих может быть артефактом шрифта)
+                    if corrected_roman in ("II", "III", "IV"):
+                        old_name = building_name
+                        building_name = f"{building_name} {corrected_roman}"
+                        logger.info(f"🔧 Добавлена римская цифра: '{old_name}' → '{building_name}'")
+
+            # Координаты кнопки "Перейти"
             button_elem = row[-1]
             button_y = button_elem['y']
 
@@ -537,7 +664,6 @@ class OCREngine:
             debug_img = image.copy()
 
             for elem in elements:
-                # Рисуем bbox
                 box = elem['bbox']
                 if isinstance(box, np.ndarray):
                     box = box.astype(int)
@@ -546,18 +672,15 @@ class OCREngine:
 
                 cv2.polylines(debug_img, [box], True, (0, 255, 0), 2)
 
-                # Добавляем текст
                 text = elem['text']
                 confidence = elem['confidence']
                 label = f"{text} ({confidence:.2f})"
 
-                # Позиция текста
                 if len(box) > 0:
                     x, y = int(box[0][0]), int(box[0][1]) - 5
                     cv2.putText(debug_img, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
                               0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
-            # Сохраняем
             timestamp = datetime.now().strftime("%H%M%S")
             filename = f"emu1_navigation_{timestamp}.png"
             filepath = self.debug_dir / filename
