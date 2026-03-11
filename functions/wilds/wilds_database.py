@@ -152,6 +152,24 @@ class WildsDatabase:
             f"энергия={energy}/100"
         )
 
+    def has_squad_data(self, emulator_id: int) -> bool:
+        """
+        Есть ли данные об отрядах для этого эмулятора
+
+        Используется для определения первого запуска:
+        - True  → данные есть, можно проверять энергию
+        - False → первый запуск, пропускаем проверку энергии
+
+        Returns:
+            bool
+        """
+        with self.db_lock:
+            cursor = self.conn.execute(
+                "SELECT 1 FROM wilds_squads WHERE emulator_id = ? LIMIT 1",
+                (emulator_id,)
+            )
+            return cursor.fetchone() is not None
+
     def get_squad_energy(self, emulator_id: int, squad_key: str) -> Optional[Dict]:
         """
         Получить данные об энергии отряда

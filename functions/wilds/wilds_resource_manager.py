@@ -3,8 +3,8 @@
 
 Функции:
 - Парсинг складов ресурсов (клик по панели → OCR → ESC)
-- Алгоритм приоритизации: какой ресурс фармить первым
-- Запись состояния складов в БД
+- Алгоритм приоритизации и распределения атак
+- Построение hunt_plan для всей сессии
 
 Координаты панели ресурсов (верхняя панель в поместье):
   Яблоки (43, 19), Листья (199, 19), Грунт (348, 19), Песок (426, 19)
@@ -14,10 +14,15 @@
   К = тысячи (0.0К – 999.9К)
   М = миллионы (1.0М – 999.9М), 100.0К = 0.1М
 
-Версия: 1.0
-Дата создания: 2025-03-11
+Версия: 2.0
+Дата обновления: 2025-03-11
+Изменения:
+- analyze_and_prioritize() заменён на build_hunt_plan()
+- Добавлен алгоритм распределения атак по ресурсам
+- Планирование всей сессии за один вызов
 """
 
+import math
 import re
 import time
 from typing import Dict, List, Optional, Tuple
@@ -26,7 +31,9 @@ from utils.image_recognition import get_screenshot
 from utils.ocr_engine import OCREngine
 from utils.config_manager import load_config
 from utils.logger import logger
-from functions.wilds.wilds_database import WildsDatabase, RESOURCE_NAMES_RU
+from functions.wilds.wilds_database import (
+    WildsDatabase, RESOURCE_NAMES_RU, WILD_LOOT
+)
 
 
 # Координаты кликов по ресурсам на верхней панели
@@ -35,18 +42,20 @@ RESOURCE_PANEL_COORDS = {
     'leaves': (199, 19),
     'soil':   (348, 19),
     'sand':   (426, 19),
-    # honey — не парсим, нет ограничений
 }
 
-# Порядок парсинга (без мёда)
+# Порядок парсинга (без мёда — у него нет склада)
 PARSEABLE_RESOURCES = ['apples', 'leaves', 'soil', 'sand']
 
-# Приоритетные ресурсы для фарма до 85%
+# Ресурсы которые есть в GUI (включая мёд)
+ALL_RESOURCE_KEYS = ['apples', 'leaves', 'soil', 'sand', 'honey']
+
+# Приоритетные ресурсы для фарма до 85% (порядок имеет значение)
 PRIORITY_RESOURCES = ['sand', 'soil']
 
 # Пороги заполнения складов (в процентах)
-THRESHOLD_LOW = 50      # Ниже — срочно фармить
-THRESHOLD_HIGH = 85     # Выше — склад почти полный
+THRESHOLD_LOW = 50
+THRESHOLD_HIGH = 85
 
 
 class WildsResourceManager:
@@ -55,332 +64,346 @@ class WildsResourceManager:
 
     Использование:
         manager = WildsResourceManager()
-        resource_queue = manager.analyze_and_prioritize(emulator, emulator_id)
-        # resource_queue = ['sand', 'soil', 'apples'] — в порядке приоритета
+        plan = manager.build_hunt_plan(emulator, emu_id, total_attacks=16, wild_level=12)
+        # plan = [{'resource': 'sand', 'attempts': 8}, {'resource': 'soil', 'attempts': 8}]
     """
 
     # Область OCR для парсинга строки "Сохранено" после клика по ресурсу
-    # Подбирается экспериментально — область где появляется текст склада
     # Формат: (x1, y1, x2, y2)
     OCR_REGION_STORED = (0, 70, 540, 130)  # TODO: уточнить по скриншоту
 
     def __init__(self):
         self.db = WildsDatabase()
-        self._ocr = None  # Ленивая инициализация
+        self._ocr = None
 
     @property
     def ocr(self) -> OCREngine:
-        """Ленивая инициализация OCR (тяжёлый объект)"""
+        """Ленивая инициализация OCR"""
         if self._ocr is None:
             self._ocr = OCREngine(lang='ru')
         return self._ocr
 
     # ==================== ГЛАВНЫЙ МЕТОД ====================
 
-    def analyze_and_prioritize(
+    def build_hunt_plan(
         self,
         emulator: Dict,
-        emulator_id: int
-    ) -> List[str]:
+        emulator_id: int,
+        total_attacks: int,
+        wild_level: int
+    ) -> List[Dict]:
         """
-        Спарсить склады и определить порядок фарма ресурсов
+        Спарсить склады и построить план охоты на всю сессию
 
         Предусловие: бот внутри поместья (видит панель ресурсов)
 
         Алгоритм:
-        1. Загрузить настройки включённых ресурсов из GUI
-        2. Для каждого включённого ресурса (кроме мёда):
-           - Клик по ресурсу → парсинг "Сохранено" → ESC
-           - Запись в БД
-        3. Применить алгоритм приоритизации
-        4. Вернуть упорядоченный список ресурсов
+        1. Загрузить включённые ресурсы из GUI
+        2. Спарсить склады (клик → OCR → ESC для каждого)
+        3. Рассчитать loot_per_attack по уровню дикого
+        4. Распределить total_attacks по приоритетам:
+           P1: ресурсы < 50% → фармить до 50%
+           P2: песок, грунт → фармить до 85%
+           P3: мёд (если всё ≥ 85%)
+           P4: наименее заполненный (fallback)
 
         Args:
             emulator: dict эмулятора
             emulator_id: ID эмулятора
+            total_attacks: суммарное число доступных атак
+            wild_level: уровень дикого (1-15)
 
         Returns:
-            list: ресурсы в порядке приоритета, например ['sand', 'soil']
-                  Пустой список если все склады полные или все ресурсы выключены
+            [{'resource': 'sand', 'attempts': 8}, ...]
+            Пустой список если нет смысла охотиться
         """
-        emu_name = emulator.get('name', f"id:{emulator_id}")
+        emu_name = emulator.get('name', '?')
 
-        # 1. Загрузить включённые ресурсы из настроек
-        enabled = self._get_enabled_resources(emulator_id)
+        # 1. Загрузить включённые ресурсы
+        enabled = self._load_enabled_resources(emulator_id)
         if not enabled:
-            logger.warning(f"[{emu_name}] ⚠️ Все ресурсы выключены в настройках")
+            logger.warning(f"[{emu_name}] ⚠️ Нет включённых ресурсов для охоты")
             return []
 
         logger.info(
-            f"[{emu_name}] 📊 Парсинг складов: "
-            f"{', '.join(RESOURCE_NAMES_RU.get(r, r) for r in enabled)}"
+            f"[{emu_name}] 📊 Планирование охоты: "
+            f"атак={total_attacks}, ур.дикого={wild_level}"
         )
 
-        # 2. Парсинг каждого ресурса (кроме мёда)
-        resources_data = {}  # {resource_key: {stored, capacity, fill_pct}}
+        # 2. Спарсить склады (только парсируемые: без мёда)
+        storage_data = self._parse_all_storages(emulator, emulator_id, enabled)
 
-        for res_key in PARSEABLE_RESOURCES:
-            if res_key not in enabled:
-                continue
+        # 3. Honey включён?
+        honey_enabled = 'honey' in enabled
 
-            result = self._parse_single_resource(emulator, emulator_id, res_key)
-            if result:
-                resources_data[res_key] = result
+        # 4. Loot за 1 атаку (в тысячах K)
+        loot = WILD_LOOT.get(wild_level, WILD_LOOT.get(1, 11.2))
 
-        if not resources_data:
-            logger.warning(f"[{emu_name}] ⚠️ Не удалось спарсить ни одного ресурса")
+        # 5. Распределить атаки
+        plan = self._distribute_attacks(
+            storage_data, total_attacks, loot, honey_enabled
+        )
+
+        # Логируем план
+        if plan:
+            parts = []
+            for p in plan:
+                name = RESOURCE_NAMES_RU.get(p['resource'], p['resource'])
+                parts.append(f"{name}:{p['attempts']}")
+            logger.info(
+                f"[{emu_name}] 📋 План охоты: [{', '.join(parts)}] "
+                f"(всего атак: {total_attacks})"
+            )
+        else:
+            logger.info(f"[{emu_name}] 📋 Охота не нужна — склады полные")
+
+        return plan
+
+    # ==================== РАСПРЕДЕЛЕНИЕ АТАК ====================
+
+    def _distribute_attacks(
+        self,
+        storage_data: Dict,
+        total_attacks: int,
+        loot: float,
+        honey_enabled: bool
+    ) -> List[Dict]:
+        """
+        Распределить атаки по ресурсам согласно приоритетам ТЗ
+
+        Args:
+            storage_data: {resource: {stored, capacity, fill_pct}}
+            total_attacks: суммарное число атак
+            loot: добыча за 1 атаку (K)
+            honey_enabled: мёд включён в GUI
+
+        Returns:
+            [{'resource': 'sand', 'attempts': 8}, ...]
+        """
+        allocated = {}  # {resource: attempts}
+        remaining = total_attacks
+
+        if remaining <= 0 or (not storage_data and not honey_enabled):
             return []
 
-        # Логируем состояние складов
-        self._log_storage_status(emu_name, resources_data)
+        # ===== P1: ресурсы < 50% → фармить до 50% (самый отстающий первым) =====
+        under_50 = [
+            (res, data) for res, data in storage_data.items()
+            if data['fill_pct'] < THRESHOLD_LOW
+        ]
+        under_50.sort(key=lambda x: x[1]['fill_pct'])
 
-        # 3. Приоритизация
-        honey_enabled = 'honey' in enabled
-        queue = self._prioritize(resources_data, honey_enabled)
+        for res, data in under_50:
+            if remaining <= 0:
+                break
+            target_stored = data['capacity'] * THRESHOLD_LOW / 100
+            deficit = target_stored - data['stored']
+            if deficit <= 0:
+                continue
+            needed = math.ceil(deficit / loot)
+            to_allocate = min(needed, remaining)
+            allocated[res] = allocated.get(res, 0) + to_allocate
+            remaining -= to_allocate
 
-        if queue:
-            names = [RESOURCE_NAMES_RU.get(r, r) for r in queue]
-            logger.info(f"[{emu_name}] 🎯 Порядок фарма: {' → '.join(names)}")
-        else:
-            logger.info(f"[{emu_name}] ✅ Все склады заполнены, фарм не нужен")
+        # ===== P2: песок и грунт до 85% =====
+        if remaining > 0:
+            for res in PRIORITY_RESOURCES:
+                if remaining <= 0:
+                    break
+                if res not in storage_data:
+                    continue
 
-        return queue
+                data = storage_data[res]
+                target_stored = data['capacity'] * THRESHOLD_HIGH / 100
+                # Учитываем уже запланированные атаки
+                already = allocated.get(res, 0)
+                projected = data['stored'] + already * loot
+                deficit = target_stored - projected
+                if deficit <= 0:
+                    continue
+                needed = math.ceil(deficit / loot)
+                to_allocate = min(needed, remaining)
+                allocated[res] = allocated.get(res, 0) + to_allocate
+                remaining -= to_allocate
 
-    # ==================== ПАРСИНГ ОДНОГО РЕСУРСА ====================
+        # ===== P3: мёд если ВСЕ спроецированные ≥ 85% =====
+        if remaining > 0 and honey_enabled:
+            all_high = True
+            for res, data in storage_data.items():
+                already = allocated.get(res, 0)
+                projected = data['stored'] + already * loot
+                projected_pct = projected / data['capacity'] * 100 if data['capacity'] > 0 else 100
+                if projected_pct < THRESHOLD_HIGH:
+                    all_high = False
+                    break
 
-    def _parse_single_resource(
+            if all_high:
+                allocated['honey'] = allocated.get('honey', 0) + remaining
+                remaining = 0
+
+        # ===== P4: fallback — наименее заполненный =====
+        if remaining > 0:
+            if storage_data:
+                # Находим наименее заполненный с учётом уже запланированного
+                candidates = []
+                for res, data in storage_data.items():
+                    already = allocated.get(res, 0)
+                    projected = data['stored'] + already * loot
+                    projected_pct = projected / data['capacity'] * 100 if data['capacity'] > 0 else 100
+                    candidates.append((res, projected_pct))
+
+                candidates.sort(key=lambda x: x[1])
+                least_filled = candidates[0][0]
+                allocated[least_filled] = allocated.get(least_filled, 0) + remaining
+                remaining = 0
+            elif honey_enabled:
+                allocated['honey'] = allocated.get('honey', 0) + remaining
+                remaining = 0
+
+        # Конвертируем в список (сохраняем порядок приоритетов)
+        result = []
+        for res, att in allocated.items():
+            if att > 0:
+                result.append({'resource': res, 'attempts': att})
+        return result
+
+    # ==================== ПАРСИНГ СКЛАДОВ ====================
+
+    def _parse_all_storages(
         self,
         emulator: Dict,
         emulator_id: int,
-        resource_key: str
-    ) -> Optional[Dict]:
+        enabled: List[str]
+    ) -> Dict:
         """
-        Кликнуть по ресурсу, спарсить склад, ESC
+        Спарсить все включённые склады ресурсов
+
+        Предусловие: бот в поместье
+
+        Для каждого ресурса: клик → OCR → ESC
 
         Returns:
-            dict: {stored, capacity, fill_pct} или None при ошибке
+            {resource: {'stored': float, 'capacity': float, 'fill_pct': float}}
         """
-        emu_name = emulator.get('name', f"id:{emulator_id}")
-        res_name = RESOURCE_NAMES_RU.get(resource_key, resource_key)
-        coords = RESOURCE_PANEL_COORDS.get(resource_key)
+        emu_name = emulator.get('name', '?')
+        storage_data = {}
 
-        if not coords:
-            logger.error(f"[{emu_name}] ❌ Нет координат для ресурса {resource_key}")
-            return None
+        for res in PARSEABLE_RESOURCES:
+            if res not in enabled:
+                continue
 
-        # Клик по ресурсу
-        tap(emulator, coords[0], coords[1])
-        time.sleep(1.5)
+            coords = RESOURCE_PANEL_COORDS.get(res)
+            if not coords:
+                continue
 
-        # Получить скриншот и распознать текст
+            res_name = RESOURCE_NAMES_RU.get(res, res)
+            logger.debug(f"[{emu_name}] 📦 Парсинг склада: {res_name}")
+
+            # Клик по ресурсу на панели
+            tap(emulator, *coords)
+            time.sleep(1.5)
+
+            # Парсинг "Сохранено"
+            stored, capacity = self._parse_stored_line(emulator)
+
+            # Закрыть окно ресурса
+            press_key(emulator, "ESC")
+            time.sleep(0.8)
+
+            if stored is not None and capacity is not None and capacity > 0:
+                fill_pct = stored / capacity * 100
+                storage_data[res] = {
+                    'stored': stored,
+                    'capacity': capacity,
+                    'fill_pct': fill_pct,
+                }
+                # Записать в БД
+                self.db.update_resource(emulator_id, res, stored, capacity)
+                logger.info(
+                    f"[{emu_name}] 📦 {res_name}: "
+                    f"{stored:.1f}K / {capacity:.1f}K ({fill_pct:.0f}%)"
+                )
+            else:
+                logger.warning(
+                    f"[{emu_name}] ⚠️ Не удалось спарсить склад: {res_name}"
+                )
+
+        return storage_data
+
+    def _parse_stored_line(self, emulator: Dict) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Спарсить строку "Сохранено" из всплывающего окна ресурса
+
+        Формат: 783.8К/17.5М  или  783.8К/830.0К
+        К = тысячи, М = миллионы
+
+        Returns:
+            (stored_k, capacity_k) — оба значения в тысячах (K)
+            (None, None) если парсинг не удался
+        """
         screenshot = get_screenshot(emulator)
         if screenshot is None:
-            logger.error(f"[{emu_name}] ❌ Не удалось получить скриншот для {res_name}")
-            press_key(emulator, "ESC")
-            time.sleep(0.5)
-            return None
+            return None, None
 
-        # OCR в области "Сохранено"
         elements = self.ocr.recognize_text(
             screenshot,
             region=self.OCR_REGION_STORED,
             min_confidence=0.3
         )
 
-        # Парсим текст
-        stored, capacity = self._extract_stored_values(elements, emu_name, res_name)
-
-        # ESC — закрыть окно ресурса
-        press_key(emulator, "ESC")
-        time.sleep(0.5)
-
-        if stored is None or capacity is None:
-            logger.warning(
-                f"[{emu_name}] ⚠️ Не удалось спарсить {res_name}"
-            )
-            return None
-
-        # Записать в БД
-        self.db.update_resource(emulator_id, resource_key, stored, capacity)
-
-        fill_pct = (stored / capacity * 100) if capacity > 0 else 0
-
-        return {
-            'stored': stored,
-            'capacity': capacity,
-            'fill_pct': fill_pct,
-        }
-
-    def _extract_stored_values(
-        self,
-        elements: list,
-        emu_name: str,
-        res_name: str
-    ) -> Tuple[Optional[float], Optional[float]]:
-        """
-        Извлечь stored и capacity из OCR-элементов
-
-        Ищем текст в формате: 783.8К/17.5М или 783.8К/830.0К
-        Возвращаем оба значения в ТЫСЯЧАХ (K)
-
-        Returns:
-            (stored_k, capacity_k) или (None, None)
-        """
-        # Собрать весь текст из элементов
         full_text = ' '.join(e.get('text', '') for e in elements)
+        logger.debug(f"  Stored OCR raw: '{full_text}'")
 
-        logger.debug(f"[{emu_name}] OCR raw ({res_name}): '{full_text}'")
+        # Нормализация: убираем пробелы, запятые → точки
+        text = full_text.replace(' ', '').replace(',', '.')
 
-        # Паттерн: число с K/М слеш число с K/М
-        # Примеры: 783.8К/17.5М, 783.8К/830.0К, 0.0К/830.0К
-        # Учитываем и латинские K/M и кириллические К/М
-        pattern = r'(\d+[\.,]\d+)\s*([КкKkМмMm])\s*/\s*(\d+[\.,]\d+)\s*([КкKkМмMm])'
-
-        match = re.search(pattern, full_text)
-        if not match:
-            # Попытка без дробной части: 0К/830К
-            pattern_int = r'(\d+)\s*([КкKkМмMm])\s*/\s*(\d+[\.,]?\d*)\s*([КкKkМмMm])'
-            match = re.search(pattern_int, full_text)
+        # Паттерн: число + буква (К/M) / число + буква (К/M)
+        # Поддерживаем кириллицу (К, М) и латиницу (K, M)
+        pattern = r'(\d+\.?\d*)\s*([КKкkМMмm])\s*/\s*(\d+\.?\d*)\s*([КKкkМMмm])'
+        match = re.search(pattern, text)
 
         if not match:
-            logger.warning(
-                f"[{emu_name}] ⚠️ Паттерн склада не найден в: '{full_text}'"
-            )
+            # Пробуем без удаления пробелов
+            text_loose = full_text.replace(',', '.')
+            match = re.search(pattern, text_loose)
+
+        if not match:
+            logger.debug(f"  Stored: не удалось распарсить '{full_text}'")
             return None, None
 
-        stored_num = float(match.group(1).replace(',', '.'))
-        stored_unit = match.group(2).upper()
-        capacity_num = float(match.group(3).replace(',', '.'))
-        capacity_unit = match.group(4).upper()
+        val1_str, unit1, val2_str, unit2 = match.groups()
 
-        # Нормализация единиц: К/K → тысячи, М/M → миллионы → тысячи
-        stored_k = self._to_thousands(stored_num, stored_unit)
-        capacity_k = self._to_thousands(capacity_num, capacity_unit)
+        try:
+            stored = self._to_thousands(float(val1_str), unit1)
+            capacity = self._to_thousands(float(val2_str), unit2)
+            return stored, capacity
+        except (ValueError, TypeError):
+            return None, None
 
-        logger.debug(
-            f"[{emu_name}] 📦 {res_name}: "
-            f"{stored_k:.1f}K / {capacity_k:.1f}K "
-            f"({stored_k / capacity_k * 100:.0f}%)"
-        )
-
-        return stored_k, capacity_k
+    # ==================== УТИЛИТЫ ====================
 
     @staticmethod
     def _to_thousands(value: float, unit: str) -> float:
         """
-        Конвертировать значение в тысячи (K)
+        Привести значение к тысячам (K)
 
-        К/K → уже в тысячах
-        М/M → умножить на 1000
-
-        Args:
-            value: числовое значение
-            unit: единица ('К', 'K', 'М', 'M' и т.д.)
-
-        Returns:
-            float: значение в тысячах
+        К/K → value (уже в тысячах)
+        М/M → value * 1000 (миллионы → тысячи)
         """
-        # Нормализуем: кириллические и латинские → единый формат
         unit_upper = unit.upper()
+        if unit_upper in ('К', 'K'):
+            return value
+        elif unit_upper in ('М', 'M'):
+            return value * 1000
+        return value
 
-        if unit_upper in ('М', 'M', 'М'):
-            return value * 1000.0  # Миллионы → тысячи
-        else:
-            return value  # Уже в тысячах
-
-    # ==================== АЛГОРИТМ ПРИОРИТИЗАЦИИ ====================
-
-    def _prioritize(
-        self,
-        resources_data: Dict[str, Dict],
-        honey_enabled: bool
-    ) -> List[str]:
+    @staticmethod
+    def _load_enabled_resources(emulator_id: int) -> List[str]:
         """
-        Определить порядок фарма ресурсов
-
-        Приоритеты:
-        1. Ресурс < 50% → фармить (самый отстающий первым)
-        2. Все >= 50% → фармить Песок/Грунт до 85%
-        3. Все >= 85% → фармить Мёд (если включён)
-        4. Мёд выключен и всё >= 85% → фармить наименее заполненный
-
-        Args:
-            resources_data: {resource_key: {stored, capacity, fill_pct}}
-            honey_enabled: включён ли мёд в настройках
+        Загрузить список включённых ресурсов из gui_config.yaml
 
         Returns:
-            list: ресурсы в порядке приоритета
-        """
-        if not resources_data:
-            return []
-
-        queue = []
-
-        # ПРИОРИТЕТ 1: Ресурсы ниже 50% (самый отстающий первым)
-        below_50 = [
-            (key, data['fill_pct'])
-            for key, data in resources_data.items()
-            if data['fill_pct'] < THRESHOLD_LOW
-        ]
-
-        if below_50:
-            # Сортируем по заполненности (меньше → приоритетнее)
-            below_50.sort(key=lambda x: x[1])
-            queue.extend(key for key, _ in below_50)
-
-            # Добавляем остальные ресурсы тоже (если < 85%)
-            remaining = [
-                (key, data['fill_pct'])
-                for key, data in resources_data.items()
-                if key not in queue and data['fill_pct'] < THRESHOLD_HIGH
-            ]
-            remaining.sort(key=lambda x: x[1])
-            queue.extend(key for key, _ in remaining)
-
-            return queue
-
-        # ПРИОРИТЕТ 2: Все >= 50%, но есть < 85% → Песок/Грунт в приоритете
-        below_85 = {
-            key: data['fill_pct']
-            for key, data in resources_data.items()
-            if data['fill_pct'] < THRESHOLD_HIGH
-        }
-
-        if below_85:
-            # Сначала приоритетные (песок, грунт) если они < 85%
-            for prio_key in PRIORITY_RESOURCES:
-                if prio_key in below_85:
-                    queue.append(prio_key)
-
-            # Потом остальные < 85%
-            for key in below_85:
-                if key not in queue:
-                    queue.append(key)
-
-            return queue
-
-        # ПРИОРИТЕТ 3: Все >= 85% → Мёд
-        if honey_enabled:
-            return ['honey']
-
-        # ПРИОРИТЕТ 4: Мёд выключен, всё >= 85% → фармить наименее заполненный
-        sorted_by_fill = sorted(
-            resources_data.items(),
-            key=lambda x: x[1]['fill_pct']
-        )
-        if sorted_by_fill:
-            return [sorted_by_fill[0][0]]
-
-        return []
-
-    # ==================== ЗАГРУЗКА НАСТРОЕК ====================
-
-    def _get_enabled_resources(self, emulator_id: int) -> List[str]:
-        """
-        Получить список включённых ресурсов из GUI настроек
-
-        Returns:
-            list: ['apples', 'leaves', 'soil', 'sand', 'honey'] — только включённые
+            ['apples', 'leaves', 'soil', 'sand', 'honey'] — только включённые
         """
         gui_config = load_config("configs/gui_config.yaml", silent=True) or {}
         emu_settings = gui_config.get("emulator_settings", {})
@@ -389,38 +412,10 @@ class WildsResourceManager:
         wilds = settings.get("wilds", {})
         resources = wilds.get("resources", {})
 
-        # По умолчанию все включены
+        # По умолчанию все ресурсы включены
         enabled = []
-        for res_key in ['apples', 'leaves', 'soil', 'sand', 'honey']:
-            if resources.get(res_key, True):  # True по умолчанию
+        for res_key in ALL_RESOURCE_KEYS:
+            if resources.get(res_key, True):
                 enabled.append(res_key)
 
         return enabled
-
-    # ==================== ЛОГИРОВАНИЕ ====================
-
-    def _log_storage_status(
-        self,
-        emu_name: str,
-        resources_data: Dict[str, Dict]
-    ):
-        """Красивый лог состояния складов"""
-        parts = []
-        for key in PARSEABLE_RESOURCES:
-            if key not in resources_data:
-                continue
-            data = resources_data[key]
-            name = RESOURCE_NAMES_RU.get(key, key)
-            pct = data['fill_pct']
-
-            # Иконка уровня заполнения
-            if pct >= THRESHOLD_HIGH:
-                icon = "🟢"
-            elif pct >= THRESHOLD_LOW:
-                icon = "🟡"
-            else:
-                icon = "🔴"
-
-            parts.append(f"{icon} {name}: {pct:.0f}%")
-
-        logger.info(f"[{emu_name}] 📊 Склады: {' | '.join(parts)}")

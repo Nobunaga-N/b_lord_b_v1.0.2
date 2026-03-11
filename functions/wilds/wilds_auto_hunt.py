@@ -451,6 +451,45 @@ class WildsAutoHunt:
 
         return total_attacks
 
+    def input_attempts(self, emulator: Dict, attempts: int) -> bool:
+        """
+        Ввести произвольное кол-во попыток в поле ввода
+
+        Используется оркестратором (WildsFunction) когда кол-во
+        попыток уже рассчитано заранее (из hunt_plan).
+
+        В отличие от calculate_and_input_attempts(), НЕ парсит энергию
+        и НЕ считает попытки — просто вводит переданное число.
+
+        Args:
+            emulator: dict эмулятора
+            attempts: число попыток для ввода
+
+        Returns:
+            bool: True если число введено
+        """
+        emu_name = emulator.get('name', '?')
+
+        logger.info(f"[{emu_name}] 📝 Ввод попыток: {attempts}")
+
+        # Клик на поле ввода
+        tap(emulator, *self.COORD_ATTEMPTS_INPUT)
+        time.sleep(0.5)
+
+        # Очистка
+        self._press_backspace(emulator, count=3)
+        time.sleep(0.3)
+
+        # Ввод числа
+        self._input_text(emulator, str(attempts))
+        time.sleep(0.3)
+
+        # ОК
+        tap(emulator, *self.COORD_OK_BUTTON)
+        time.sleep(0.5)
+
+        return True
+
     # ==================== ЗАПУСК АВТООХОТЫ ====================
 
     def start_autohunt(self, emulator: Dict) -> str:
@@ -614,6 +653,212 @@ class WildsAutoHunt:
                     f"[{emu_name}] 🔋 {SQUAD_NAMES_RU.get(squad_key, squad_key)}: "
                     f"энергия={energy}/100 (записано в БД)"
                 )
+
+    def monitor_hunt(self, emulator: Dict) -> Dict:
+        """
+        Проверить текущее состояние активной автоохоты
+
+        Предусловие: окно автоохоты ОТКРЫТО
+
+        Returns:
+            {
+                'status': 'active' | 'completed' | 'crashed' | 'anomaly' | 'unknown',
+                'remaining_attempts': int
+            }
+
+        Статусы:
+        - active:    видна "Остановить", автоохота идёт
+        - completed: видна "Начать Заново", оставшихся попыток == 0
+        - crashed:   видна "Начать Заново", оставшихся попыток > 0
+        - anomaly:   видна "Начать Автоохоту" (возможен перезапуск эмулятора)
+        - unknown:   не удалось определить состояние
+        """
+        emu_name = emulator.get('name', '?')
+        state = self.detect_state(emulator)
+
+        if state == 'active':
+            remaining = self._parse_remaining_attempts(emulator)
+            logger.info(
+                f"[{emu_name}] ✅ Автоохота идёт, "
+                f"осталось попыток: {remaining}"
+            )
+            return {
+                'status': 'active',
+                'remaining_attempts': remaining if remaining is not None else 0
+            }
+
+        if state == 'restart':
+            remaining = self._parse_remaining_attempts(emulator)
+            if remaining is not None and remaining > 0:
+                logger.warning(
+                    f"[{emu_name}] ⚠️ Автоохота СБИЛАСЬ, "
+                    f"осталось попыток: {remaining}"
+                )
+                return {
+                    'status': 'crashed',
+                    'remaining_attempts': remaining
+                }
+            else:
+                logger.info(
+                    f"[{emu_name}] ✅ Автоохота ЗАВЕРШИЛАСЬ успешно"
+                )
+                return {
+                    'status': 'completed',
+                    'remaining_attempts': 0
+                }
+
+        if state == 'ready':
+            logger.warning(
+                f"[{emu_name}] ⚠️ Аномалия: окно в состоянии ready "
+                f"(возможен перезапуск эмулятора)"
+            )
+            return {
+                'status': 'anomaly',
+                'remaining_attempts': 0
+            }
+
+        logger.error(
+            f"[{emu_name}] ❌ Не удалось определить состояние автоохоты"
+        )
+        return {
+            'status': 'unknown',
+            'remaining_attempts': 0
+        }
+
+    # ==================== ПЕРЕЗАПУСК СБИВШЕЙСЯ ОХОТЫ ====================
+
+    def restart_crashed_hunt(
+        self,
+        emulator: Dict,
+        emulator_id: int,
+        resource_key: str,
+        level: int,
+        enabled_squads: List[str],
+        remaining_attempts: int
+    ) -> str:
+        """
+        Перенастроить и перезапустить сбившуюся автоохоту
+
+        Предусловие: окно автоохоты открыто, видна "Начать Заново"
+
+        Алгоритм:
+        1. transition_to_ready() (кликнуть "Начать Заново")
+        2. Полная настройка: ресурс, уровень, отряды
+        3. Ввести оставшееся кол-во попыток
+        4. Запустить автоохоту
+
+        Args:
+            emulator: dict эмулятора
+            emulator_id: ID эмулятора
+            resource_key: 'apples', 'leaves', 'soil', 'sand', 'honey'
+            level: уровень дикого (1-15)
+            enabled_squads: список включённых отрядов
+            remaining_attempts: оставшееся кол-во попыток
+
+        Returns:
+            'success' | 'busy_squad' | 'no_energy' | 'failed'
+        """
+        emu_name = emulator.get('name', '?')
+
+        logger.info(
+            f"[{emu_name}] 🔄 Перезапуск автоохоты: "
+            f"{resource_key}, ур.{level}, попыток={remaining_attempts}"
+        )
+
+        # 1. Перейти в состояние ready
+        if not self.transition_to_ready(emulator):
+            logger.error(f"[{emu_name}] ❌ Не удалось перейти в ready для перезапуска")
+            return 'failed'
+
+        # 2. Выбор ресурса
+        if not self.select_resource(emulator, resource_key):
+            return 'failed'
+
+        # 3. Ввод уровня дикого
+        if not self.input_wild_level(emulator, level):
+            return 'failed'
+
+        # 4. Настройка отрядов
+        self.setup_squads(emulator, emulator_id)
+
+        # 5. Ввод оставшегося кол-ва попыток
+        self.input_attempts(emulator, remaining_attempts)
+
+        # 6. Запуск
+        result = self.start_autohunt(emulator)
+
+        if result == 'success':
+            logger.success(
+                f"[{emu_name}] ✅ Автоохота перезапущена: "
+                f"{resource_key}, попыток={remaining_attempts}"
+            )
+        else:
+            logger.error(
+                f"[{emu_name}] ❌ Перезапуск не удался: {result}"
+            )
+
+        return result
+
+    # ==================== ПАРСИНГ ЭНЕРГИИ ОТРЯДОВ ====================
+
+    def parse_all_squad_energy(
+        self,
+        emulator: Dict,
+        emulator_id: int,
+        enabled_squads: List[str]
+    ) -> Dict[str, int]:
+        """
+        Спарсить текущую энергию всех включённых отрядов и записать в БД
+
+        Предусловие: окно автоохоты открыто в состоянии ready
+
+        Используется:
+        - При финализации (после завершения всех автоохот)
+        - При смене ресурса (для расчёта оставшихся атак)
+        - При аномалии (для определения доступных атак)
+
+        Args:
+            emulator: dict эмулятора
+            emulator_id: ID эмулятора
+            enabled_squads: список включённых отрядов
+
+        Returns:
+            {squad_key: energy} — энергия каждого отряда (0-100)
+        """
+        emu_name = emulator.get('name', '?')
+        result = {}
+        total_attacks = 0
+
+        logger.info(
+            f"[{emu_name}] 🔋 Парсинг энергии "
+            f"({len(enabled_squads)} отрядов)..."
+        )
+
+        for squad_key in enabled_squads:
+            energy = self._parse_squad_energy(emulator, squad_key)
+
+            if energy is not None:
+                self.db.update_squad_energy(emulator_id, squad_key, energy)
+                result[squad_key] = energy
+                attacks = math.floor(energy / ENERGY_PER_ATTACK)
+                total_attacks += attacks
+                logger.info(
+                    f"[{emu_name}] 🔋 {SQUAD_NAMES_RU.get(squad_key, squad_key)}: "
+                    f"энергия={energy}/100, атак={attacks}"
+                )
+            else:
+                logger.warning(
+                    f"[{emu_name}] ⚠️ Не удалось спарсить энергию "
+                    f"{SQUAD_NAMES_RU.get(squad_key, squad_key)}, считаю 0"
+                )
+                result[squad_key] = 0
+
+        logger.info(
+            f"[{emu_name}] 🔋 Итого: суммарно доступно атак = {total_attacks}"
+        )
+
+        return result
+
 
     # ==================== ПРИВАТНЫЕ МЕТОДЫ ====================
 
