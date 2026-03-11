@@ -741,28 +741,34 @@ class WildsFunction(BaseFunction):
         """
         Рассчитать оставшиеся атаки из energy_snapshot и плана
 
-        Энергия тратится предсказуемо:
+        Энергия тратится так:
+        - При N попытках и S отрядах, каждый отряд делает ceil(N/S) атак
         - Каждая атака = 10 энергии
-        - Отряды атакуют одновременно
-        - За 1 попытку каждый отряд тратит 10 энергии
+        - Отряды атакуют ПАРАЛЛЕЛЬНО
         """
         wilds_state = self.session_state.get('wilds', {})
         snapshot = wilds_state.get('energy_snapshot', {})
         plan = wilds_state.get('hunt_plan', [])
         idx = wilds_state.get('current_plan_index', 0)
+        squads_used = wilds_state.get('squads_used', 1)
 
-        # Подсчёт потраченных попыток (все ресурсы до текущего включительно)
-        spent_attempts = 0
+        if not snapshot:
+            return 0
+
+        # Подсчёт энергии потраченной КАЖДЫМ отрядом
+        # (все завершённые ресурсы до текущего включительно)
+        energy_spent_per_squad = 0
         for i in range(idx + 1):
             if i < len(plan):
-                spent_attempts += plan[i]['attempts']
+                attempts = plan[i]['attempts']
+                # Каждый отряд делает ceil(attempts / squads) атак
+                attacks_per_squad = math.ceil(attempts / squads_used)
+                energy_spent_per_squad += attacks_per_squad * ENERGY_PER_ATTACK
 
-        # Каждая попытка тратит 10 энергии с каждого отряда
-        # Подсчитаем сколько энергии осталось у каждого отряда
+        # Считаем оставшиеся атаки
         total_remaining_attacks = 0
         for squad_key, initial_energy in snapshot.items():
-            energy_spent = spent_attempts * ENERGY_PER_ATTACK
-            current_energy = max(0, initial_energy - energy_spent)
+            current_energy = max(0, initial_energy - energy_spent_per_squad)
             total_remaining_attacks += math.floor(current_energy / ENERGY_PER_ATTACK)
 
         return total_remaining_attacks

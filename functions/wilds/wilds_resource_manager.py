@@ -58,6 +58,11 @@ THRESHOLD_LOW = 50
 THRESHOLD_HIGH = 85
 
 
+# Константы вверху файла
+MIN_ATTACKS_PER_RESOURCE = 3  # Минимальный батч на один ресурс
+CLOSE_ENOUGH_PCT = 5          # Допуск: 45%+ считается "почти 50%"
+
+
 class WildsResourceManager:
     """
     Менеджер ресурсов для охоты на диких
@@ -163,109 +168,176 @@ class WildsResourceManager:
     # ==================== РАСПРЕДЕЛЕНИЕ АТАК ====================
 
     def _distribute_attacks(
-        self,
-        storage_data: Dict,
-        total_attacks: int,
-        loot: float,
-        honey_enabled: bool
+            self,
+            storage_data: Dict,
+            total_attacks: int,
+            loot: float,
+            honey_enabled: bool
     ) -> List[Dict]:
         """
-        Распределить атаки по ресурсам согласно приоритетам ТЗ
+        Распределить атаки по ресурсам (v3 — минимум смен ресурса)
 
-        Args:
-            storage_data: {resource: {stored, capacity, fill_pct}}
-            total_attacks: суммарное число атак
-            loot: добыча за 1 атаку (K)
-            honey_enabled: мёд включён в GUI
+        Философия: выбрал ресурс → вкачивай до упора (вплоть до 85%),
+        прежде чем переключаться на следующий.
 
-        Returns:
-            [{'resource': 'sand', 'attempts': 8}, ...]
+        Алгоритм:
+        1. Разделить ресурсы на "дефицитные" (<47%) и "close enough" (47-50%)
+        2. Если есть дефицитные:
+           - Берём самый отстающий → гоним до 85% (или пока атаки не кончатся)
+           - Если остались атаки → следующий дефицитный → до 85%
+           - Close enough ресурсы ПРОПУСКАЮТСЯ
+        3. Если ВСЕ close enough (47-50%):
+           - Берём самый отстающий → гоним сразу до 85%
+           - Если остались атаки → следующий → до 85%
+        4. Если все ≥50%:
+           - Песок/Грунт до 85% (приоритетные)
+           - Остальные до 85%
+        5. Если всё ≥85% → мёд
+        6. Fallback → наименее заполненный
         """
-        allocated = {}  # {resource: attempts}
+        allocated = {}
         remaining = total_attacks
 
         if remaining <= 0 or (not storage_data and not honey_enabled):
             return []
 
-        # ===== P1: ресурсы < 50% → фармить до 50% (самый отстающий первым) =====
-        under_50 = [
-            (res, data) for res, data in storage_data.items()
-            if data['fill_pct'] < THRESHOLD_LOW
-        ]
-        under_50.sort(key=lambda x: x[1]['fill_pct'])
+        # === Классификация ресурсов ===
+        deficit = []  # < (50% - CLOSE_ENOUGH_PCT) = реально отстающие
+        close_enough = []  # (50% - CLOSE_ENOUGH_PCT) ... 50% = почти у порога
+        above_50 = []  # ≥ 50%
 
-        for res, data in under_50:
-            if remaining <= 0:
-                break
-            target_stored = data['capacity'] * THRESHOLD_LOW / 100
-            deficit = target_stored - data['stored']
-            if deficit <= 0:
-                continue
-            needed = math.ceil(deficit / loot)
-            to_allocate = min(needed, remaining)
-            allocated[res] = allocated.get(res, 0) + to_allocate
-            remaining -= to_allocate
+        for res, data in storage_data.items():
+            pct = data['fill_pct']
+            if pct < (THRESHOLD_LOW - CLOSE_ENOUGH_PCT):
+                deficit.append((res, data))
+            elif pct < THRESHOLD_LOW:
+                close_enough.append((res, data))
+            else:
+                above_50.append((res, data))
 
-        # ===== P2: песок и грунт до 85% =====
-        if remaining > 0:
+        # === СЦЕНАРИЙ A: Есть дефицитные ресурсы ===
+        if deficit:
+            # Сортируем: самый отстающий первым
+            deficit.sort(key=lambda x: x[1]['fill_pct'])
+
+            for res, data in deficit:
+                if remaining < MIN_ATTACKS_PER_RESOURCE:
+                    break
+                # Гоним до 85% (не до 50%!)
+                target = data['capacity'] * THRESHOLD_HIGH / 100
+                already = allocated.get(res, 0)
+                projected = data['stored'] + already * loot
+                deficit_k = target - projected
+                if deficit_k <= 0:
+                    continue
+                needed = math.ceil(deficit_k / loot)
+                to_alloc = min(needed, remaining)
+                allocated[res] = allocated.get(res, 0) + to_alloc
+                remaining -= to_alloc
+
+            # Close enough — ПРОПУСКАЮТСЯ (дефицитные уже забрали атаки)
+            # Переходим сразу к P2/P3
+
+        # === СЦЕНАРИЙ B: Все ниже 50% но все "close enough" ===
+        elif close_enough:
+            # Самый отстающий → сразу к 85%
+            close_enough.sort(key=lambda x: x[1]['fill_pct'])
+
+            for res, data in close_enough:
+                if remaining < MIN_ATTACKS_PER_RESOURCE:
+                    break
+                target = data['capacity'] * THRESHOLD_HIGH / 100
+                already = allocated.get(res, 0)
+                projected = data['stored'] + already * loot
+                deficit_k = target - projected
+                if deficit_k <= 0:
+                    continue
+                needed = math.ceil(deficit_k / loot)
+                to_alloc = min(needed, remaining)
+                allocated[res] = allocated.get(res, 0) + to_alloc
+                remaining -= to_alloc
+
+        # === P2: Песок и грунт до 85% (если ещё не выделено) ===
+        if remaining >= MIN_ATTACKS_PER_RESOURCE:
             for res in PRIORITY_RESOURCES:
-                if remaining <= 0:
+                if remaining < MIN_ATTACKS_PER_RESOURCE:
                     break
                 if res not in storage_data:
                     continue
-
                 data = storage_data[res]
-                target_stored = data['capacity'] * THRESHOLD_HIGH / 100
-                # Учитываем уже запланированные атаки
+                target = data['capacity'] * THRESHOLD_HIGH / 100
                 already = allocated.get(res, 0)
                 projected = data['stored'] + already * loot
-                deficit = target_stored - projected
-                if deficit <= 0:
+                deficit_k = target - projected
+                if deficit_k <= 0:
                     continue
-                needed = math.ceil(deficit / loot)
-                to_allocate = min(needed, remaining)
-                allocated[res] = allocated.get(res, 0) + to_allocate
-                remaining -= to_allocate
+                needed = math.ceil(deficit_k / loot)
+                to_alloc = min(needed, remaining)
+                allocated[res] = allocated.get(res, 0) + to_alloc
+                remaining -= to_alloc
 
-        # ===== P3: мёд если ВСЕ спроецированные ≥ 85% =====
-        if remaining > 0 and honey_enabled:
-            all_high = True
-            for res, data in storage_data.items():
+        # === P2.5: Остальные ресурсы до 85% ===
+        if remaining >= MIN_ATTACKS_PER_RESOURCE:
+            others = [
+                (res, data) for res, data in storage_data.items()
+                if res not in PRIORITY_RESOURCES
+            ]
+            others.sort(key=lambda x: x[1]['fill_pct'])
+
+            for res, data in others:
+                if remaining < MIN_ATTACKS_PER_RESOURCE:
+                    break
+                target = data['capacity'] * THRESHOLD_HIGH / 100
                 already = allocated.get(res, 0)
                 projected = data['stored'] + already * loot
-                projected_pct = projected / data['capacity'] * 100 if data['capacity'] > 0 else 100
-                if projected_pct < THRESHOLD_HIGH:
-                    all_high = False
-                    break
+                deficit_k = target - projected
+                if deficit_k <= 0:
+                    continue
+                needed = math.ceil(deficit_k / loot)
+                to_alloc = min(needed, remaining)
+                allocated[res] = allocated.get(res, 0) + to_alloc
+                remaining -= to_alloc
 
+        # === P3: Мёд если всё ≥ 85% ===
+        if remaining >= MIN_ATTACKS_PER_RESOURCE and honey_enabled:
+            all_high = all(
+                (data['stored'] + allocated.get(res, 0) * loot)
+                / data['capacity'] * 100 >= THRESHOLD_HIGH
+                for res, data in storage_data.items()
+                if data['capacity'] > 0
+            )
             if all_high:
                 allocated['honey'] = allocated.get('honey', 0) + remaining
                 remaining = 0
 
-        # ===== P4: fallback — наименее заполненный =====
-        if remaining > 0:
+        # === P4: Fallback — наименее заполненный ===
+        if remaining >= MIN_ATTACKS_PER_RESOURCE:
             if storage_data:
-                # Находим наименее заполненный с учётом уже запланированного
                 candidates = []
                 for res, data in storage_data.items():
                     already = allocated.get(res, 0)
                     projected = data['stored'] + already * loot
-                    projected_pct = projected / data['capacity'] * 100 if data['capacity'] > 0 else 100
+                    projected_pct = (
+                        projected / data['capacity'] * 100
+                        if data['capacity'] > 0 else 100
+                    )
                     candidates.append((res, projected_pct))
-
                 candidates.sort(key=lambda x: x[1])
                 least_filled = candidates[0][0]
-                allocated[least_filled] = allocated.get(least_filled, 0) + remaining
+                allocated[least_filled] = (
+                        allocated.get(least_filled, 0) + remaining
+                )
                 remaining = 0
             elif honey_enabled:
                 allocated['honey'] = allocated.get('honey', 0) + remaining
                 remaining = 0
 
-        # Конвертируем в список (сохраняем порядок приоритетов)
-        result = []
-        for res, att in allocated.items():
-            if att > 0:
-                result.append({'resource': res, 'attempts': att})
+        # Конвертируем в список, убираем ресурсы с 0 атак
+        result = [
+            {'resource': res, 'attempts': att}
+            for res, att in allocated.items()
+            if att > 0
+        ]
         return result
 
     # ==================== ПАРСИНГ СКЛАДОВ ====================
