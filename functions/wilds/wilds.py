@@ -350,6 +350,9 @@ class WildsFunction(BaseFunction):
                 f"оставшиеся попытки, сохраняю предыдущий таймер"
             )
 
+        # Пересчитать таймер от МОМЕНТА ПРОВЕРКИ
+        self._set_next_check()
+
         self.navigation.close_autohunt_window(self.emulator)
         self.navigation.ensure_in_estate(self.emulator)
         return True
@@ -387,6 +390,7 @@ class WildsFunction(BaseFunction):
             wilds_state['estimated_finish'] = (
                 datetime.now() + timedelta(minutes=rounds * self.ATTACK_DURATION_MINUTES)
             )
+            self._set_next_check()  # Таймер от момента перезапуска
             self.navigation.close_autohunt_window(self.emulator)
             self.navigation.ensure_in_estate(self.emulator)
             return True
@@ -603,6 +607,8 @@ class WildsFunction(BaseFunction):
                 f"завершение ~{finish.strftime('%H:%M:%S')}"
             )
 
+            # Таймер от МОМЕНТА ЗАПУСКА (а не от конца прохода)
+            self._set_next_check()
             self.navigation.close_autohunt_window(self.emulator)
             self.navigation.ensure_in_estate(self.emulator)
             return True
@@ -664,6 +670,7 @@ class WildsFunction(BaseFunction):
         # Обновить session_state
         wilds_state['hunt_active'] = False
         wilds_state['estimated_finish'] = None
+        wilds_state.pop('next_check_at', None)  # Очистить таймер проверки
         self.session_state['wilds'] = wilds_state
 
         # Вернуться в поместье
@@ -731,11 +738,44 @@ class WildsFunction(BaseFunction):
             f"завершение ~{finish.strftime('%H:%M:%S')}"
         )
 
+        self._set_next_check()  # Таймер от момента подхвата
         self.navigation.close_autohunt_window(self.emulator)
         self.navigation.ensure_in_estate(self.emulator)
         return True
 
     # ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ====================
+
+    def _set_next_check(self, seconds: int = None):
+        """
+        Установить время следующей проверки автоохоты
+
+        Вызывается СРАЗУ после запуска/проверки охоты,
+        чтобы таймер не зависел от длительности других функций.
+
+        Args:
+            seconds: через сколько секунд проверить.
+                     None → рассчитать из estimated_finish
+        """
+        wilds_state = self.session_state.get('wilds', {})
+
+        if seconds is not None:
+            wilds_state['next_check_at'] = (
+                    datetime.now() + timedelta(seconds=seconds)
+            )
+            return
+
+        # Авторасчёт: min(до финиша, 10 мин)
+        estimated_finish = wilds_state.get('estimated_finish')
+        if estimated_finish:
+            remaining = (estimated_finish - datetime.now()).total_seconds()
+            sleep = min(remaining, 600)  # MAX_SLEEP_BETWEEN_PASSES
+            sleep = max(sleep, 60)
+        else:
+            sleep = 600
+
+        wilds_state['next_check_at'] = (
+                datetime.now() + timedelta(seconds=sleep)
+        )
 
     def _calculate_remaining_attacks(self) -> int:
         """

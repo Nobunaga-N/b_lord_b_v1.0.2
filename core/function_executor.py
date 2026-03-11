@@ -260,32 +260,43 @@ def _run_single_pass(emulator, emulator_name, emulator_id,
     )
 
 
+
 def _calculate_sleep_time(wilds_state):
     """
     Рассчитать время ожидания до следующей проверки автоохоты
 
+    Использует next_check_at — время установленное в момент
+    запуска/проверки охоты (а не после завершения всех функций).
+
     Логика:
-    - Берём estimated_finish из session_state
-    - Если до финиша < 10 мин → ждём до финиша
-    - Если до финиша >= 10 мин → ждём 10 мин
-    - Минимум 60 секунд (защита от слишком частых проверок)
+    - Если есть next_check_at → спим до него
+    - Если нет → fallback на estimated_finish с ограничением 10мин
+    - Минимум 60 секунд
 
     Returns:
         int: секунды ожидания
     """
-    estimated_finish = wilds_state.get('estimated_finish')
+    now = datetime.now()
 
+    # Приоритет: next_check_at (установлен в момент запуска/проверки охоты)
+    next_check = wilds_state.get('next_check_at')
+    if next_check is not None:
+        remaining = (next_check - now).total_seconds()
+        if remaining > 0:
+            return max(int(remaining), 60)
+        else:
+            # Уже пора проверять
+            return 60
+
+    # Fallback: estimated_finish (старая логика)
+    estimated_finish = wilds_state.get('estimated_finish')
     if estimated_finish is None:
         return MAX_SLEEP_BETWEEN_PASSES
 
-    now = datetime.now()
     remaining = (estimated_finish - now).total_seconds()
-
     if remaining <= 0:
-        # Автоохота должна была уже завершиться
-        return 60  # Минимальная пауза перед проверкой
+        return 60
 
-    # min(оставшееся время, 10 мин), но не менее 60 сек
     sleep = min(remaining, MAX_SLEEP_BETWEEN_PASSES)
     return max(int(sleep), 60)
 
