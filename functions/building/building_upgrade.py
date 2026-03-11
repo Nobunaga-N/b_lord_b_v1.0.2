@@ -189,26 +189,32 @@ class BuildingUpgrade:
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        # ПРОВЕРКА 0: Серая кнопка "Улучшение" (условие не выполнено — нет нужной постройки и т.д.)
-        if find_image(emulator, self.TEMPLATES['button_upgrade_grey'],
-                     threshold=self.THRESHOLD_BUTTON):
-            logger.warning(f"[{emulator_name}] ⚠️ Кнопка 'Улучшение' серая — "
-                          f"не выполнено условие (нет нужной постройки или другое требование)")
-            # 1×ESC чтобы закрыть окно улучшения
-            press_key(emulator, "ESC")
-            time.sleep(0.5)
-            return "requirements_not_met"
+        # ШАГ 0: Ищем кнопку "Улучшение" (любую — серую или зелёную)
+        # Пробуем оба шаблона, берём лучшее совпадение
+        button_location = self._find_upgrade_button(emulator)
 
-        # ПРОВЕРКА 1: Кнопка "Улучшение" (зелёная — ресурсов хватает)
-        if find_image(emulator, self.TEMPLATES['button_upgrade'],
-                     threshold=self.THRESHOLD_BUTTON):
-            logger.debug(f"[{emulator_name}] Найдена кнопка 'Улучшение'")
+        if button_location:
+            bx, by = button_location
+            # Определяем цвет кнопки через HSV
+            color = self._check_button_color(emulator, bx, by)
 
-            result = find_image(emulator, self.TEMPLATES['button_upgrade'],
-                              threshold=self.THRESHOLD_BUTTON)
-            if result:
-                center_x, center_y = result
-                tap(emulator, x=center_x, y=center_y)
+            if color == 'grey':
+                logger.warning(f"[{emulator_name}] ⚠️ Кнопка 'Улучшение' серая — "
+                               f"не выполнено условие")
+                press_key(emulator, "ESC")
+                time.sleep(0.5)
+                return "requirements_not_met"
+
+            elif color == 'green':
+                logger.debug(f"[{emulator_name}] Кнопка 'Улучшение' зелёная — кликаем")
+                tap(emulator, x=bx, y=by)
+                time.sleep(1.5)
+                return "started"
+
+            else:
+                # Неопределённый цвет — на всякий случай пробуем кликнуть
+                logger.warning(f"[{emulator_name}] ⚠️ Цвет кнопки неопределён, пробуем кликнуть")
+                tap(emulator, x=bx, y=by)
                 time.sleep(1.5)
                 return "started"
 
@@ -229,6 +235,95 @@ class BuildingUpgrade:
 
         logger.warning(f"[{emulator_name}] ⚠️ Не найдена кнопка улучшения")
         return "error"
+
+    def _find_upgrade_button(self, emulator: Dict):
+        """
+        Найти кнопку 'Улучшение' на экране (любого цвета).
+        Пробует оба шаблона, возвращает координаты лучшего совпадения.
+        """
+        from utils.image_recognition import get_screenshot
+        import cv2
+
+        screenshot = get_screenshot(emulator)
+        if screenshot is None:
+            return None
+
+        best_val = 0
+        best_loc = None
+        best_template = None
+
+        for key in ('button_upgrade', 'button_upgrade_grey'):
+            path = self.TEMPLATES[key]
+            if not os.path.exists(path):
+                continue
+            template = cv2.imread(path)
+            if template is None:
+                continue
+
+            result = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            if max_val > best_val and max_val >= 0.75:
+                best_val = max_val
+                best_loc = max_loc
+                best_template = template
+
+        if best_loc and best_template is not None:
+            h, w = best_template.shape[:2]
+            cx = best_loc[0] + w // 2
+            cy = best_loc[1] + h // 2
+            logger.debug(f"Кнопка 'Улучшение' найдена: ({cx}, {cy}), confidence={best_val:.3f}")
+            return (cx, cy)
+
+        return None
+
+    def _check_button_color(self, emulator: Dict, cx: int, cy: int) -> str:
+        """
+        Определить цвет кнопки 'Улучшение' через HSV-анализ.
+
+        Вырезает небольшой регион вокруг центра кнопки и считает
+        соотношение зелёных и серых пикселей.
+
+        Returns:
+            'green', 'grey' или 'unknown'
+        """
+        from utils.image_recognition import get_screenshot
+        import cv2
+
+        screenshot = get_screenshot(emulator)
+        if screenshot is None:
+            return 'unknown'
+
+        # Вырезаем регион кнопки (±30px по X, ±10px по Y от центра)
+        h, w = screenshot.shape[:2]
+        x1 = max(0, cx - 30)
+        x2 = min(w, cx + 30)
+        y1 = max(0, cy - 10)
+        y2 = min(h, cy + 10)
+
+        crop = screenshot[y1:y2, x1:x2]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+
+        # Зелёный диапазон (кнопка "Улучшение" зелёная)
+        green_mask = cv2.inRange(hsv, (35, 60, 60), (85, 255, 255))
+        green_count = cv2.countNonZero(green_mask)
+
+        # Серый диапазон (низкая насыщенность = серый)
+        grey_mask = cv2.inRange(hsv, (0, 0, 40), (180, 50, 180))
+        grey_count = cv2.countNonZero(grey_mask)
+
+        total = crop.shape[0] * crop.shape[1]
+        green_pct = green_count / total if total > 0 else 0
+        grey_pct = grey_count / total if total > 0 else 0
+
+        logger.debug(f"🎨 Кнопка HSV: green={green_pct:.1%}, grey={grey_pct:.1%}")
+
+        if green_pct > grey_pct and green_pct > 0.15:
+            return 'green'
+        elif grey_pct > green_pct and grey_pct > 0.15:
+            return 'grey'
+
+        return 'unknown'
 
     def _handle_refill_window(self, emulator: Dict) -> str:
         """
