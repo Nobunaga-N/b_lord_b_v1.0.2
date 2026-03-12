@@ -57,7 +57,7 @@ class WildsFunction(BaseFunction):
     FUNCTION_NAME = 'wilds'
 
     # Пауза между типами диких (секунды)
-    PAUSE_BETWEEN_RESOURCES = 90
+    PAUSE_BETWEEN_RESOURCES = 45
 
     # Максимальное время одного похода (минуты)
     ATTACK_DURATION_MINUTES = 4

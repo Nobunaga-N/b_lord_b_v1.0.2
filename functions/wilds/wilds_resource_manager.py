@@ -310,34 +310,71 @@ class WildsResourceManager:
                 allocated['honey'] = allocated.get('honey', 0) + remaining
                 remaining = 0
 
-        # === P4: Fallback — наименее заполненный ===
+        # === P4: Fallback — докачать до 100% (не больше!) ===
         if remaining >= MIN_ATTACKS_PER_RESOURCE:
             if storage_data:
                 candidates = []
                 for res, data in storage_data.items():
                     already = allocated.get(res, 0)
                     projected = data['stored'] + already * loot
+                    # Считаем сколько ещё можно влить до 100% вместимости
+                    headroom = data['capacity'] - projected
+                    if headroom <= 0:
+                        continue
                     projected_pct = (
                         projected / data['capacity'] * 100
                         if data['capacity'] > 0 else 100
                     )
-                    candidates.append((res, projected_pct))
+                    needed = math.ceil(headroom / loot)
+                    candidates.append((res, projected_pct, needed))
+
+                # Сортируем: наименее заполненный первым
                 candidates.sort(key=lambda x: x[1])
-                least_filled = candidates[0][0]
-                allocated[least_filled] = (
-                        allocated.get(least_filled, 0) + remaining
-                )
-                remaining = 0
-            elif honey_enabled:
+
+                for res, pct, needed in candidates:
+                    if remaining < MIN_ATTACKS_PER_RESOURCE:
+                        break
+                    to_alloc = min(needed, remaining)
+                    if to_alloc < MIN_ATTACKS_PER_RESOURCE:
+                        continue
+                    allocated[res] = allocated.get(res, 0) + to_alloc
+                    remaining -= to_alloc
+
+            # Если осталось и мёд включён — в мёд (у него нет лимита)
+            if remaining >= MIN_ATTACKS_PER_RESOURCE and honey_enabled:
                 allocated['honey'] = allocated.get('honey', 0) + remaining
                 remaining = 0
 
-        # Конвертируем в список, убираем ресурсы с 0 атак
-        result = [
-            {'resource': res, 'attempts': att}
-            for res, att in allocated.items()
-            if att > 0
-        ]
+            # Оставшееся remaining просто дропаем —
+            # энергия сохранится на следующую сессию
+
+            # Конвертируем в список, фильтруем слишком мелкие батчи
+        result = []
+        recycled = 0
+
+        for res, att in allocated.items():
+            if att <= 0:
+                continue
+            if res != 'honey' and att < MIN_ATTACKS_PER_RESOURCE:
+                recycled += att
+                logger.debug(
+                    f"Ресурс {RESOURCE_NAMES_RU.get(res, res)} "
+                    f"отброшен ({att} < {MIN_ATTACKS_PER_RESOURCE})"
+                )
+            else:
+                result.append({'resource': res, 'attempts': att})
+
+        # Перераспределить освободившиеся атаки на крупнейший ресурс
+        if recycled > 0 and result:
+            largest = max(result, key=lambda x: x['attempts'])
+            largest['attempts'] += recycled
+
+        if remaining > 0:
+            logger.info(
+                f"⚡ {remaining} атак не распределено "
+                f"(склады полные, энергия сохранена)"
+            )
+
         return result
 
     # ==================== ПАРСИНГ СКЛАДОВ ====================

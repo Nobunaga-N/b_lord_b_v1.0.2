@@ -245,6 +245,19 @@ def _run_single_pass(emulator, emulator_name, emulator_id,
                 reason=str(e)
             )
 
+            # Если упала wilds — сбросить hunt_active,
+            # чтобы мульти-pass цикл мог завершиться
+            if function_name == 'wilds':
+                wilds_state = session_state.get('wilds', {})
+                if wilds_state.get('hunt_active'):
+                    wilds_state['hunt_active'] = False
+                    wilds_state['estimated_finish'] = None
+                    wilds_state.pop('next_check_at', None)
+                    logger.info(
+                        f"[{emulator_name}] 🛑 hunt_active сброшен "
+                        f"из-за критической ошибки"
+                    )
+
             logger.info(
                 f"[{emulator_name}] ➡️ Продолжаю к следующей функции..."
             )
