@@ -230,16 +230,12 @@ class TilesFunction(BaseFunction):
             return False
 
         # 6. Настроить Лист 2 (если нужно)
-        sheet_switched = False
         if self._should_setup_sheet(emu_id):
             if not self.tiles_nav.setup_sheet_2(self.emulator):
                 logger.warning(
                     f"[{self.emulator_name}] ⚠️ Не удалось настроить Лист 2, "
                     f"продолжаем на текущем листе"
                 )
-                # Не замораживаем — пробуем отправить на текущем листе
-            else:
-                sheet_switched = True
 
         # 6.5 Пауза если wilds реально охотились (отряды могут возвращаться)
         wilds_state = self.session_state.get('wilds', {})
@@ -296,14 +292,9 @@ class TilesFunction(BaseFunction):
                 if a['resource'] not in visited:
                     visited.append(a['resource'])
 
-        # 9. Вернуть Лист 1 (если переключали на Лист 2)
-        if sheet_switched:
-            logger.info(
-                f"[{self.emulator_name}] 📋 Возврат на Лист 1 "
-                f"(для следующей автоохоты)"
-            )
-            if self.wilds_nav.ensure_on_world_map(self.emulator):
-                self.wilds_nav.setup_formation_sheet(self.emulator)
+        # 9. Пометить как отправленные (Лист 1 не трогаем —
+        #    отряды на плитках, смена невозможна;
+        #    wilds при следующем запуске сами выставят Лист 1)
 
         # 10. Пометить как отправленные
         self._mark_sent()

@@ -456,9 +456,9 @@ class TilesNavigation:
                 emulator,
                 self.SWIPE_RESOURCE_START[0], self.SWIPE_RESOURCE_START[1],
                 self.SWIPE_RESOURCE_END[0], self.SWIPE_RESOURCE_END[1],
-                duration=400
+                duration=800
             )
-            time.sleep(1)  # 1 сек delay чтобы свайп засчитался
+            time.sleep(1.5)  # 1 сек delay чтобы свайп засчитался
 
         # Клик по ресурсу
         tap(emulator, *config['coord'])
