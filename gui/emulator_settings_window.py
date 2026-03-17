@@ -5,12 +5,13 @@
 Содержит кнопки:
 - "Вожаки" — настройка отрядов и уровней диких
 - "Дикие" — настройка ресурсов для автоохоты
+- "Плитки" — настройка ресурсов и уровней плиток
 
-Версия: 1.1
-Дата обновления: 2025-03-11
+Версия: 1.2
+Дата обновления: 2025-03-17
 Изменения:
-- Добавлена кнопка "Дикие (Ресурсы)"
-- Убран текст "Будущие настройки"
+- Добавлена кнопка "Плитки"
+- Увеличена высота окна
 """
 
 import customtkinter as ctk
@@ -31,7 +32,7 @@ class EmulatorSettingsWindow(ctk.CTkToplevel):
         self.grab_set()
 
         # Размер и позиция
-        w, h = 300, 240
+        w, h = 300, 290
         self._center_window(parent, w, h)
 
         # UI
@@ -85,6 +86,19 @@ class EmulatorSettingsWindow(ctk.CTkToplevel):
         )
         btn_wilds.pack(pady=5)
 
+        # Кнопка "Плитки"
+        btn_tiles = ctk.CTkButton(
+            self,
+            text="🗺 Плитки",
+            width=200,
+            height=40,
+            font=ctk.CTkFont(size=14),
+            fg_color="#2E7D32",
+            hover_color="#1B5E20",
+            command=self._open_tiles_settings
+        )
+        btn_tiles.pack(pady=5)
+
         # Закрыть
         btn_close = ctk.CTkButton(
             self,
@@ -106,3 +120,8 @@ class EmulatorSettingsWindow(ctk.CTkToplevel):
         """Открывает окно настройки ресурсов для охоты на диких"""
         from gui.wilds_settings_window import WildsSettingsWindow
         WildsSettingsWindow(self, self.emulator_id, self.emulator_name)
+
+    def _open_tiles_settings(self):
+        """Открывает окно настройки плиток"""
+        from gui.tiles_settings_window import TilesSettingsWindow
+        TilesSettingsWindow(self, self.emulator_id, self.emulator_name)

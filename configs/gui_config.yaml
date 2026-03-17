@@ -4,26 +4,10 @@ emulator_settings:
     squads:
       special:
         enabled: true
-        wild_level: 9
-      squad_1:
-        enabled: true
-        wild_level: 9
-      squad_2:
-        enabled: false
-        wild_level: 1
-      squad_3:
-        enabled: false
-        wild_level: 1
-    wilds:
-      use_sheet_2: false
-  '1':
-    squads:
-      special:
-        enabled: true
         wild_level: 11
       squad_1:
         enabled: true
-        wild_level: 10
+        wild_level: 11
       squad_2:
         enabled: false
         wild_level: 1
@@ -33,20 +17,19 @@ emulator_settings:
     wilds:
       resources:
         apples: true
-        honey: true
+        honey: false
         leaves: true
         sand: true
         soil: true
       use_sheet_2: false
-  '5':
-    paused: false
+  '1':
     squads:
       special:
-        enabled: false
-        wild_level: 1
+        enabled: true
+        wild_level: 12
       squad_1:
         enabled: true
-        wild_level: 13
+        wild_level: 12
       squad_2:
         enabled: false
         wild_level: 1
@@ -54,7 +37,36 @@ emulator_settings:
         enabled: false
         wild_level: 1
     wilds:
+      resources:
+        apples: false
+        honey: false
+        leaves: true
+        sand: true
+        soil: false
       use_sheet_2: false
+  '5':
+    paused: false
+    squads:
+      special:
+        enabled: true
+        wild_level: 14
+      squad_1:
+        enabled: true
+        wild_level: 14
+      squad_2:
+        enabled: false
+        wild_level: 1
+      squad_3:
+        enabled: false
+        wild_level: 1
+    wilds:
+      resources:
+        apples: true
+        honey: false
+        leaves: true
+        sand: true
+        soil: true
+      use_sheet_2: true
 emulators:
   enabled:
   - 5

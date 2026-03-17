@@ -669,6 +669,7 @@ class WildsFunction(BaseFunction):
 
         # Обновить session_state
         wilds_state['hunt_active'] = False
+        wilds_state['completed_this_session'] = True
         wilds_state['estimated_finish'] = None
         wilds_state.pop('next_check_at', None)  # Очистить таймер проверки
         self.session_state['wilds'] = wilds_state
