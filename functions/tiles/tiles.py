@@ -241,6 +241,18 @@ class TilesFunction(BaseFunction):
             else:
                 sheet_switched = True
 
+        # 6.5 Пауза если wilds реально охотились (отряды могут возвращаться)
+        wilds_state = self.session_state.get('wilds', {})
+        if wilds_state.get('hunt_plan'):
+            # hunt_plan существует → wilds запускали автоохоту в этой сессии
+            # Ждём 60с чтобы отряды вернулись
+            import time
+            logger.info(
+                f"[{self.emulator_name}] ⏸ Пауза 60с — "
+                f"ожидание возврата отрядов после автоохоты"
+            )
+            time.sleep(60)
+
         # 7. Отправить каждый отряд
         sent_count = 0
         for assignment in assignments:

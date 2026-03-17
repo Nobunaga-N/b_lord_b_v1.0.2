@@ -204,6 +204,7 @@ class WildsFunction(BaseFunction):
             )
             self.navigation.close_autohunt_window(self.emulator)
             self.navigation.ensure_in_estate(self.emulator)
+            self._mark_completed()
             return True
 
         # 5. Парсинг энергии и расчёт доступных атак
@@ -220,6 +221,7 @@ class WildsFunction(BaseFunction):
             )
             self.navigation.close_autohunt_window(self.emulator)
             self.navigation.ensure_in_estate(self.emulator)
+            self._mark_completed()
             return True
 
         # 6. Закрыть автоохоту → вернуться в поместье → спарсить склады
@@ -236,6 +238,7 @@ class WildsFunction(BaseFunction):
                 f"[{self.emulator_name}] 📋 Нет ресурсов для охоты — "
                 f"склады полные или все ресурсы выключены"
             )
+            self._mark_completed()
             return True
 
         # 7. Сохранить план в session_state
@@ -864,6 +867,10 @@ class WildsFunction(BaseFunction):
             pass  # Нет данных — на всякий случай настраиваем
 
         return True
+
+    def _mark_completed(self):
+        """Пометить wilds как завершённые в этой сессии (для tiles)"""
+        self.session_state.setdefault('wilds', {})['completed_this_session'] = True
 
     def _freeze_wilds(self, hours: int, reason: str):
         """Заморозить функцию диких и залогировать"""
