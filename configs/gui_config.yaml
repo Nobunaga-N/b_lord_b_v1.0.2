@@ -49,16 +49,24 @@ emulator_settings:
     squads:
       special:
         enabled: true
-        wild_level: 14
+        wild_level: 13
       squad_1:
         enabled: true
-        wild_level: 14
+        wild_level: 13
       squad_2:
         enabled: false
         wild_level: 1
       squad_3:
         enabled: false
         wild_level: 1
+    tiles:
+      max_level: 7
+      min_level: 4
+      resources:
+        apples: true
+        leaves: true
+        sand: true
+        soil: true
     wilds:
       resources:
         apples: true
@@ -79,7 +87,7 @@ functions:
   prime_times: false
   research: false
   shield: false
-  tiles: false
+  tiles: true
   wilds: true
 settings:
   max_concurrent: 3

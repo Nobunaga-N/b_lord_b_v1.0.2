@@ -30,26 +30,29 @@ from functions.shield.shield import ShieldFunction
 from functions.mail_rewards.mail_rewards import MailRewardsFunction
 from functions.ponds.ponds import PondsFunction
 from functions.feeding_zone.feeding_zone import FeedingZoneFunction
+from functions.training.training import TrainingFunction
 
 
 # Порядок выполнения функций
 # ОБНОВЛЕНО: building и wilds в начале, tiles после диких (нужны отряды)
 FUNCTION_ORDER = [
-    'building',        # 1. Строительство (назначить строителей)
-    'wilds',           # 2. Дикие (запустить автоохоту)
-    'research',        # 3. Эволюция
-    'ponds',           # 4. Пополнение прудов
-    'feeding_zone',    # 5. Зона кормления
-    'mail_rewards',    # 6. Награды с почты
-    'shield',          # 7. Щит
-    'tiles',           # 8. Плитки (после диких — отправить отряды)
-    'coop',            # 9. Кооперации
-    'prime_times',     # 10. Прайм таймы
+    'building',        # 1. Строительство
+    'training',        # 2. Тренировка войск  ← НОВОЕ
+    'wilds',           # 3. Дикие (запустить автоохоту)
+    'research',        # 4. Эволюция
+    'ponds',           # 5. Пополнение прудов
+    'feeding_zone',    # 6. Зона кормления
+    'mail_rewards',    # 7. Награды с почты
+    'shield',          # 8. Щит
+    'tiles',           # 9. Плитки
+    'coop',            # 10. Кооперации
+    'prime_times',     # 11. Прайм таймы
 ]
 
 # Маппинг имя → класс
 FUNCTION_CLASSES = {
     'building': BuildingFunction,
+    'training': TrainingFunction,    # ← НОВОЕ
     'research': ResearchFunction,
     'wilds': WildsFunction,
     'coop': CoopFunction,
