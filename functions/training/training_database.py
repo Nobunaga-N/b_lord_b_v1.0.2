@@ -95,6 +95,27 @@ class TrainingDatabase:
         with self.db_lock:
             cursor = self.conn.cursor()
 
+            # Таблица buildings — может быть уже создана BuildingDatabase,
+            # но если строительство не включено/не запускалось, её не будет.
+            # CREATE IF NOT EXISTS безопасно в обоих случаях.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS buildings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    emulator_id INTEGER NOT NULL,
+                    building_name TEXT NOT NULL,
+                    building_type TEXT NOT NULL,
+                    building_index INTEGER,
+                    current_level INTEGER NOT NULL DEFAULT 0,
+                    upgrading_to_level INTEGER,
+                    target_level INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    action TEXT NOT NULL DEFAULT 'upgrade',
+                    timer_finish TIMESTAMP,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(emulator_id, building_name, building_index)
+                )
+            """)
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS training_slots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

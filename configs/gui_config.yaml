@@ -87,7 +87,8 @@ functions:
   prime_times: false
   research: false
   shield: false
-  tiles: true
-  wilds: true
+  tiles: false
+  training: true
+  wilds: false
 settings:
   max_concurrent: 3
