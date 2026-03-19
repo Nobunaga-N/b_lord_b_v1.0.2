@@ -63,7 +63,6 @@ class EmulatorPanel(ctk.CTkFrame):
         # Прокручиваемая область
         self.scroll_frame = ctk.CTkScrollableFrame(
             self,
-            height=250,
             fg_color="transparent"
         )
         self.scroll_frame.pack(fill="both", expand=True, padx=15, pady=10)

@@ -1,147 +1,181 @@
 """
-Панель статуса
+Панель статуса (вертикальная, слева от списка эмуляторов)
+
+Показывает:
+  - Индикатор состояния (● Работает / ● Остановлен) с динамическим цветом
+  - Счётчик активных слотов
+  - Скролл-список активных эмуляторов (имя + id)
+
+Ширина фиксирована ~200px, высота растягивается.
 """
 
 import customtkinter as ctk
 
 
 class StatusPanel(ctk.CTkFrame):
-    """Панель статуса в реальном времени"""
+    """Вертикальная панель статуса (левая колонка)"""
+
+    COLOR_GREEN = "#28A745"
+    COLOR_RED = "#DC3545"
+    COLOR_GRAY = "#6C757D"
 
     def __init__(self, parent):
-        super().__init__(parent, corner_radius=10)
+        super().__init__(parent, corner_radius=10, width=290)
+        self.pack_propagate(False)  # Фиксированная ширина
 
-        # Данные статуса (заглушка)
+        # Данные статуса
         self.bot_state = {
             "is_running": False,
             "active_count": 0,
             "max_concurrent": 0,
-            "active_emulators": []  # [{"id": 0, "name": "LDPlayer"}, ...]
+            "active_emulators": []
         }
 
-        # Создать UI
         self._create_ui()
-
-        # Запустить механизм обновления
         self.start_updates()
 
     def _create_ui(self):
         """Создаёт элементы интерфейса"""
 
-        # Заголовок
+        # === Заголовок ===
         header = ctk.CTkLabel(
             self,
             text="Статус",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        header.pack(anchor="w", padx=15, pady=(10, 10))
+        header.pack(anchor="w", padx=12, pady=(10, 5))
 
-        # Контейнер для основного контента
-        content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        content_frame.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        # === Строка состояния: ● Работает / ● Остановлен ===
+        state_row = ctk.CTkFrame(self, fg_color="transparent")
+        state_row.pack(fill="x", padx=12, pady=(0, 3))
 
-        # === Строка 1: Состояние ===
+        self.indicator = ctk.CTkLabel(
+            state_row,
+            text="●",
+            font=ctk.CTkFont(size=16),
+            text_color=self.COLOR_RED,
+            width=18
+        )
+        self.indicator.pack(side="left", padx=(0, 4))
+
         self.state_label = ctk.CTkLabel(
-            content_frame,
-            text="Состояние: 🔴 Остановлен",
-            font=ctk.CTkFont(size=14),
-            anchor="w"
+            state_row,
+            text="Остановлен",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#9e9e9e"
         )
-        self.state_label.pack(fill="x", pady=3)
+        self.state_label.pack(side="left")
 
-        # === Строка 2: Активных эмуляторов ===
+        # === Счётчик активных ===
         self.active_label = ctk.CTkLabel(
-            content_frame,
-            text="Активных эмуляторов: 0 / 0",
-            font=ctk.CTkFont(size=14),
+            self,
+            text="Активных: 0 / 0",
+            font=ctk.CTkFont(size=12),
+            text_color="#9e9e9e",
             anchor="w"
         )
-        self.active_label.pack(fill="x", pady=3)
+        self.active_label.pack(fill="x", padx=12, pady=(0, 8))
+
+        # === Разделитель ===
+        sep = ctk.CTkFrame(self, height=1, fg_color="#3B3B3B")
+        sep.pack(fill="x", padx=12, pady=(0, 5))
 
         # === Заголовок списка ===
         list_header = ctk.CTkLabel(
-            content_frame,
-            text="Обрабатываются:",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            self,
+            text="В работе:",
+            font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w"
         )
-        list_header.pack(fill="x", pady=(10, 5))
+        list_header.pack(fill="x", padx=12, pady=(0, 3))
 
-        # === Прокручиваемый список активных эмуляторов ===
+        # === Скролл-список активных эмуляторов ===
         self.scroll_frame = ctk.CTkScrollableFrame(
-            content_frame,
-            height=120,
+            self,
             fg_color="transparent"
         )
-        self.scroll_frame.pack(fill="both", expand=True)
+        self.scroll_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        # Заглушка для пустого списка
+        # Заглушка
         self.empty_label = ctk.CTkLabel(
             self.scroll_frame,
-            text="-",
-            font=ctk.CTkFont(size=13),
-            text_color="#9e9e9e"
+            text="—",
+            font=ctk.CTkFont(size=12),
+            text_color="#6C757D"
         )
         self.empty_label.pack(pady=5)
 
     def start_updates(self):
-        """Запускает периодическое обновление (каждые 2 секунды)"""
+        """Запускает периодическое обновление"""
         self._update_status()
 
     def _update_status(self):
-        """Обновляет отображение на основе состояния бота"""
+        """Обновляет отображение на основе bot_state"""
 
-        # TODO: В будущем здесь будет получение данных от BotController
-        # Пока используем заглушку self.bot_state
+        is_running = self.bot_state.get("is_running", False)
 
-        # Обновить состояние
-        if self.bot_state["is_running"]:
-            state_text = "Состояние: 🟢 Работает"
+        # Индикатор + текст состояния
+        if is_running:
+            self.indicator.configure(text_color=self.COLOR_GREEN)
+            self.state_label.configure(text="Работает", text_color=self.COLOR_GREEN)
         else:
-            state_text = "Состояние: 🔴 Остановлен"
+            self.indicator.configure(text_color=self.COLOR_RED)
+            self.state_label.configure(text="Остановлен", text_color="#9e9e9e")
 
-        self.state_label.configure(text=state_text)
+        # Счётчик
+        active = self.bot_state.get("active_count", 0)
+        max_c = self.bot_state.get("max_concurrent", 0)
+        self.active_label.configure(text=f"Активных: {active} / {max_c}")
 
-        # Обновить счётчик активных
-        active_text = f"Активных эмуляторов: {self.bot_state['active_count']} / {self.bot_state['max_concurrent']}"
-        self.active_label.configure(text=active_text)
-
-        # Обновить список активных эмуляторов
+        # Обновить список
         self._update_active_list()
 
         # Повторить через 2 секунды
         self.after(2000, self._update_status)
 
     def _update_active_list(self):
-        """Обновляет список активных эмуляторов"""
+        """Обновляет скролл-список активных эмуляторов"""
 
-        # Очистить старый список
+        # Очистить
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
 
         active_emulators = self.bot_state.get("active_emulators", [])
 
         if not active_emulators:
-            # Показать заглушку
             self.empty_label = ctk.CTkLabel(
                 self.scroll_frame,
-                text="-",
-                font=ctk.CTkFont(size=13),
-                text_color="#9e9e9e"
+                text="—",
+                font=ctk.CTkFont(size=12),
+                text_color="#6C757D"
             )
             self.empty_label.pack(pady=5)
         else:
-            # Показать список
             for emu in active_emulators:
-                emu_text = f"• {emu['name']} (id:{emu['id']})"
+                emu_name = emu.get("name", f"id:{emu.get('id', '?')}")
+                emu_id = emu.get("id", "?")
 
-                emu_label = ctk.CTkLabel(
-                    self.scroll_frame,
-                    text=emu_text,
-                    font=ctk.CTkFont(size=13),
+                row = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+                row.pack(fill="x", pady=1)
+
+                # Зелёный кружок
+                dot = ctk.CTkLabel(
+                    row,
+                    text="●",
+                    font=ctk.CTkFont(size=10),
+                    text_color=self.COLOR_GREEN,
+                    width=14
+                )
+                dot.pack(side="left", padx=(0, 4))
+
+                # Имя (обрезается если длинное)
+                name_label = ctk.CTkLabel(
+                    row,
+                    text=f"{emu_name}",
+                    font=ctk.CTkFont(size=12),
                     anchor="w"
                 )
-                emu_label.pack(anchor="w", pady=3, padx=5)
+                name_label.pack(side="left", fill="x", expand=True)
 
     def update_bot_state(self, bot_state):
         """
