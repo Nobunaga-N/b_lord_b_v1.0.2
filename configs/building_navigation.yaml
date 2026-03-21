@@ -67,10 +67,10 @@ navigation:
           scroll_in_section:
             - direction: "down"
               start_x: 100
-              start_y: 682
+              start_y: 720
               end_x: 100
-              end_y: 330
-              duration: 300
+              end_y: 273
+              duration: 600
           notes: "Строится на 13 ур Лорда, требует свайп вниз"
 
         # ДОБАВЛЕНО: Центр Сбора III
@@ -83,10 +83,10 @@ navigation:
           scroll_in_section:
             - direction: "down"
               start_x: 100
-              start_y: 682
+              start_y: 720
               end_x: 100
-              end_y: 330
-              duration: 300
+              end_y: 273
+              duration: 600
           notes: "Строится на 18 ур Лорда, требует свайп вниз"
 
     # =============== РАЗДЕЛ 4: РАЗВИТИЕ ===============
