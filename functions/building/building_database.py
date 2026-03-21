@@ -411,20 +411,24 @@ class BuildingDatabase:
             return True
 
     def scan_building_level(self, emulator: dict, building_name: str,
-                           building_index: Optional[int] = None) -> bool:
+                           building_index: Optional[int] = None,
+                           force_verify: bool = False) -> bool:
         """
         Просканировать уровень ОДНОГО здания и обновить в БД
 
         ВАЖНО: Не сканирует здания с action='build' и level=0
-        (они еще не построены в игре)
+        (они еще не построены в игре), КРОМЕ случая force_verify=True
 
         Args:
             emulator: объект эмулятора
             building_name: название здания
             building_index: индекс для множественных зданий
+            force_verify: если True — пропускает проверку action='build',
+                         используется при backfill для ре-верификации
+                         зданий из прошлых конфигов Лорда
 
         Returns:
-            bool: True если успешно
+            bool: True если здание найдено и уровень обновлён
         """
         emulator_id = emulator.get('id', 0)
         emulator_name = emulator.get('name', f'Emulator-{emulator_id}')
@@ -437,9 +441,19 @@ class BuildingDatabase:
             return False
 
         # КРИТИЧЕСКАЯ ПРОВЕРКА: если action='build' и level=0 - здание не построено
+        # ИСКЛЮЧЕНИЕ: force_verify=True (backfill ре-верификация)
         if building['action'] == 'build' and building['current_level'] == 0:
-            logger.warning(f"[{emulator_name}] ⏭️ {building_name}: здание не построено (action=build, level=0)")
-            return False
+            if not force_verify:
+                logger.warning(
+                    f"[{emulator_name}] ⏭️ {building_name}: "
+                    f"здание не построено (action=build, level=0)"
+                )
+                return False
+            else:
+                logger.info(
+                    f"[{emulator_name}] 🔍 {building_name}: "
+                    f"force_verify — проверяем наличие в панели навигации"
+                )
 
         logger.info(f"[{emulator_name}] 🔍 Сканирование: {building_name}" +
                     (f" #{building_index}" if building_index else ""))
@@ -452,7 +466,17 @@ class BuildingDatabase:
         level = nav_panel.get_building_level(emulator, building_name, building_index)
 
         if level is None:
-            logger.error(f"[{emulator_name}] ❌ Не удалось получить уровень здания")
+            # Здание не найдено на экране
+            # При force_verify это нормально — здание просто не построено
+            if force_verify:
+                logger.info(
+                    f"[{emulator_name}] ➖ {building_name}: "
+                    f"не найдено в панели — не построено"
+                )
+            else:
+                logger.error(
+                    f"[{emulator_name}] ❌ Не удалось получить уровень здания"
+                )
             return False
 
         # Обновляем уровень в БД
@@ -2026,17 +2050,11 @@ class BuildingDatabase:
         """
         Определить следующее здание для прокачки
 
-        ИСПРАВЛЕНО (v2.2 - ПОЛНАЯ ВЕРСИЯ):
-        - Использование building['action'] из БД вместо action из конфига
-        - Сохранение всей оригинальной логики для count=1 и count>1
-        - Проверка промежуточных зданий для Лорда
-        - Правильная обработка зданий с action='build'
-
-        ЛОГИКА для множественных зданий:
-        - count > 1: качать ВСЕ экземпляры до target, выбирать с МИНИМАЛЬНЫМ уровнем
-        - count = 1: качать ТОЛЬКО ОДНО здание до target, выбирать с МАКСИМАЛЬНЫМ уровнем
-                     КРИТИЧНО: Если хотя бы один экземпляр улучшается или достиг target -
-                     ПОЛНОСТЬЮ ПРОПУСТИТЬ это здание и перейти к следующему в YAML
+        ИСПРАВЛЕНО (v2.3 - BACKFILL):
+        - Итерация от lord_10 до lord_{текущий_уровень} включительно
+        - Сначала закрываем долги из предыдущих уровней Лорда
+        - Ре-верификация build-зданий из прошлых конфигов перед постройкой
+        - Вся остальная логика (count=1 vs count>1, build, scan) — без изменений
 
         Args:
             emulator: объект эмулятора
@@ -2058,273 +2076,364 @@ class BuildingDatabase:
         lord_level = lord['current_level']
         logger.debug(f"[{emulator_name}] Текущий уровень Лорда: {lord_level}")
 
-        # 2. Проходим по конфигу в порядке
-        lord_key = f"lord_{lord_level}"
+        # ═══════════════════════════════════════════════════════════
+        # 2. BACKFILL: итерируем от lord_10 до lord_{lord_level}
+        #    Это гарантирует, что незакрытые здания из предыдущих
+        #    списков будут обработаны раньше текущего уровня
+        # ═══════════════════════════════════════════════════════════
+        for check_level in range(10, lord_level + 1):
+            lord_key = f"lord_{check_level}"
 
-        if lord_key not in self.building_config:
-            logger.debug(f"[{emulator_name}] Конфиг для Лорд {lord_level} не найден")
-            return None
+            if lord_key not in self.building_config:
+                continue
 
-        config = self.building_config[lord_key]
-        buildings_list = config.get('buildings', [])
+            config = self.building_config[lord_key]
+            buildings_list = config.get('buildings', [])
 
-        # 3. Проходим по списку зданий
-        for building_cfg in buildings_list:
-            name = building_cfg['name']
-            count = building_cfg.get('count', 1)
-            target = building_cfg.get('target_level', 1)
-            btype = building_cfg.get('type', 'unique')
-            config_action = building_cfg.get('action', 'upgrade')  # ← action из конфига (НЕ используем!)
+            # Флаг: проверяем прошлый конфиг или текущий
+            is_past_config = (check_level < lord_level)
 
-            # ПРОВЕРКА ПРОМЕЖУТОЧНЫХ ЗДАНИЙ только для Лорда
-            if name == "Лорд":
-                if not self._check_intermediate_buildings_ready(emulator_id, lord_level):
-                    logger.debug(f"[{emulator_name}] ⏸️ Лорд: промежуточные здания не готовы, пропускаем")
-                    continue  # ← Пропускаем Лорда, но проверяем остальные здания!
+            # 3. Проходим по списку зданий этого уровня
+            for building_cfg in buildings_list:
+                name = building_cfg['name']
+                count = building_cfg.get('count', 1)
+                target = building_cfg.get('target_level', 1)
+                btype = building_cfg.get('type', 'unique')
+                config_action = building_cfg.get('action', 'upgrade')
 
-            # МНОЖЕСТВЕННОЕ ЗДАНИЕ (несколько экземпляров)
-            if btype == 'multiple':
-                candidates = []
-
-                # СПЕЦИАЛЬНАЯ ЛОГИКА ДЛЯ count=1
-                if count == 1:
-                    # Получаем ВСЕ экземпляры этого здания из БД
-                    cursor = self.conn.cursor()
-                    cursor.execute("""
-                        SELECT building_index, current_level, status, action
-                        FROM buildings 
-                        WHERE emulator_id = ? AND building_name = ? AND building_index IS NOT NULL
-                        ORDER BY building_index
-                    """, (emulator_id, name))
-
-                    all_instances = cursor.fetchall()
-
-                    if not all_instances:
-                        logger.warning(f"[{emulator_name}] ⚠️ {name}: не найдено экземпляров в БД")
+                # ─── ЛОРД: пропускаем если мы проверяем прошлые уровни ───
+                if name == "Лорд":
+                    if is_past_config:
                         continue
-
-                    # КЛЮЧЕВАЯ ПРОВЕРКА: Если хотя бы один экземпляр улучшается или достиг target
-                    # - ПРОПУСТИТЬ это здание ПОЛНОСТЬЮ
-                    has_upgrading = False
-                    has_reached_target = False
-
-                    for row in all_instances:
-                        if row['status'] == 'upgrading':
-                            has_upgrading = True
-                            break
-                        if row['current_level'] >= target:
-                            has_reached_target = True
-
-                    if has_upgrading:
-                        logger.debug(
-                            f"[{emulator_name}] ⏭️ {name}: один экземпляр уже улучшается (count=1), пропускаем")
-                        continue
-
-                    if has_reached_target:
-                        logger.debug(f"[{emulator_name}] ⏭️ {name}: один экземпляр достиг target (count=1), пропускаем")
-                        continue
-
-                    # Проверяем все экземпляры и ищем с максимальным уровнем
-                    for row in all_instances:
-                        index = row['building_index']
-                        current_level = row['current_level']
-                        status = row['status']
-                        building_action = row['action']  # ← action ИЗ БД!
-
-                        # Если здание нужно построить - возвращаем его!
-                        if building_action == 'build' and current_level == 0:
-                            logger.debug(f"[{emulator_name}] 🏗️ {name} #{index}: требуется постройка")
-                            return {
-                                'name': name,
-                                'index': index,
-                                'current_level': 0,
-                                'target_level': target,
-                                'is_lord': False,
-                                'action': 'build'
-                            }
-
-                        # Автосканирование если level=0 и action='upgrade'
-                        if current_level == 0 and building_action == 'upgrade':
-                            if auto_scan:
-                                logger.warning(
-                                    f"[{emulator_name}] ⚠️ {name} #{index}: уровень неизвестен, сканируем...")
-                                success = self.scan_building_level(emulator, name, index)
-
-                                if not success:
-                                    logger.error(f"[{emulator_name}] ❌ Не удалось просканировать {name} #{index}")
-                                    continue
-
-                                # Обновляем данные
-                                building = self.get_building(emulator_id, name, index)
-                                current_level = building['current_level']
-                                status = building['status']
-                            else:
-                                logger.warning(
-                                    f"[{emulator_name}] ⚠️ {name} #{index}: уровень неизвестен (level=0), пропускаем")
-                                continue
-
-                        # Проверка уровня Лорда
-                        if current_level + 1 > lord_level:
+                    else:
+                        if not self._check_intermediate_buildings_ready(emulator_id, lord_level):
                             logger.debug(
-                                f"[{emulator_name}] ⏸️ {name} #{index}: уровень {current_level + 1} > Лорд {lord_level}")
+                                f"[{emulator_name}] ⏸️ Лорд: промежуточные "
+                                f"здания не готовы, пропускаем"
+                            )
                             continue
 
-                        # Добавляем кандидата (не проверяем status, т.к. уже проверили выше)
-                        if current_level < target:
-                            candidates.append({
-                                'name': name,
-                                'index': index,
-                                'current_level': current_level,
-                                'target_level': target,
-                                'is_lord': (name == "Лорд"),
-                                'action': building_action  # ← ИЗ БД!
-                            })
+                # ─── МНОЖЕСТВЕННОЕ ЗДАНИЕ ───
+                if btype == 'multiple':
+                    candidates = []
 
-                # ЛОГИКА ДЛЯ count>1
-                else:
-                    # Смотрим только первые count экземпляров
+                    # СПЕЦИАЛЬНАЯ ЛОГИКА ДЛЯ count=1
+                    if count == 1:
+                        cursor = self.conn.cursor()
+                        cursor.execute("""
+                            SELECT building_index, current_level, status, action
+                            FROM buildings 
+                            WHERE emulator_id = ? AND building_name = ?
+                            ORDER BY current_level DESC
+                        """, (emulator_id, name))
+                        rows = cursor.fetchall()
+
+                        if not rows:
+                            logger.debug(f"[{emulator_name}] ⏸️ {name}: нет в БД")
+                            continue
+
+                        # Если хотя бы одно достигло target или улучшается — пропустить
+                        skip = False
+                        for row in rows:
+                            idx, lvl, status, db_action = row
+                            if lvl >= target or status == 'upgrading':
+                                skip = True
+                                break
+                        if skip:
+                            continue
+
+                        # Ищем кандидата с максимальным уровнем
+                        best = None
+                        for row in rows:
+                            idx, lvl, status, db_action = row
+                            if status != 'upgrading' and lvl < target:
+                                # ── BUILD ре-верификация (count=1 multiple) ──
+                                if db_action == 'build' and lvl == 0:
+                                    if is_past_config:
+                                        scan_ok = self.scan_building_level(
+                                            emulator, name, idx,
+                                            force_verify=True
+                                        )
+                                        if scan_ok:
+                                            # Здание найдено → обновляем
+                                            b = self.get_building(
+                                                emulator_id, name, idx
+                                            )
+                                            self.update_building_after_construction(
+                                                emulator_id, name, idx,
+                                                actual_level=b['current_level']
+                                            )
+                                            lvl = b['current_level']
+                                            db_action = 'upgrade'
+                                        else:
+                                            # Не найдено — реально не построено
+                                            return {
+                                                'name': name,
+                                                'index': idx,
+                                                'current_level': 0,
+                                                'target_level': target,
+                                                'is_lord': False,
+                                                'action': 'build'
+                                            }
+                                    else:
+                                        return {
+                                            'name': name,
+                                            'index': idx,
+                                            'current_level': 0,
+                                            'target_level': target,
+                                            'is_lord': False,
+                                            'action': 'build'
+                                        }
+
+                                if lvl == 0 and db_action == 'upgrade':
+                                    if auto_scan:
+                                        success = self.scan_building_level(emulator, name, idx)
+                                        if not success:
+                                            continue
+                                        building = self.get_building(emulator_id, name, idx)
+                                        lvl = building['current_level']
+                                        status = building['status']
+                                    else:
+                                        continue
+
+                                if lvl + 1 > lord_level:
+                                    continue
+
+                                if status != 'upgrading' and lvl < target:
+                                    if best is None or lvl > best['current_level']:
+                                        best = {
+                                            'name': name,
+                                            'index': idx,
+                                            'current_level': lvl,
+                                            'target_level': target,
+                                            'is_lord': False,
+                                            'action': db_action
+                                        }
+                        if best:
+                            return best
+                        continue
+
+                    # count > 1: качать ВСЕ экземпляры, выбирать минимальный
                     for index in range(1, count + 1):
                         building = self.get_building(emulator_id, name, index)
 
                         if not building:
-                            logger.warning(f"[{emulator_name}] ⚠️ {name} #{index}: не найдено в БД")
+                            logger.debug(
+                                f"[{emulator_name}] ⏸️ {name} #{index}: "
+                                f"здания нет в БД"
+                            )
                             continue
 
-                        building_action = building['action']  # ← action ИЗ БД!
+                        building_action = building['action']
                         building_level = building['current_level']
                         building_status = building['status']
 
-                        # Если здание нужно построить - возвращаем его!
+                        # ── BUILD ре-верификация (count>1 multiple) ──
                         if building_action == 'build' and building_level == 0:
-                            logger.debug(f"[{emulator_name}] 🏗️ {name} #{index}: требуется постройка")
-                            return {
-                                'name': name,
-                                'index': index,
-                                'current_level': 0,
-                                'target_level': target,
-                                'is_lord': False,
-                                'action': 'build'
-                            }
+                            if is_past_config:
+                                logger.info(
+                                    f"[{emulator_name}] 🔍 {name} #{index}: "
+                                    f"build из lord_{check_level} — "
+                                    f"ре-верификация..."
+                                )
+                                scan_ok = self.scan_building_level(
+                                    emulator, name, index,
+                                    force_verify=True
+                                )
+                                if scan_ok:
+                                    building = self.get_building(
+                                        emulator_id, name, index
+                                    )
+                                    logger.success(
+                                        f"[{emulator_name}] ✅ "
+                                        f"{name} #{index} уже построено "
+                                        f"(Lv.{building['current_level']})"
+                                    )
+                                    self.update_building_after_construction(
+                                        emulator_id, name, index,
+                                        actual_level=building['current_level']
+                                    )
+                                    building_level = building['current_level']
+                                    building_action = 'upgrade'
+                                    building_status = building['status']
+                                    # Пропускаем к обычной проверке ниже
+                                else:
+                                    # Не найдено — реально не построено
+                                    return {
+                                        'name': name,
+                                        'index': index,
+                                        'current_level': 0,
+                                        'target_level': target,
+                                        'is_lord': False,
+                                        'action': 'build'
+                                    }
+                            else:
+                                logger.debug(
+                                    f"[{emulator_name}] 🏗️ {name} #{index}: "
+                                    f"требуется постройка"
+                                )
+                                return {
+                                    'name': name,
+                                    'index': index,
+                                    'current_level': 0,
+                                    'target_level': target,
+                                    'is_lord': False,
+                                    'action': 'build'
+                                }
 
-                        # Автосканирование если level=0 и action='upgrade'
                         if building_level == 0 and building_action == 'upgrade':
                             if auto_scan:
                                 logger.warning(
-                                    f"[{emulator_name}] ⚠️ {name} #{index}: уровень неизвестен, сканируем...")
-                                success = self.scan_building_level(emulator, name, index)
-
+                                    f"[{emulator_name}] ⚠️ {name} #{index}: "
+                                    f"уровень неизвестен, сканируем..."
+                                )
+                                success = self.scan_building_level(
+                                    emulator, name, index
+                                )
                                 if not success:
-                                    logger.error(f"[{emulator_name}] ❌ Не удалось просканировать {name} #{index}")
+                                    logger.error(
+                                        f"[{emulator_name}] ❌ Не удалось "
+                                        f"просканировать {name} #{index}"
+                                    )
                                     continue
-
-                                building = self.get_building(emulator_id, name, index)
+                                building = self.get_building(
+                                    emulator_id, name, index
+                                )
                                 building_level = building['current_level']
                                 building_status = building['status']
                             else:
-                                logger.warning(
-                                    f"[{emulator_name}] ⚠️ {name} #{index}: уровень неизвестен (level=0), пропускаем")
                                 continue
 
-                        # Проверка уровня Лорда
                         if building_level + 1 > lord_level:
-                            logger.debug(
-                                f"[{emulator_name}] ⏸️ {name} #{index}: уровень {building_level + 1} > Лорд {lord_level}")
                             continue
 
-                        # Добавляем кандидата
-                        if (building_status != 'upgrading' and building_level < target):
+                        if (building_status != 'upgrading'
+                                and building_level < target):
                             candidates.append({
                                 'name': name,
                                 'index': index,
                                 'current_level': building_level,
                                 'target_level': target,
-                                'is_lord': (name == "Лорд"),
-                                'action': building_action  # ← ИЗ БД!
+                                'is_lord': False,
+                                'action': building_action
                             })
 
-                # Выбираем лучшего кандидата
-                if candidates:
-                    if count == 1:
-                        # Для count=1: выбираем с МАКСИМАЛЬНЫМ уровнем
-                        best_candidate = max(candidates, key=lambda x: x['current_level'])
-                        logger.debug(f"[{emulator_name}] ✅ Выбрано {name} #{best_candidate['index']} "
-                                     f"(уровень {best_candidate['current_level']} - максимальный, качаем одно здание)")
-                    else:
-                        # Для count>1: выбираем с МИНИМАЛЬНЫМ уровнем
-                        best_candidate = min(candidates, key=lambda x: x['current_level'])
-                        logger.debug(f"[{emulator_name}] ✅ Выбрано {name} #{best_candidate['index']} "
-                                     f"(уровень {best_candidate['current_level']} - минимальный среди доступных)")
+                    if candidates:
+                        # Выбираем с минимальным уровнем
+                        best = min(candidates, key=lambda c: c['current_level'])
+                        return best
+                    continue
 
-                    return best_candidate
-
-            # УНИКАЛЬНОЕ ЗДАНИЕ (один экземпляр)
-            else:
+                # ─── УНИКАЛЬНОЕ ЗДАНИЕ ───
                 building = self.get_building(emulator_id, name, None)
 
-                # Если здание не найдено в БД и требует постройки
                 if not building:
-                    if config_action == 'build':
-                        if self._can_construct_building(emulator_id, name):
+                    logger.debug(
+                        f"[{emulator_name}] ⏸️ {name}: здания нет в БД"
+                    )
+                    continue
+
+                building_action = building['action']
+                building_level = building['current_level']
+                building_status = building['status']
+
+                # ── BUILD ре-верификация (unique) ──
+                if building_action == 'build' and building_level == 0:
+                    if is_past_config:
+                        logger.info(
+                            f"[{emulator_name}] 🔍 {name}: build из "
+                            f"lord_{check_level} (текущий Лорд {lord_level})"
+                            f" — ре-верификация..."
+                        )
+                        scan_ok = self.scan_building_level(
+                            emulator, name, None,
+                            force_verify=True
+                        )
+                        if scan_ok:
+                            # scan_building_level обновил current_level в БД
+                            building = self.get_building(
+                                emulator_id, name, None
+                            )
+                            logger.success(
+                                f"[{emulator_name}] ✅ {name} уже "
+                                f"построено (Lv.{building['current_level']})"
+                                f" — обновляю action → upgrade"
+                            )
+                            self.update_building_after_construction(
+                                emulator_id, name, None,
+                                actual_level=building['current_level']
+                            )
+                            # Перечитываем и проверяем нужен ли апгрейд
+                            building_level = building['current_level']
+                            building_action = 'upgrade'
+                            building_status = building['status']
+                            # Проваливаемся к обычной проверке ниже
+                        else:
+                            # Не найдено в панели — реально не построено
+                            logger.debug(
+                                f"[{emulator_name}] 🏗️ {name}: "
+                                f"подтверждено — не построено"
+                            )
                             return {
                                 'name': name,
                                 'index': None,
                                 'current_level': 0,
                                 'target_level': target,
                                 'is_lord': (name == "Лорд"),
-                                'action': 'build'  # ← Здесь можем использовать 'build' т.к. здания нет в БД
+                                'action': 'build'
                             }
-                    continue
+                    else:
+                        # Текущий конфиг — обычное поведение
+                        logger.debug(
+                            f"[{emulator_name}] 🏗️ {name}: требуется постройка"
+                        )
+                        return {
+                            'name': name,
+                            'index': None,
+                            'current_level': 0,
+                            'target_level': target,
+                            'is_lord': (name == "Лорд"),
+                            'action': 'build'
+                        }
 
-                building_action = building['action']  # ← action ИЗ БД!
-                building_level = building['current_level']
-                building_status = building['status']
-
-                # Если здание нужно построить - возвращаем его!
-                if building_action == 'build' and building_level == 0:
-                    logger.debug(f"[{emulator_name}] 🏗️ {name}: требуется постройка")
-                    return {
-                        'name': name,
-                        'index': None,
-                        'current_level': 0,
-                        'target_level': target,
-                        'is_lord': (name == "Лорд"),
-                        'action': 'build'
-                    }
-
-                # Автосканирование если level=0 и action='upgrade'
                 if building_level == 0 and building_action == 'upgrade':
                     if auto_scan:
-                        logger.warning(f"[{emulator_name}] ⚠️ {name}: уровень неизвестен, сканируем...")
-                        success = self.scan_building_level(emulator, name, None)
-
+                        logger.warning(
+                            f"[{emulator_name}] ⚠️ {name}: уровень "
+                            f"неизвестен, сканируем..."
+                        )
+                        success = self.scan_building_level(
+                            emulator, name, None
+                        )
                         if not success:
-                            logger.error(f"[{emulator_name}] ❌ Не удалось просканировать {name}")
+                            logger.error(
+                                f"[{emulator_name}] ❌ Не удалось "
+                                f"просканировать {name}"
+                            )
                             continue
-
-                        building = self.get_building(emulator_id, name, None)
+                        building = self.get_building(
+                            emulator_id, name, None
+                        )
                         building_level = building['current_level']
                         building_status = building['status']
                     else:
-                        logger.warning(f"[{emulator_name}] ⚠️ {name}: уровень неизвестен (level=0), пропускаем")
                         continue
 
-                # Проверка уровня Лорда
                 if building_level + 1 > lord_level:
-                    logger.debug(f"[{emulator_name}] ⏸️ {name}: уровень {building_level + 1} > Лорд {lord_level}")
                     continue
 
-                # Возвращаем уникальное здание
-                if (building_status != 'upgrading' and building_level < target):
+                if (building_status != 'upgrading'
+                        and building_level < target):
                     return {
                         'name': name,
                         'index': None,
                         'current_level': building_level,
                         'target_level': target,
                         'is_lord': (name == "Лорд"),
-                        'action': building_action  # ← ИЗ БД!
+                        'action': building_action
                     }
 
-        # 4. Все здания достигли целевого уровня
+        # 4. Все здания во ВСЕХ уровнях достигли целевого уровня
         return None
 
     def update_building_after_construction(self, emulator_id: int, building_name: str,
