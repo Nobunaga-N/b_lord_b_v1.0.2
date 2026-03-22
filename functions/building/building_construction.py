@@ -560,8 +560,8 @@ class BuildingConstruction:
                 swipe(emulator,
                       self.SWIPE_START_X, self.SWIPE_START_Y,
                       self.SWIPE_END_X, self.SWIPE_END_Y,
-                      300)
-                time.sleep(1)
+                      600)
+                time.sleep(2)
 
             result = find_image(emulator, template_path, threshold=self.THRESHOLD_BUILDING)
             if result:
