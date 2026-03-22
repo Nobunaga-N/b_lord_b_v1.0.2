@@ -505,6 +505,166 @@ class BuildingUpgrade:
         logger.warning(f"[{emulator_name}] ⚠️ OCR не нашёл текст 'Ускорить'")
         return None
 
+    def _open_speedup_window(self, emulator: Dict) -> bool:
+        """
+        Открыть окно ускорения (клик по иконке "Ускорить")
+        НЕ закрывает окно после открытия (в отличие от _parse_upgrade_timer).
+
+        Returns:
+            bool: True если окно открыто
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        # Попытка 1: Template matching
+        thresholds = [0.75, 0.65, 0.55]
+
+        for threshold in thresholds:
+            for attempt in range(3):
+                result = find_image(
+                    emulator, self.TEMPLATES['speedup_icon'],
+                    threshold=threshold
+                )
+                if result:
+                    center_x, center_y = result
+                    logger.debug(f"[{emulator_name}] ✅ Иконка 'Ускорить' найдена "
+                                 f"({center_x}, {center_y}), порог {threshold}")
+                    tap(emulator, x=center_x, y=center_y)
+                    time.sleep(1.5)
+                    return True
+                time.sleep(0.3)
+
+        # Попытка 2: OCR fallback
+        speedup_coords = self._find_speedup_by_ocr(emulator)
+        if speedup_coords:
+            center_x, center_y = speedup_coords
+            logger.debug(f"[{emulator_name}] ✅ 'Ускорить' через OCR ({center_x}, {center_y})")
+            tap(emulator, x=center_x, y=center_y)
+            time.sleep(1.5)
+            return True
+
+        logger.warning(f"[{emulator_name}] ❌ Иконка 'Ускорить' не найдена")
+        return False
+
+    def speedup_lord(self, emulator: Dict) -> Dict:
+        """
+        Автоускорение Лорда после постановки на улучшение.
+
+        Вызывается ПОСЛЕ upgrade_building() вернул (True, timer > 0).
+        Бот находится на экране здания (окно ускорения закрыто).
+
+        Алгоритм:
+        1. Кликнуть "Ускорить" → открыть окно
+        2. Спарсить таймер
+        3. Кликнуть "Автоускорение"
+        4. Три сценария:
+           a1) "Подтвердить" → Лорд мгновенно (кнопка "Автоускорение" пропала)
+           a2) "Подтвердить" → не хватило ("Автоускорение" видна) → парсим остаток
+           б)  "Подтвердить" не появилась → нет ускорялок вообще
+
+        Returns:
+            dict: {'status': str, 'timer_seconds': int|None}
+            status: 'instant_upgrade' | 'timer_remaining' | 'no_speedups' | 'error'
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        logger.info(f"[{emulator_name}] 👑 Автоускорение Лорда...")
+
+        # ШАГ 1: Открыть окно ускорения
+        if not self._open_speedup_window(emulator):
+            logger.warning(f"[{emulator_name}] ⚠️ Не удалось открыть окно ускорения — "
+                           f"возможно Лорд уже улучшился мгновенно")
+            return {'status': 'instant_upgrade', 'timer_seconds': None}
+
+        # ШАГ 2: Парсим таймер
+        initial_timer = self._extract_timer_from_window(emulator)
+        if initial_timer:
+            logger.info(f"[{emulator_name}] ⏱️ Таймер Лорда до ускорения: "
+                        f"{self._format_time(initial_timer)}")
+
+        # ШАГ 3: Кликнуть "Автоускорение"
+        auto_btn = find_image(
+            emulator, self.TEMPLATES['button_auto_speedup'],
+            threshold=self.THRESHOLD_BUTTON
+        )
+
+        if not auto_btn:
+            logger.warning(f"[{emulator_name}] ⚠️ Кнопка 'Автоускорение' не найдена")
+            press_key(emulator, "ESC")
+            time.sleep(0.5)
+            return {'status': 'error', 'timer_seconds': initial_timer}
+
+        cx, cy = auto_btn
+        logger.debug(f"[{emulator_name}] Клик 'Автоускорение' ({cx}, {cy})")
+        tap(emulator, x=cx, y=cy)
+        time.sleep(2)
+
+        # ШАГ 4: Ищем "Подтвердить"
+        confirm = find_image(
+            emulator, self.TEMPLATES['button_confirm'],
+            threshold=self.THRESHOLD_BUTTON
+        )
+
+        if confirm:
+            # ═══ СЦЕНАРИЙ (а): Окно подтверждения появилось ═══
+            logger.info(f"[{emulator_name}] ✅ Кликаем 'Подтвердить'")
+            tap(emulator, x=confirm[0], y=confirm[1])
+            time.sleep(3)
+
+            # Проверяем: осталась ли "Автоускорение"?
+            auto_check = find_image(
+                emulator, self.TEMPLATES['button_auto_speedup'],
+                threshold=self.THRESHOLD_BUTTON
+            )
+
+            if auto_check:
+                # ─── (а2): Ускорений не хватило ───
+                logger.info(f"[{emulator_name}] ⏳ Ускорений не хватило")
+                remaining = self._extract_timer_from_window(emulator)
+                if remaining:
+                    logger.info(f"[{emulator_name}] ⏱️ Осталось: {self._format_time(remaining)}")
+                press_key(emulator, "ESC")
+                time.sleep(0.5)
+                return {'status': 'timer_remaining', 'timer_seconds': remaining}
+            else:
+                # ─── (а1): Лорд улучшился мгновенно ───
+                logger.success(f"[{emulator_name}] 👑🎉 Лорд улучшился мгновенно!")
+                return {'status': 'instant_upgrade', 'timer_seconds': None}
+
+        else:
+            # ═══ СЦЕНАРИЙ (б): "Подтвердить" не появилась — ускорялок нет ═══
+            logger.info(f"[{emulator_name}] ⚠️ Ускорялок нет на аккаунте")
+
+            # Повторный клик "Автоускорение" для вызова окна "Нет предметов"
+            auto_retry = find_image(
+                emulator, self.TEMPLATES['button_auto_speedup'],
+                threshold=self.THRESHOLD_BUTTON
+            )
+
+            if auto_retry:
+                tap(emulator, x=auto_retry[0], y=auto_retry[1])
+                time.sleep(2)
+
+                # Ищем шаблон "Нет предметов ускорения"
+                no_items = find_image(
+                    emulator, self.TEMPLATES['window_no_speedup_items'],
+                    threshold=self.THRESHOLD_WINDOW
+                )
+                if no_items:
+                    logger.info(f"[{emulator_name}] ✅ Подтверждено: нет предметов ускорения")
+
+                # Парсим время
+                remaining = self._extract_timer_from_window(emulator)
+                if remaining:
+                    logger.info(f"[{emulator_name}] ⏱️ Время: {self._format_time(remaining)}")
+
+                press_key(emulator, "ESC")
+                time.sleep(0.5)
+                return {'status': 'no_speedups', 'timer_seconds': remaining}
+
+            # Fallback: "Автоускорение" тоже пропала
+            logger.warning(f"[{emulator_name}] ⚠️ Кнопка 'Автоускорение' пропала")
+            return {'status': 'instant_upgrade', 'timer_seconds': None}
+
     def _extract_timer_from_window(self, emulator: Dict) -> Optional[int]:
         """
         Извлечь таймер из окна ускорения

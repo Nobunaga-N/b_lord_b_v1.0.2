@@ -18,6 +18,8 @@ from functions.building.building_construction import BuildingConstruction
 from functions.building.building_database import BuildingDatabase
 from utils.logger import logger
 from utils.adb_controller import press_key
+from utils.adb_controller import press_key, execute_command, get_adb_device
+from core.game_launcher import GameLauncher
 
 
 class BuildingFunction(BaseFunction):
@@ -330,15 +332,30 @@ class BuildingFunction(BaseFunction):
 
                 detected_level = self.panel.last_detected_level
 
-                # ✅ ИСПРАВЛЕНО: убран лишний emulator_id, распаковка tuple
                 upgrade_success, timer_seconds = self.upgrade.upgrade_building(
                     self.emulator,
                     building_name=building_name,
                     building_index=building_index
                 )
 
-                if upgrade_success and timer_seconds and timer_seconds > 0:
-                    # Улучшение началось с таймером
+                # ═══════════════════════════════════════════════
+                # 🆕 ЛОРД: специальная обработка
+                # ═══════════════════════════════════════════════
+                if next_building['is_lord'] and upgrade_success:
+                    lord_result = self._handle_lord_upgrade(
+                        emulator_id, detected_level, current_level,
+                        timer_seconds, free_builder
+                    )
+                    if lord_result in ('upgraded', 'timer_set'):
+                        upgraded_count += 1
+                    # Всегда break — пока Лорд улучшается,
+                    # все остальные строители простаивают
+                    break
+
+                # ═══════════════════════════════════════════════
+                # Обычное здание (НЕ Лорд) — без изменений
+                # ═══════════════════════════════════════════════
+                elif upgrade_success and timer_seconds and timer_seconds > 0:
                     timer_finish = datetime.now() + timedelta(seconds=timer_seconds)
                     self.db.set_building_upgrading(
                         emulator_id, building_name, building_index,
@@ -351,7 +368,6 @@ class BuildingFunction(BaseFunction):
                                    f"({self._format_time(timer_seconds)})")
 
                 elif upgrade_success and (timer_seconds == 0 or timer_seconds is None):
-                    # Мгновенное завершение (помощь альянса)
                     new_level = (detected_level or current_level) + 1
                     self.db.update_building_level(
                         emulator_id, building_name, building_index, new_level
@@ -361,7 +377,6 @@ class BuildingFunction(BaseFunction):
                                    f"мгновенное улучшение → Lv.{new_level}")
 
                 else:
-                    # Неудача (нехватка ресурсов или ошибка)
                     self.db.freeze_emulator(emulator_id, hours=6,
                                             reason="Нехватка ресурсов")
                     logger.warning(f"[{self.emulator_name}] ❄️ Заморозка на 6 часов")
@@ -388,6 +403,143 @@ class BuildingFunction(BaseFunction):
         # ===== Критическая ошибка: ничего не сделали + был провал =====
         # return False → run() автоматически заморозит
         return False
+
+    def _handle_lord_upgrade(self, emulator_id: int, detected_level,
+                             current_level: int, initial_timer,
+                             builder_slot: int) -> str:
+        """
+        Специальная обработка улучшения Лорда.
+
+        После upgrade_building() — автоускорение + обработка результата.
+        Пока Лорд улучшается — все остальные строители простаивают.
+
+        Returns:
+            'upgraded' — Лорд улучшился мгновенно (игра перезапущена)
+            'timer_set' — Лорд улучшается, таймер записан
+            'failed' — ошибка
+        """
+        lord_level = detected_level or current_level
+        expected_new = lord_level + 1
+
+        logger.info(f"[{self.emulator_name}] 👑 Обработка Лорда "
+                    f"(Lv.{lord_level} → Lv.{expected_new})")
+
+        # Мгновенное завершение ДО автоускорения (помощь альянса)
+        if initial_timer is None or initial_timer == 0:
+            logger.info(f"[{self.emulator_name}] ⚡ Лорд завершился мгновенно "
+                        f"(до автоускорения)")
+            return self._lord_instant_finish(emulator_id, lord_level, expected_new)
+
+        # Таймер > 0 — пробуем автоускорение
+        speedup_result = self.upgrade.speedup_lord(self.emulator)
+        status = speedup_result['status']
+        remaining = speedup_result.get('timer_seconds')
+
+        if status == 'instant_upgrade':
+            return self._lord_instant_finish(emulator_id, lord_level, expected_new)
+
+        elif status in ('timer_remaining', 'no_speedups'):
+            timer_val = remaining or initial_timer
+            timer_finish = datetime.now() + timedelta(seconds=timer_val)
+            self.db.set_building_upgrading(
+                emulator_id, "Лорд", None,
+                timer_finish, builder_slot,
+                actual_level=lord_level
+            )
+            label = "частично ускорен" if status == 'timer_remaining' else "без ускорения"
+            logger.info(f"[{self.emulator_name}] ⏳ Лорд улучшается ({label}): "
+                        f"{self._format_time(timer_val)}. Строители простаивают.")
+            return 'timer_set'
+
+        else:  # error
+            logger.error(f"[{self.emulator_name}] ❌ Ошибка автоускорения Лорда")
+            timer_val = remaining or initial_timer
+            if timer_val and timer_val > 0:
+                timer_finish = datetime.now() + timedelta(seconds=timer_val)
+                self.db.set_building_upgrading(
+                    emulator_id, "Лорд", None,
+                    timer_finish, builder_slot,
+                    actual_level=lord_level
+                )
+            return 'timer_set'
+
+    def _lord_instant_finish(self, emulator_id: int, old_level: int,
+                             expected_new: int) -> str:
+        """
+        Обработка мгновенного улучшения Лорда.
+
+        1. Обновить уровень в БД
+        2. Закрыть игру (force-stop)
+        3. Перезапустить игру
+        4. Верифицировать уровень в панели навигации
+        """
+        logger.success(f"[{self.emulator_name}] 👑🎉 Лорд мгновенно! "
+                       f"Lv.{old_level} → Lv.{expected_new}")
+
+        # Предварительно обновляем БД
+        self.db.update_building_level(emulator_id, "Лорд", None, expected_new)
+
+        # Перезапуск игры (всплывающие окна не закрываются ESC)
+        logger.info(f"[{self.emulator_name}] 🔄 Перезапуск игры...")
+        if not self._restart_game_only():
+            logger.error(f"[{self.emulator_name}] ❌ Не удалось перезапустить игру")
+            return 'upgraded'
+
+        # Верификация уровня
+        logger.info(f"[{self.emulator_name}] 🔍 Верификация уровня Лорда...")
+        verify_ok = self.panel.navigate_to_building(
+            self.emulator, "Лорд",
+            building_index=None,
+            expected_level=expected_new
+        )
+
+        if verify_ok:
+            actual = self.panel.last_detected_level
+            if actual and actual != expected_new:
+                logger.error(
+                    f"[{self.emulator_name}] ❌ РАСХОЖДЕНИЕ! "
+                    f"Ожидали: {expected_new}, Факт: {actual}"
+                )
+                self.db.update_building_level(emulator_id, "Лорд", None, actual)
+                if actual < expected_new:
+                    logger.critical(
+                        f"[{self.emulator_name}] 🚨 Уровень НИЖЕ ожидаемого: "
+                        f"{actual} < {expected_new}"
+                    )
+            else:
+                logger.success(f"[{self.emulator_name}] ✅ Верификация OK: "
+                               f"Лорд Lv.{expected_new}")
+        else:
+            logger.warning(f"[{self.emulator_name}] ⚠️ Верификация не удалась. "
+                           f"БД: Lv.{expected_new}")
+
+        press_key(self.emulator, "ESC")
+        time.sleep(0.5)
+        return 'upgraded'
+
+    def _restart_game_only(self) -> bool:
+        """
+        Закрыть и перезапустить игру БЕЗ перезапуска эмулятора.
+        Используется после мгновенного улучшения Лорда.
+        """
+        package = "com.allstarunion.beastlord"
+
+        logger.info(f"[{self.emulator_name}] 🔄 force-stop игры...")
+        adb_address = get_adb_device(self.emulator['port'])
+        kill_cmd = f"adb -s {adb_address} shell am force-stop {package}"
+        result = execute_command(kill_cmd)
+        logger.debug(f"[{self.emulator_name}] force-stop: {result.strip()[:100]}")
+
+        time.sleep(3)
+
+        logger.info(f"[{self.emulator_name}] 🚀 Запуск игры...")
+        launcher = GameLauncher(self.emulator)
+        if not launcher.launch_and_wait():
+            logger.error(f"[{self.emulator_name}] ❌ Игра не запустилась")
+            return False
+
+        logger.success(f"[{self.emulator_name}] ✅ Игра перезапущена")
+        return True
 
     def _format_time(self, seconds: int) -> str:
         """Форматировать секунды в читаемый вид"""
