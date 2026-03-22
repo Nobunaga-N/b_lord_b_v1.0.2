@@ -244,7 +244,7 @@ class BuildingConstruction:
         7. Проверка через панель навигации
 
         Returns:
-            bool: True если успешно
+            Tuple[bool, Optional[int]]: (успех, уровень_здания или None)
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
@@ -252,42 +252,42 @@ class BuildingConstruction:
         logger.debug(f"[{emulator_name}] ШАГ 0: Проверка видимости иконки лопаты")
         if not self._ensure_shovel_visible(emulator):
             logger.error(f"[{emulator_name}] ❌ Не удалось добиться видимости лопаты")
-            return False
+            return False, None
 
         # ШАГ 1: Открываем меню постройки
         logger.debug(f"[{emulator_name}] ШАГ 1: Открываем меню постройки (клик лопаты)")
         if not self._open_construction_menu(emulator):
             logger.error(f"[{emulator_name}] ❌ Не удалось открыть меню постройки")
-            return False
+            return False, None
 
         # ШАГ 2: Выбор категории
         logger.debug(f"[{emulator_name}] ШАГ 2: Выбираем категорию")
         category = self._get_building_category(building_name)
         if not category:
             logger.error(f"[{emulator_name}] ❌ Категория не найдена для {building_name}")
-            return False
+            return False, None
 
         if not self._select_category(emulator, category):
             logger.error(f"[{emulator_name}] ❌ Не удалось выбрать категорию: {category}")
-            return False
+            return False, None
 
         # ШАГ 3: Поиск здания через свайпы + клик
         logger.debug(f"[{emulator_name}] ШАГ 3: Ищем и кликаем здание: {building_name}")
         if not self._find_and_click_building(emulator, building_name):
             logger.error(f"[{emulator_name}] ❌ Не удалось найти здание: {building_name}")
-            return False
+            return False, None
 
         # ШАГ 4: Клик "Подтвердить" (выбор места для здания)
         logger.debug(f"[{emulator_name}] ШАГ 4: Кликаем 'Подтвердить'")
         if not self._click_confirm(emulator):
             logger.error(f"[{emulator_name}] ❌ Не удалось кликнуть 'Подтвердить'")
-            return False
+            return False, None
 
         # ШАГ 5-6: Клик молоточка → клик "Построить" (окно закроется автоматически)
         logger.debug(f"[{emulator_name}] ШАГ 5-6: Кликаем молоточек и 'Построить'")
         if not self._click_hammer_and_build(emulator):
             logger.error(f"[{emulator_name}] ❌ Не удалось кликнуть молоточек/построить")
-            return False
+            return False, None
 
         # ШАГ 7: ПРОВЕРКА ЧЕРЕЗ ПАНЕЛЬ НАВИГАЦИИ
         logger.debug(f"[{emulator_name}] ШАГ 7: Проверяем постройку через панель навигации")
@@ -455,13 +455,14 @@ class BuildingConstruction:
 
         # Проверяем уровень снова
         time.sleep(2)
-        verification_result = self._verify_construction_in_panel(emulator, building_name, building_index)
-
-        if verification_result == "level_1":
-            logger.success(f"[{emulator_name}] ✅ Здание достроено, уровень: 1")
+        verification_result, actual_level = self._verify_construction_in_panel(
+            emulator, building_name, building_index
+        )
+        if verification_result == "level_found" and actual_level and actual_level >= 1:
+            logger.success(f"[{emulator_name}] ✅ Здание достроено, уровень: {actual_level}")
             return True
         else:
-            logger.error(f"[{emulator_name}] ❌ После достройки уровень != 1: {verification_result}")
+            logger.error(f"[{emulator_name}] ❌ После достройки статус: {verification_result}, уровень: {actual_level}")
             return False
 
     # ========================================
