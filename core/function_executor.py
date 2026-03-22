@@ -36,12 +36,12 @@ from functions.training.training import TrainingFunction
 # Порядок выполнения функций
 # ОБНОВЛЕНО: building и wilds в начале, tiles после диких (нужны отряды)
 FUNCTION_ORDER = [
-    'building',        # 1. Строительство
-    'training',        # 2. Тренировка войск  ← НОВОЕ
-    'wilds',           # 3. Дикие (запустить автоохоту)
-    'research',        # 4. Эволюция
-    'ponds',           # 5. Пополнение прудов
-    'feeding_zone',    # 6. Зона кормления
+    'wilds',           # 1. Дикие (запустить автоохоту ПЕРВЫМ)
+    'feeding_zone',    # 2. Зона кормления (сервисная — перед building)
+    'building',        # 3. Строительство
+    'training',        # 4. Тренировка войск
+    'research',        # 5. Эволюция
+    'ponds',           # 6. Пополнение прудов
     'mail_rewards',    # 7. Награды с почты
     'shield',          # 8. Щит
     'tiles',           # 9. Плитки
@@ -96,6 +96,9 @@ def execute_functions(emulator, active_functions, session_state=None,
 
     emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
     emulator_id = emulator.get('id')
+    # Сохраняем список активных функций в session_state
+    # (используется сервисными функциями типа feeding_zone)
+    session_state['_active_functions'] = list(active_functions)
 
     if not active_functions:
         logger.warning(f"[{emulator_name}] Нет активных функций для выполнения")

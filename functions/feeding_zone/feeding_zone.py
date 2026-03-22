@@ -65,49 +65,100 @@ class FeedingZoneFunction(BaseFunction):
     @staticmethod
     def get_next_event_time(emulator_id: int) -> Optional[datetime]:
         """
-        Когда зоне кормления потребуется эмулятор?
+        Зона кормления — сервисная функция.
+        НИКОГДА не триггерит запуск эмулятора самостоятельно.
 
-        У FeedingZone нет таймеров в БД — проверка идёт визуально
-        через иконку лапки на главном экране в can_execute().
+        Запускается только «заодно» когда эмулятор уже запущен
+        ради building или wilds (проверяется в can_execute).
 
-        Логика:
-        1. Функция заморожена → время разморозки
-        2. Иначе → datetime.now() (всегда готова, can_execute отфильтрует)
+        Returns:
+            None — всегда. Сервисная функция не создаёт событий.
         """
-        from utils.function_freeze_manager import function_freeze_manager
-
-        if function_freeze_manager.is_frozen(emulator_id, 'feeding_zone'):
-            unfreeze_at = function_freeze_manager.get_unfreeze_time(
-                emulator_id, 'feeding_zone'
-            )
-            if unfreeze_at:
-                return unfreeze_at
-            return None
-
-        # Всегда "готова" — реальная проверка в can_execute()
-        return datetime.now()
+        return None
 
     # ==================== can_execute / execute ====================
 
     def can_execute(self) -> bool:
         """
-        Можно ли выполнить пополнение?
+        Сервисная функция: запускается ТОЛЬКО при наличии building или wilds.
+        Один раз за сессию эмулятора.
 
-        Проверяем иконку лапки на главном экране:
-        - 'empty' (красная) → True, нужно пополнить
-        - 'ok' (зелёная) → False, ресурсы есть
-        - None (не удалось определить) → True, на всякий случай проверим
+        Порядок выполнения в FUNCTION_ORDER:
+        wilds → feeding_zone → building → ...
+
+        Поэтому к моменту вызова can_execute():
+        - wilds уже отработал и установил hunt_active=True (если запустил охоту)
+        - building ещё не выполнялся (feeding_zone идёт раньше)
+
+        Логика:
+        1. Ни building, ни wilds не в активных функциях → False
+        2. Уже выполнялась в этой сессии (done) → False
+        3. building активен → можно (выполнимся перед ним)
+        4. wilds активен и hunt_active=True → можно
+           (охота запущена, используем время ожидания)
+        5. wilds активен но hunt_active=False → нельзя
+           (wilds не запустил охоту — заморожен или пропущен)
+        6. Визуальная проверка иконки лапки
         """
+        # 1. Проверка контекста: есть ли building или wilds?
+        active_funcs = self.session_state.get('_active_functions', [])
+        has_building = 'building' in active_funcs
+        has_wilds = 'wilds' in active_funcs
+
+        if not has_building and not has_wilds:
+            logger.debug(
+                f"[{self.emulator_name}] 🍎 Зона Кормления: пропуск — "
+                f"ни building, ни wilds не активны"
+            )
+            return False
+
+        # 2. Уже выполнялась в этой сессии?
+        fz_state = self.session_state.get('feeding_zone', {})
+        if fz_state.get('done', False):
+            logger.debug(
+                f"[{self.emulator_name}] 🍎 Зона Кормления: "
+                f"уже проверена в этой сессии"
+            )
+            return False
+
+        # 3. building активен → запускаемся (перед ним в FUNCTION_ORDER)
+        if has_building:
+            pass  # → к визуальной проверке
+
+        # 4-5. wilds без building → проверяем hunt_active
+        elif has_wilds:
+            wilds_state = self.session_state.get('wilds', {})
+            if not wilds_state.get('hunt_active', False):
+                # wilds не запустил охоту (заморожен/пропущен) → нет смысла
+                logger.debug(
+                    f"[{self.emulator_name}] 🍎 Зона Кормления: пропуск — "
+                    f"автоохота не активна"
+                )
+                return False
+
+        # 6. Визуальная проверка иконки лапки
         status = detect_feeding_zone_status(self.emulator)
 
         if status == 'ok':
-            logger.debug(f"[{self.emulator_name}] 🟢 Зона Кормления: ресурсы есть, пропускаем")
+            logger.debug(
+                f"[{self.emulator_name}] 🟢 Зона Кормления: "
+                f"ресурсы есть, пропускаем"
+            )
+            self.session_state.setdefault('feeding_zone', {})['done'] = True
             return False
+
         elif status == 'empty':
-            logger.info(f"[{self.emulator_name}] 🔴 Зона Кормления: пуста, нужно пополнить!")
+            logger.info(
+                f"[{self.emulator_name}] 🔴 Зона Кормления: "
+                f"пуста, нужно пополнить!"
+            )
             return True
+
         else:
-            logger.warning(f"[{self.emulator_name}] ⚠️ Зона Кормления: не удалось определить статус, попробуем пополнить")
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ Зона Кормления: "
+                f"не удалось определить статус, попробуем пополнить"
+            )
             return True
 
     def execute(self):
@@ -149,6 +200,7 @@ class FeedingZoneFunction(BaseFunction):
             logger.success(
                 f"[{self.emulator_name}] ✅ Зона Кормления пополнена!"
             )
+            self.session_state.setdefault('feeding_zone', {})['done'] = True
             return True
         else:
             logger.warning(
