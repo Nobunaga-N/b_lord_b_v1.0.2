@@ -103,7 +103,7 @@ GRID_ROWS = [
 
 # Зона номинала (метка "1m", "5m", "10m", "15m", "1h" и т.д.)
 DENOM_ZONE = {
-    'x1': 28,   'y1': 3,
+    'x1': 28,  'y1': 3,
     'x2': 85,  'y2': 20,
 }
 
@@ -134,28 +134,61 @@ SWIPE_UP   = (270, 200, 270, 880, 600)   # Возврат вверх
 # TEMPLATE MATCHING — маппинг шаблонов
 # ═══════════════════════════════════════════════════
 
-TYPE_TEMPLATES = {
-    'universal':  TYPE_TEMPLATE_DIR / "type_universal.png",
-    'evolution':  TYPE_TEMPLATE_DIR / "type_evolution.png",
-    'training':   TYPE_TEMPLATE_DIR / "type_training.png",
-    'building':   TYPE_TEMPLATE_DIR / "type_building.png",
-}
-
-DENOM_TEMPLATES = {
-    '1m':  DENOM_TEMPLATE_DIR / "denom_1m.png",
-    '5m':  DENOM_TEMPLATE_DIR / "denom_5m.png",
-    '10m': DENOM_TEMPLATE_DIR / "denom_10m.png",
-    '15m': DENOM_TEMPLATE_DIR / "denom_15m.png",
-    '1h':  DENOM_TEMPLATE_DIR / "denom_1h.png",
-    '2h':  DENOM_TEMPLATE_DIR / "denom_2h.png",
-    '3h':  DENOM_TEMPLATE_DIR / "denom_3h.png",
-    '8h':  DENOM_TEMPLATE_DIR / "denom_8h.png",
-    '5d':  DENOM_TEMPLATE_DIR / "denom_5d.png",
-}
-
 # Пороги template matching
 THRESHOLD_TYPE = 0.70
 THRESHOLD_DENOM = 0.70
+
+
+def load_templates_from_dir(directory: Path, prefix: str
+                            ) -> Dict[str, List[Tuple[str, np.ndarray]]]:
+    """
+    Автозагрузка шаблонов из папки.
+
+    Имя файла: {prefix}_{name}.png или {prefix}_{name}_{variant}.png
+    Примеры:
+      type_universal.png        → тип 'universal'
+      type_universal_purple.png → тип 'universal' (вариант)
+      denom_15m.png             → номинал '15m'
+
+    Returns:
+        {name: [(filename, cv2_image), ...]}
+        Один name может иметь несколько вариантов шаблона.
+    """
+    templates: Dict[str, List[Tuple[str, np.ndarray]]] = {}
+
+    if not directory.exists():
+        logger.warning(f"⚠️ Папка шаблонов не найдена: {directory}")
+        return templates
+
+    for filepath in sorted(directory.glob(f"{prefix}_*.png")):
+        img = cv2.imread(str(filepath))
+        if img is None:
+            logger.warning(f"⚠️ Не удалось загрузить: {filepath.name}")
+            continue
+
+        # Парсим имя: type_universal_purple.png → name='universal'
+        stem = filepath.stem                       # type_universal_purple
+        after_prefix = stem[len(prefix) + 1:]      # universal_purple
+        # Имя — первая часть до _ (или всё если нет варианта)
+        parts = after_prefix.split('_')
+        name = parts[0]                            # universal
+
+        if name not in templates:
+            templates[name] = []
+        templates[name].append((filepath.name, img))
+
+        variant = '_'.join(parts[1:]) if len(parts) > 1 else 'default'
+        logger.debug(
+            f"  📐 Шаблон: {filepath.name} → "
+            f"{name} [{variant}] {img.shape[1]}x{img.shape[0]}px"
+        )
+
+    total = sum(len(v) for v in templates.values())
+    logger.info(
+        f"📂 Загружено {total} шаблонов из {directory.name}/ "
+        f"({len(templates)} уникальных)"
+    )
+    return templates
 
 # Номинал → секунды
 DENOM_SECONDS = {
@@ -251,15 +284,15 @@ def ocr_quantity(crop: np.ndarray, ocr: OCREngine,
 
 
 def match_best_template(crop: np.ndarray,
-                        templates: Dict[str, Path],
+                        templates: Dict[str, List[Tuple[str, np.ndarray]]],
                         threshold: float
                         ) -> Optional[Tuple[str, float]]:
     """
-    Template matching: найти лучший шаблон среди набора.
+    Template matching: найти лучший шаблон среди набора (с вариантами).
 
     Args:
         crop: изображение (BGR)
-        templates: {name: path_to_template}
+        templates: {name: [(filename, cv2_image), ...]}
         threshold: минимальный порог
 
     Returns:
@@ -271,25 +304,19 @@ def match_best_template(crop: np.ndarray,
     best_name = None
     best_conf = 0.0
 
-    for name, path in templates.items():
-        if not path.exists():
-            continue
+    for name, variants in templates.items():
+        for filename, template in variants:
+            # Проверяем размеры
+            if (template.shape[0] > crop.shape[0] or
+                    template.shape[1] > crop.shape[1]):
+                continue
 
-        template = cv2.imread(str(path))
-        if template is None:
-            continue
+            result = cv2.matchTemplate(crop, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
 
-        # Проверяем размеры
-        if (template.shape[0] > crop.shape[0] or
-                template.shape[1] > crop.shape[1]):
-            continue
-
-        result = cv2.matchTemplate(crop, template, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, _ = cv2.minMaxLoc(result)
-
-        if max_val > best_conf:
-            best_conf = max_val
-            best_name = name
+            if max_val > best_conf:
+                best_conf = max_val
+                best_name = name
 
     if best_name and best_conf >= threshold:
         return (best_name, best_conf)
@@ -495,18 +522,18 @@ def parse_screen(screenshot: np.ndarray, ocr: OCREngine,
     h, w = screenshot.shape[:2]
     ts = datetime.now().strftime('%H%M%S') if save_debug else ""
 
-    # Загружаем шаблоны (проверяем доступность)
-    type_available = {k: v for k, v in TYPE_TEMPLATES.items() if v.exists()}
-    denom_available = {k: v for k, v in DENOM_TEMPLATES.items() if v.exists()}
+    # Загружаем шаблоны
+    type_templates = load_templates_from_dir(TYPE_TEMPLATE_DIR, "type")
+    denom_templates = load_templates_from_dir(DENOM_TEMPLATE_DIR, "denom")
 
-    if not type_available:
+    if not type_templates:
         logger.error(
             f"❌ Нет шаблонов типов в {TYPE_TEMPLATE_DIR}/\n"
             f"   Сначала запустите --extract и нарежьте шаблоны!"
         )
         return {}
 
-    if not denom_available:
+    if not denom_templates:
         logger.error(
             f"❌ Нет шаблонов номиналов в {DENOM_TEMPLATE_DIR}/\n"
             f"   Сначала запустите --extract и нарежьте шаблоны!"
@@ -515,8 +542,8 @@ def parse_screen(screenshot: np.ndarray, ocr: OCREngine,
 
     logger.info(
         f"\n{'='*60}\n"
-        f"ПРОХОД {pass_num}: шаблоны типов={len(type_available)}, "
-        f"номиналов={len(denom_available)}\n"
+        f"ПРОХОД {pass_num}: типов={len(type_templates)}, "
+        f"номиналов={len(denom_templates)}\n"
         f"{'='*60}"
     )
 
@@ -540,7 +567,7 @@ def parse_screen(screenshot: np.ndarray, ocr: OCREngine,
             # ── 1. Template match ТИП ──
             type_crop = crop_zone(cell, TYPE_ZONE)
             type_match = match_best_template(
-                type_crop, type_available, THRESHOLD_TYPE
+                type_crop, type_templates, THRESHOLD_TYPE
             )
 
             if type_match is None:
@@ -553,7 +580,7 @@ def parse_screen(screenshot: np.ndarray, ocr: OCREngine,
             # ── 2. Template match НОМИНАЛ ──
             denom_crop = crop_zone(cell, DENOM_ZONE)
             denom_match = match_best_template(
-                denom_crop, denom_available, THRESHOLD_DENOM
+                denom_crop, denom_templates, THRESHOLD_DENOM
             )
 
             if denom_match is None:
