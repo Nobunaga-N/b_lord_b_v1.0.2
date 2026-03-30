@@ -1,13 +1,17 @@
 """
 Тест парсинга ускорений из Рюкзака (вкладка "Ускорение")
 
-Рюкзак содержит ВСЕ ускорения эмулятора в виде сетки 4×N.
+Рюкзак содержит ВСЕ ускорения эмулятора в виде сетки 4×6.
 Каждая ячейка: иконка типа + метка номинала + количество.
 
 Определение:
   - Тип ускорения  → template matching (universal/evolution/training/building)
-  - Номинал        → template matching (1m/5m/15m/1h/2h/8h/5d)
+  - Номинал        → template matching (1m/5m/10m/15m/1h/2h/3h/8h/1d/5d)
   - Количество     → OCR (raw crop, scale 5x, чёрные поля)
+
+Шаблоны загружаются автоматически из папок:
+  data/templates/speedups/backpack/types/   — type_{name}[_{variant}].png
+  data/templates/speedups/backpack/denoms/  — denom_{name}[_{variant}].png
 
 Режимы:
   --extract    Диагностика: сохраняет полный скриншот + нарезанные ячейки
@@ -15,16 +19,14 @@
   --parse      Полный парсинг (2 прохода со свайпом) + template match + OCR
   --single     Один проход без свайпа (быстрая итерация)
 
-Шаблоны: data/templates/speedups/backpack/types/ и denoms/
-
 Запуск:
   python tests/test_backpack_parser.py --extract
   python tests/test_backpack_parser.py --parse
   python tests/test_backpack_parser.py --single
 
-Эмулятор: ID=1, порт=5556 (переопределить: --id / --port)
+Эмулятор: ID=7, порт=5568 (переопределить: --id / --port)
 
-Версия: 1.0
+Версия: 1.1
 """
 
 import sys
@@ -53,8 +55,8 @@ from utils.adb_controller import swipe
 # НАСТРОЙКИ ЭМУЛЯТОРА
 # ═══════════════════════════════════════════════════
 
-DEFAULT_EMULATOR_ID = 7
-DEFAULT_EMULATOR_PORT = 5568
+DEFAULT_EMULATOR_ID = 5
+DEFAULT_EMULATOR_PORT = 5564
 
 DEBUG_DIR = PROJECT_ROOT / "data" / "screenshots" / "debug" / "backpack_parser"
 
@@ -66,11 +68,10 @@ DENOM_TEMPLATE_DIR = TEMPLATE_DIR / "denoms"
 # ═══════════════════════════════════════════════════
 # СЕТКА РЮКЗАКА (540×960, вкладка "Ускорение")
 #
-# Предварительные значения — уточняются через --extract.
-# Ячейки расположены в 4 столбца × N строк.
+# 4 столбца × 6 рядов = 24 ячейки на экране.
+# Координаты захардкожены (ряды неравномерные).
 # ═══════════════════════════════════════════════════
 
-# Границы столбцов (x1, x2) для каждого из 4 столбцов
 GRID_COLS = [
     (15,  131),   # Столбец 0
     (150, 264),   # Столбец 1
@@ -78,8 +79,6 @@ GRID_COLS = [
     (415, 532),   # Столбец 3
 ]
 
-# Границы строк (y1, y2) — неравномерные, захардкожены
-# 6 рядов × 4 столбца = 24 ячейки на экране
 GRID_ROWS = [
     (126, 240),   # Ряд 0
     (264, 375),   # Ряд 1
@@ -101,43 +100,117 @@ GRID_ROWS = [
 # └──────────────────────┘
 # ═══════════════════════════════════════════════════
 
-# Зона номинала (метка "1m", "5m", "10m", "15m", "1h" и т.д.)
+# Зона шире шаблона на ~6px с каждой стороны для скольжения matchTemplate.
+# Шаблоны denom ~57×17px, зона ~69×26px → 12px скольжения по X, 9px по Y.
 DENOM_ZONE = {
-    'x1': 28,  'y1': 3,
-    'x2': 85,  'y2': 20,
+    'x1': 22,  'y1': 0,
+    'x2': 91,  'y2': 26,
 }
 
-# Зона иконки типа (центральная часть)
+# Зона шире шаблона на ~4px с каждой стороны для скольжения matchTemplate.
+# Шаблоны type ~102×65px, зона ~110×73px.
 TYPE_ZONE = {
-    'x1': 8,   'y1': 20,
-    'x2': 110, 'y2': 85,
+    'x1': 4,   'y1': 16,
+    'x2': 114, 'y2': 89,
 }
 
-# Зона количества (крупные белые цифры внизу)
 QTY_ZONE = {
     'x1': 0,   'y1': 88,
     'x2': 114, 'y2': 110,
 }
 
 # OCR параметры для количества
-QTY_SCALE = 5             # Масштаб увеличения для OCR
-QTY_PADDING = 25          # Чёрные поля вокруг кропа
+QTY_SCALE = 5
+QTY_PADDING = 25
 
 # ═══════════════════════════════════════════════════
 # СВАЙПЫ
 # ═══════════════════════════════════════════════════
 
-SWIPE_DOWN = (270, 880, 270, 200, 600)   # Прокрутка вниз
-SWIPE_UP   = (270, 200, 270, 880, 600)   # Возврат вверх
+SWIPE_DOWN = (270, 880, 270, 200, 600)
+SWIPE_UP   = (270, 200, 270, 880, 600)
 
 # ═══════════════════════════════════════════════════
-# TEMPLATE MATCHING — маппинг шаблонов
+# ПОРОГИ И КОНСТАНТЫ
 # ═══════════════════════════════════════════════════
 
-# Пороги template matching
 THRESHOLD_TYPE = 0.70
 THRESHOLD_DENOM = 0.70
 
+DENOM_SECONDS = {
+    '1m': 60, '5m': 300, '10m': 600, '15m': 900,
+    '1h': 3600, '2h': 7200, '3h': 10800, '8h': 28800,
+    '1d': 86400, '5d': 432000,
+}
+
+DENOM_ORDER = ['1m', '5m', '10m', '15m', '1h', '2h', '3h', '8h', '1d', '5d']
+
+
+# ═══════════════════════════════════════════════════
+# УТИЛИТЫ
+# ═══════════════════════════════════════════════════
+
+def get_emulator(emu_id: int, port: int) -> dict:
+    return {"id": emu_id, "name": f"test_backpack_{emu_id}", "port": port}
+
+
+def ensure_debug_dir():
+    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_cell_bounds(col: int, row: int) -> Tuple[int, int, int, int]:
+    """
+    Получить абсолютные координаты ячейки (x1, y1, x2, y2).
+    """
+    x1, x2 = GRID_COLS[col]
+    y1, y2 = GRID_ROWS[row]
+    return (x1, y1, x2, y2)
+
+
+def crop_zone(cell: np.ndarray, zone: dict) -> np.ndarray:
+    """Вырезать зону из ячейки по относительным координатам."""
+    h, w = cell.shape[:2]
+    x1 = max(0, zone['x1'])
+    y1 = max(0, zone['y1'])
+    x2 = min(w, zone['x2'])
+    y2 = min(h, zone['y2'])
+    return cell[y1:y2, x1:x2]
+
+
+def try_parse_quantity(text: str) -> Optional[int]:
+    """
+    Распознать текст как число количества.
+    Включает фикс для однозначных чисел, которые OCR
+    читает как кириллические буквы (1→'г', 5→'б').
+    """
+    cleaned = text.strip()
+
+    # Фикс: OCR путает одиночные цифры с кириллицей
+    SINGLE_DIGIT_FIXES = {
+        'г': '1', 'i': '1', 'l': '1', '|': '1',
+        'б': '6', 'в': '8', 'з': '3', 'о': '0',
+        'ч': '4', 'ь': '6', 'э': '9',
+    }
+    if len(cleaned) == 1 and cleaned in SINGLE_DIGIT_FIXES:
+        return int(SINGLE_DIGIT_FIXES[cleaned])
+
+    cleaned = re.sub(r'^[^0-9]+', '', cleaned)
+    cleaned = re.sub(r'[^0-9]+$', '', cleaned)
+    cleaned = cleaned.replace(',', '').replace('.', '')
+
+    if cleaned.isdigit() and len(cleaned) <= 6:
+        return int(cleaned)
+    return None
+
+
+def denom_sort_key(item):
+    d = item[0] if isinstance(item, tuple) else item
+    return DENOM_ORDER.index(d) if d in DENOM_ORDER else 99
+
+
+# ═══════════════════════════════════════════════════
+# АВТОЗАГРУЗКА ШАБЛОНОВ
+# ═══════════════════════════════════════════════════
 
 def load_templates_from_dir(directory: Path, prefix: str
                             ) -> Dict[str, List[Tuple[str, np.ndarray]]]:
@@ -169,7 +242,6 @@ def load_templates_from_dir(directory: Path, prefix: str
         # Парсим имя: type_universal_purple.png → name='universal'
         stem = filepath.stem                       # type_universal_purple
         after_prefix = stem[len(prefix) + 1:]      # universal_purple
-        # Имя — первая часть до _ (или всё если нет варианта)
         parts = after_prefix.split('_')
         name = parts[0]                            # universal
 
@@ -190,67 +262,65 @@ def load_templates_from_dir(directory: Path, prefix: str
     )
     return templates
 
-# Номинал → секунды
-DENOM_SECONDS = {
-    '1m': 60, '5m': 300, '10m': 600, '15m': 900,
-    '1h': 3600, '2h': 7200, '3h': 10800, '8h': 28800, '5d': 432000,
-}
-
-DENOM_ORDER = ['1m', '5m', '10m', '15m', '1h', '2h', '3h', '8h', '5d']
-
 
 # ═══════════════════════════════════════════════════
-# УТИЛИТЫ
+# TEMPLATE MATCHING
 # ═══════════════════════════════════════════════════
 
-def get_emulator(emu_id: int, port: int) -> dict:
-    return {"id": emu_id, "name": f"test_backpack_{emu_id}", "port": port}
-
-
-def ensure_debug_dir():
-    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def get_cell_bounds(col: int, row: int) -> Tuple[int, int, int, int]:
+def match_best_template(crop: np.ndarray,
+                        templates: Dict[str, List[Tuple[str, np.ndarray]]],
+                        threshold: float,
+                        label: str = "",
+                        category: str = ""
+                        ) -> Optional[Tuple[str, float]]:
     """
-    Получить абсолютные координаты ячейки (x1, y1, x2, y2).
+    Template matching: найти лучший шаблон среди набора (с вариантами).
 
-    Args:
-        col: индекс столбца (0-3)
-        row: индекс строки (0-5)
+    Логирует топ-3 confidence для диагностики.
 
     Returns:
-        (x1, y1, x2, y2) — абсолютные пиксельные координаты
+        (best_name, confidence) или None
     """
-    x1, x2 = GRID_COLS[col]
-    y1, y2 = GRID_ROWS[row]
-    return (x1, y1, x2, y2)
+    if crop.size == 0:
+        return None
 
+    best_name = None
+    best_conf = 0.0
+    all_scores = []
 
-def crop_zone(cell: np.ndarray, zone: dict) -> np.ndarray:
-    """Вырезать зону из ячейки по относительным координатам."""
-    h, w = cell.shape[:2]
-    x1 = max(0, zone['x1'])
-    y1 = max(0, zone['y1'])
-    x2 = min(w, zone['x2'])
-    y2 = min(h, zone['y2'])
-    return cell[y1:y2, x1:x2]
+    for name, variants in templates.items():
+        for filename, template in variants:
+            if (template.shape[0] > crop.shape[0] or
+                    template.shape[1] > crop.shape[1]):
+                continue
 
+            result = cv2.matchTemplate(crop, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
 
-def try_parse_quantity(text: str) -> Optional[int]:
-    """
-    Распознать текст как число количества.
-    Убираем ведущие/завершающие не-цифры, парсим.
-    """
-    cleaned = text.strip()
-    cleaned = re.sub(r'^[^0-9]+', '', cleaned)
-    cleaned = re.sub(r'[^0-9]+$', '', cleaned)
-    cleaned = cleaned.replace(',', '').replace('.', '')
+            all_scores.append((name, filename, max_val))
 
-    if cleaned.isdigit() and len(cleaned) <= 6:
-        return int(cleaned)
+            if max_val > best_conf:
+                best_conf = max_val
+                best_name = name
+
+    # Логируем топ-3 для диагностики
+    if all_scores and label:
+        scores_sorted = sorted(all_scores, key=lambda x: -x[2])
+        top3 = scores_sorted[:3]
+        scores_str = ', '.join(
+            f"{n}({fn})={c:.3f}" for n, fn, c in top3
+        )
+        logger.debug(f"  [{label}] {category} scores: {scores_str}")
+
+    if best_name and best_conf >= threshold:
+        return (best_name, best_conf)
+
     return None
 
+
+# ═══════════════════════════════════════════════════
+# OCR КОЛИЧЕСТВА
+# ═══════════════════════════════════════════════════
 
 def ocr_quantity(crop: np.ndarray, ocr: OCREngine,
                  label: str = "") -> Optional[int]:
@@ -283,51 +353,9 @@ def ocr_quantity(crop: np.ndarray, ocr: OCREngine,
     return None
 
 
-def match_best_template(crop: np.ndarray,
-                        templates: Dict[str, List[Tuple[str, np.ndarray]]],
-                        threshold: float
-                        ) -> Optional[Tuple[str, float]]:
-    """
-    Template matching: найти лучший шаблон среди набора (с вариантами).
-
-    Args:
-        crop: изображение (BGR)
-        templates: {name: [(filename, cv2_image), ...]}
-        threshold: минимальный порог
-
-    Returns:
-        (best_name, confidence) или None
-    """
-    if crop.size == 0:
-        return None
-
-    best_name = None
-    best_conf = 0.0
-
-    for name, variants in templates.items():
-        for filename, template in variants:
-            # Проверяем размеры
-            if (template.shape[0] > crop.shape[0] or
-                    template.shape[1] > crop.shape[1]):
-                continue
-
-            result = cv2.matchTemplate(crop, template, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, _ = cv2.minMaxLoc(result)
-
-            if max_val > best_conf:
-                best_conf = max_val
-                best_name = name
-
-    if best_name and best_conf >= threshold:
-        return (best_name, best_conf)
-
-    return None
-
-
-def denom_sort_key(item):
-    d = item[0] if isinstance(item, tuple) else item
-    return DENOM_ORDER.index(d) if d in DENOM_ORDER else 99
-
+# ═══════════════════════════════════════════════════
+# MERGE ДВУХ ПРОХОДОВ
+# ═══════════════════════════════════════════════════
 
 def merge_passes(pass1: Dict[str, Dict[str, int]],
                  pass2: Dict[str, Dict[str, int]]
@@ -384,16 +412,14 @@ def mode_extract(emulator: dict, ocr: OCREngine):
     cv2.imwrite(str(full_path), screenshot)
     logger.info(f"📸 Полный скриншот: {full_path}")
 
-    # ── Аннотированный скриншот с сеткой ──
+    # Аннотированный скриншот с сеткой
     annotated = screenshot.copy()
-
     cell_count = 0
 
     for row in range(len(GRID_ROWS)):
         for col in range(len(GRID_COLS)):
             x1, y1, x2, y2 = get_cell_bounds(col, row)
 
-            # Проверяем границы
             if y2 > h:
                 continue
 
@@ -404,34 +430,30 @@ def mode_extract(emulator: dict, ocr: OCREngine):
             label = f"r{row}_c{col}"
             cell_count += 1
 
-            # ── Сохраняем полную ячейку ──
-            cell_path = DEBUG_DIR / f"{ts}_{label}_cell.png"
-            cv2.imwrite(str(cell_path), cell)
+            # Сохраняем полную ячейку
+            cv2.imwrite(str(DEBUG_DIR / f"{ts}_{label}_cell.png"), cell)
 
-            # ── Зона типа (иконка) ──
+            # Зона типа (иконка)
             type_crop = crop_zone(cell, TYPE_ZONE)
             if type_crop.size > 0:
                 cv2.imwrite(
-                    str(DEBUG_DIR / f"{ts}_{label}_type.png"),
-                    type_crop
+                    str(DEBUG_DIR / f"{ts}_{label}_type.png"), type_crop
                 )
 
-            # ── Зона номинала ──
+            # Зона номинала
             denom_crop = crop_zone(cell, DENOM_ZONE)
             if denom_crop.size > 0:
                 cv2.imwrite(
-                    str(DEBUG_DIR / f"{ts}_{label}_denom.png"),
-                    denom_crop
+                    str(DEBUG_DIR / f"{ts}_{label}_denom.png"), denom_crop
                 )
 
-            # ── Зона количества ──
+            # Зона количества
             qty_crop = crop_zone(cell, QTY_ZONE)
             if qty_crop.size > 0:
                 cv2.imwrite(
-                    str(DEBUG_DIR / f"{ts}_{label}_qty.png"),
-                    qty_crop
+                    str(DEBUG_DIR / f"{ts}_{label}_qty.png"), qty_crop
                 )
-                # OCR input (для проверки)
+                # OCR input
                 enlarged = cv2.resize(
                     qty_crop, None, fx=QTY_SCALE, fy=QTY_SCALE,
                     interpolation=cv2.INTER_CUBIC
@@ -443,15 +465,13 @@ def mode_extract(emulator: dict, ocr: OCREngine):
                     cv2.BORDER_CONSTANT, value=(0, 0, 0)
                 )
                 cv2.imwrite(
-                    str(DEBUG_DIR / f"{ts}_{label}_qty_ocr.png"),
-                    padded
+                    str(DEBUG_DIR / f"{ts}_{label}_qty_ocr.png"), padded
                 )
 
-            # ── OCR количества (для отладки) ──
+            # OCR количества (для отладки)
             qty_val = ocr_quantity(qty_crop, ocr, label)
 
-            # ── Рисуем на аннотированном ──
-            # Рамка ячейки
+            # Рисуем на аннотированном
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 1)
 
             # Зона типа (синим)
@@ -488,16 +508,14 @@ def mode_extract(emulator: dict, ocr: OCREngine):
     logger.info(f"\n📊 Нарезано {cell_count} ячеек")
     logger.info(f"📸 Аннотированный: {ann_path}")
     logger.info(f"📁 Debug: {DEBUG_DIR}")
-
     logger.info(
         f"\n💡 Следующие шаги:\n"
         f"   1. Откройте аннотированный скриншот и проверьте сетку\n"
-        f"   2. Скорректируйте GRID_COLS, GRID_Y_START, ROW_HEIGHT\n"
-        f"   3. Из *_type.png нарежьте шаблоны типов → "
+        f"   2. Из *_type.png нарежьте шаблоны типов → "
         f"{TYPE_TEMPLATE_DIR}/\n"
-        f"   4. Из *_denom.png нарежьте шаблоны номиналов → "
+        f"   3. Из *_denom.png нарежьте шаблоны номиналов → "
         f"{DENOM_TEMPLATE_DIR}/\n"
-        f"   5. Запустите --parse для проверки"
+        f"   4. Запустите --single для проверки"
     )
 
 
@@ -567,7 +585,8 @@ def parse_screen(screenshot: np.ndarray, ocr: OCREngine,
             # ── 1. Template match ТИП ──
             type_crop = crop_zone(cell, TYPE_ZONE)
             type_match = match_best_template(
-                type_crop, type_templates, THRESHOLD_TYPE
+                type_crop, type_templates, THRESHOLD_TYPE,
+                label=label, category="type"
             )
 
             if type_match is None:
@@ -580,7 +599,8 @@ def parse_screen(screenshot: np.ndarray, ocr: OCREngine,
             # ── 2. Template match НОМИНАЛ ──
             denom_crop = crop_zone(cell, DENOM_ZONE)
             denom_match = match_best_template(
-                denom_crop, denom_templates, THRESHOLD_DENOM
+                denom_crop, denom_templates, THRESHOLD_DENOM,
+                label=label, category="denom"
             )
 
             if denom_match is None:
@@ -588,6 +608,12 @@ def parse_screen(screenshot: np.ndarray, ocr: OCREngine,
                     f"  [{label}] тип={stype}({type_conf:.2f}), "
                     f"но номинал не определён!"
                 )
+                if save_debug:
+                    ensure_debug_dir()
+                    cv2.imwrite(
+                        str(DEBUG_DIR / f"{ts}_p{pass_num}_{label}_denom_FAIL.png"),
+                        denom_crop
+                    )
                 continue
 
             denom, denom_conf = denom_match
@@ -614,7 +640,7 @@ def parse_screen(screenshot: np.ndarray, ocr: OCREngine,
                 f"(type={type_conf:.2f}, denom={denom_conf:.2f})"
             )
 
-            # ── Debug сохранение ──
+            # Debug сохранение
             if save_debug:
                 ensure_debug_dir()
                 cv2.imwrite(
@@ -659,7 +685,7 @@ def mode_full_parse(emulator: dict, ocr: OCREngine):
     logger.info("РЕЖИМ: ПОЛНЫЙ ПАРСИНГ (2 прохода)")
     logger.info("=" * 60)
 
-    # ── Проход 1 ──
+    # Проход 1
     screenshot1 = get_screenshot(emulator)
     if screenshot1 is None:
         logger.error("❌ Не удалось получить скриншот!")
@@ -667,13 +693,13 @@ def mode_full_parse(emulator: dict, ocr: OCREngine):
 
     pass1 = parse_screen(screenshot1, ocr, pass_num=1, save_debug=True)
 
-    # ── Свайп вниз ──
+    # Свайп вниз
     logger.info("\n📜 Свайп вниз...")
     x1, y1, x2, y2, dur = SWIPE_DOWN
     swipe(emulator, x1=x1, y1=y1, x2=x2, y2=y2, duration=dur)
     time.sleep(1.0)
 
-    # ── Проход 2 ──
+    # Проход 2
     screenshot2 = get_screenshot(emulator)
     if screenshot2 is None:
         logger.error("❌ Не удалось получить скриншот после свайпа!")
@@ -681,12 +707,12 @@ def mode_full_parse(emulator: dict, ocr: OCREngine):
 
     pass2 = parse_screen(screenshot2, ocr, pass_num=2, save_debug=True)
 
-    # ── Свайп назад ──
+    # Свайп назад
     logger.info("\n📜 Свайп вверх (возврат)...")
     x1, y1, x2, y2, dur = SWIPE_UP
     swipe(emulator, x1=x1, y1=y1, x2=x2, y2=y2, duration=dur)
 
-    # ── Merge ──
+    # Merge
     merged = merge_passes(pass1, pass2)
 
     logger.info("\n" + "=" * 60)
@@ -747,7 +773,7 @@ def main():
     emulator = get_emulator(args.id, args.port)
 
     logger.info("=" * 60)
-    logger.info("ТЕСТ ПАРСИНГА РЮКЗАКА v1.0")
+    logger.info("ТЕСТ ПАРСИНГА РЮКЗАКА v1.1")
     logger.info(f"Эмулятор: ID={args.id}, порт={args.port}")
     logger.info("=" * 60)
 
