@@ -231,15 +231,10 @@ class OCREngine:
 
         try:
             result = self.ocr.predict(crop)
-            logger.debug(f"🔍 OCR result type: {type(result)}")
 
             if hasattr(result, '__iter__') and \
                not isinstance(result, (list, dict)):
                 result = list(result)
-                logger.debug(
-                    f"🔍 Converted generator to list, "
-                    f"length: {len(result)}"
-                )
 
         except Exception as e:
             logger.error(f"❌ Ошибка OCR: {e}")
@@ -252,49 +247,22 @@ class OCREngine:
         try:
             if isinstance(result, list) and len(result) > 0:
                 ocr_result = result[0]
-                logger.debug(f"🔍 OCRResult type: {type(ocr_result)}")
 
                 boxes = None
                 texts = None
                 scores = None
 
                 if hasattr(ocr_result, 'keys'):
-                    logger.debug(
-                        f"🔍 OCRResult keys: {list(ocr_result.keys())}"
-                    )
-
                     if 'dt_polys' in ocr_result:
                         boxes = ocr_result['dt_polys']
-                        logger.debug(
-                            f"🔍 Found dt_polys: type={type(boxes)}, "
-                            f"len={len(boxes)}"
-                        )
                     if 'rec_texts' in ocr_result:
                         texts = ocr_result['rec_texts']
-                        logger.debug(
-                            f"🔍 Found rec_texts: type={type(texts)}, "
-                            f"len={len(texts)}"
-                        )
                     if 'rec_scores' in ocr_result:
                         scores = ocr_result['rec_scores']
-                        logger.debug(
-                            f"🔍 Found rec_scores: type={type(scores)}, "
-                            f"len={len(scores)}"
-                        )
-
-                logger.debug(
-                    f"📦 Final data - boxes: {boxes is not None}, "
-                    f"texts: {texts is not None}, "
-                    f"scores: {scores is not None}"
-                )
 
                 if texts is not None and boxes is not None \
                    and scores is not None:
                     try:
-                        logger.debug(
-                            f"📦 Найдено элементов: {len(texts)}"
-                        )
-
                         for idx, (text, box, score) in enumerate(
                             zip(texts, boxes, scores)
                         ):
@@ -331,8 +299,8 @@ class OCREngine:
                                 'y_max': y1 + y_max,
                             })
 
-                        logger.info(
-                            f"📊 OCR распознал {len(elements)} элементов"
+                        logger.debug(
+                            f"OCR: распознано {len(elements)} элементов"
                         )
                     except Exception as e:
                         logger.error(
