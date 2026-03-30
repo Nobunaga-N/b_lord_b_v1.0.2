@@ -113,13 +113,13 @@ class PondsFunction(BaseFunction):
         Вызывается планировщиком для определения времени запуска.
 
         Логика:
-        1. Нет записи в БД → None (ещё не инициализировано)
+        1. Нет записи в БД → datetime.now() (первый запуск, нужен сразу)
         2. last_refill_time + max_interval ≤ now → datetime.now() (просрочено!)
         3. last_refill_time + max_interval > now → запланированное время
 
         Returns:
             datetime — когда нужен эмулятор
-            None — не нужен (ещё не инициализировано)
+            None — функция заморожена без времени разморозки
         """
         from utils.function_freeze_manager import function_freeze_manager
 
@@ -154,7 +154,7 @@ class PondsFunction(BaseFunction):
                     """)
             if not cursor.fetchone():
                 conn.close()
-                return None
+                return datetime.now()  # Первый запуск — нужен эмулятор
 
             cursor.execute("""
                         SELECT last_refill_time, pond_level 
@@ -166,7 +166,7 @@ class PondsFunction(BaseFunction):
             conn.close()
 
             if not row or not row['last_refill_time']:
-                return None
+                return datetime.now()  # Первый запуск — нужен эмулятор
 
             pond_level = row['pond_level'] or 7
             intervals = PondsFunction.INTERVALS.get(

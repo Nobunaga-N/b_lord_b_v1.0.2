@@ -6,14 +6,13 @@
 
 Определение:
   - Тип ускорения  → template matching (universal/evolution/training/building)
-  - Номинал        → template matching (1m/5m/10m/15m/1h/2h/3h/8h/1d/5d)
+  - Номинал        → OCR (raw crop, scale 5x, чёрные поля)
   - Количество     → OCR (raw crop, scale 5x, чёрные поля)
 
 Шаблоны загружаются из:
   data/templates/speedups/backpack/types/   — type_{name}[_{variant}].png
-  data/templates/speedups/backpack/denoms/  — denom_{name}[_{variant}].png
 
-Версия: 1.0
+Версия: 2.0 — denom через OCR вместо template matching
 """
 
 import os
@@ -32,7 +31,6 @@ from utils.ocr_engine import OCREngine
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'data', 'templates', 'speedups', 'backpack')
 TYPE_TEMPLATE_DIR = os.path.join(TEMPLATE_DIR, 'types')
-DENOM_TEMPLATE_DIR = os.path.join(TEMPLATE_DIR, 'denoms')
 
 # ═══════════════════════════════════════════════════
 # СЕТКА РЮКЗАКА (540×960, вкладка "Ускорение")
@@ -63,13 +61,16 @@ DENOM_ZONE = {'x1': 22, 'y1': 0, 'x2': 91, 'y2': 26}
 TYPE_ZONE = {'x1': 4, 'y1': 16, 'x2': 114, 'y2': 89}
 QTY_ZONE = {'x1': 0, 'y1': 88, 'x2': 114, 'y2': 110}
 
-# OCR параметры
+# OCR параметры для количества
 QTY_SCALE = 5
 QTY_PADDING = 25
 
-# Пороги template matching
+# OCR параметры для номинала
+DENOM_SCALE = 5
+DENOM_PADDING = 20
+
+# Порог template matching (только тип)
 THRESHOLD_TYPE = 0.70
-THRESHOLD_DENOM = 0.70
 
 # Конвертация номиналов в секунды
 DENOM_SECONDS = {
@@ -80,9 +81,10 @@ DENOM_SECONDS = {
 
 DENOM_ORDER = ['1m', '5m', '10m', '15m', '1h', '2h', '3h', '8h', '1d', '5d']
 
-# Кеш шаблонов (загружаются один раз за сессию)
+VALID_DENOMS = set(DENOM_ORDER)
+
+# Кеш шаблонов типов (загружаются один раз за сессию)
 _type_templates_cache: Optional[Dict] = None
-_denom_templates_cache: Optional[Dict] = None
 
 
 # ═══════════════════════════════════════════════════
@@ -98,7 +100,7 @@ def parse_backpack_speedups(
 
     Для каждой ячейки сетки:
     1. Template match ТИП
-    2. Template match НОМИНАЛ
+    2. OCR НОМИНАЛ
     3. OCR КОЛИЧЕСТВО
 
     Args:
@@ -110,14 +112,9 @@ def parse_backpack_speedups(
         Пример: {'universal': {'1h': 26, '5m': 140}, 'building': {'15m': 12}}
     """
     type_templates = _get_type_templates()
-    denom_templates = _get_denom_templates()
 
     if not type_templates:
         logger.error(f"❌ Нет шаблонов типов в {TYPE_TEMPLATE_DIR}/")
-        return {}
-
-    if not denom_templates:
-        logger.error(f"❌ Нет шаблонов номиналов в {DENOM_TEMPLATE_DIR}/")
         return {}
 
     h, w = screenshot.shape[:2]
@@ -135,6 +132,8 @@ def parse_backpack_speedups(
             if cell.size == 0:
                 continue
 
+            label = f"r{row}_c{col}"
+
             # 1. Template match ТИП
             type_crop = _crop_zone(cell, TYPE_ZONE)
             type_match = _match_best_template(
@@ -146,20 +145,16 @@ def parse_backpack_speedups(
 
             stype, type_conf = type_match
 
-            # 2. Template match НОМИНАЛ
+            # 2. OCR НОМИНАЛ
             denom_crop = _crop_zone(cell, DENOM_ZONE)
-            denom_match = _match_best_template(
-                denom_crop, denom_templates, THRESHOLD_DENOM
-            )
+            denom = _ocr_denomination(denom_crop, ocr, label)
 
-            if denom_match is None:
+            if denom is None:
                 logger.warning(
-                    f"  [r{row}_c{col}] тип={stype}({type_conf:.2f}), "
-                    f"но номинал не определён"
+                    f"  [{label}] тип={stype}({type_conf:.2f}), "
+                    f"но номинал OCR не распознал"
                 )
                 continue
-
-            denom, denom_conf = denom_match
 
             # 3. OCR КОЛИЧЕСТВО
             qty_crop = _crop_zone(cell, QTY_ZONE)
@@ -167,7 +162,7 @@ def parse_backpack_speedups(
 
             if qty is None:
                 logger.warning(
-                    f"  [r{row}_c{col}] {stype}/{denom} — "
+                    f"  [{label}] {stype}/{denom} — "
                     f"OCR не распознал количество"
                 )
                 continue
@@ -219,16 +214,6 @@ def _get_type_templates() -> Dict[str, List[Tuple[str, np.ndarray]]]:
     return _type_templates_cache
 
 
-def _get_denom_templates() -> Dict[str, List[Tuple[str, np.ndarray]]]:
-    """Загрузить и закешировать шаблоны номиналов"""
-    global _denom_templates_cache
-    if _denom_templates_cache is None:
-        _denom_templates_cache = _load_templates_from_dir(
-            DENOM_TEMPLATE_DIR, "denom"
-        )
-    return _denom_templates_cache
-
-
 # ═══════════════════════════════════════════════════
 # ЗАГРУЗКА ШАБЛОНОВ
 # ═══════════════════════════════════════════════════
@@ -244,7 +229,6 @@ def _load_templates_from_dir(
     Примеры:
       type_universal.png        → тип 'universal'
       type_universal_purple.png → тип 'universal' (вариант)
-      denom_15m.png             → номинал '15m'
 
     Returns:
         {name: [(filename, cv2_image), ...]}
@@ -268,10 +252,10 @@ def _load_templates_from_dir(
             continue
 
         # Парсим имя: type_universal_purple.png → name='universal'
-        stem = os.path.splitext(filename)[0]       # type_universal_purple
-        after_prefix = stem[len(prefix) + 1:]      # universal_purple
+        stem = os.path.splitext(filename)[0]
+        after_prefix = stem[len(prefix) + 1:]
         parts = after_prefix.split('_')
-        name = parts[0]                            # universal
+        name = parts[0]
 
         if name not in templates:
             templates[name] = []
@@ -321,6 +305,122 @@ def _match_best_template(
 
     if best_name and best_conf >= threshold:
         return (best_name, best_conf)
+
+    return None
+
+
+# ═══════════════════════════════════════════════════
+# OCR НОМИНАЛА
+# ═══════════════════════════════════════════════════
+
+def _ocr_denomination(
+    crop: np.ndarray,
+    ocr: OCREngine,
+    label: str = ""
+) -> Optional[str]:
+    """
+    OCR номинала из кропа: scale 5x → чёрные поля → PaddleOCR.
+
+    Ожидаемые значения: 1m, 5m, 10m, 15m, 1h, 2h, 3h, 8h, 1d, 5d
+
+    Returns:
+        Валидный denom ('15m', '1h', ...) или None
+    """
+    if crop.size == 0:
+        return None
+
+    enlarged = cv2.resize(crop, None, fx=DENOM_SCALE, fy=DENOM_SCALE,
+                          interpolation=cv2.INTER_CUBIC)
+    padded = cv2.copyMakeBorder(
+        enlarged, DENOM_PADDING, DENOM_PADDING, DENOM_PADDING, DENOM_PADDING,
+        cv2.BORDER_CONSTANT, value=(0, 0, 0)
+    )
+
+    elements = ocr.recognize_text(padded, min_confidence=0.2)
+
+    # Пробуем каждый элемент
+    for elem in elements:
+        text = elem['text'].strip()
+        denom = _try_parse_denom(text)
+        if denom is not None:
+            logger.debug(
+                f"  [{label}] OCR denom={denom} (raw='{text}')"
+            )
+            return denom
+
+    # Если отдельные элементы не подошли — склеиваем всё в одну строку
+    if len(elements) > 1:
+        full_text = ''.join(e['text'].strip() for e in elements)
+        denom = _try_parse_denom(full_text)
+        if denom is not None:
+            logger.debug(
+                f"  [{label}] OCR denom={denom} (merged='{full_text}')"
+            )
+            return denom
+
+    if elements:
+        texts = [e['text'] for e in elements]
+        logger.warning(f"  [{label}] OCR denom FAIL: {texts}")
+    else:
+        logger.warning(f"  [{label}] OCR denom FAIL: пусто")
+
+    return None
+
+
+def _try_parse_denom(text: str) -> Optional[str]:
+    """
+    Распознать текст как номинал ускорения.
+
+    Формат: {число}{единица}, где единица = m/h/d
+    OCR может вернуть: "15m", "1h", "5d", а также мусор.
+
+    Фиксы:
+      - Кириллические замены единиц: 'т'→'m', 'м'→'m', 'ч'→'h', 'д'→'d'
+      - Цифровые фиксы: 'г'→1, 'б'→6, 'з'→3 и т.д.
+      - Удаление пробелов: "1 5m" → "15m"
+    """
+    cleaned = text.strip().lower()
+
+    # Убираем пробелы внутри (OCR может разбить "15m" на "1 5m")
+    cleaned = cleaned.replace(' ', '')
+
+    # Кириллические замены единиц
+    UNIT_FIXES = {
+        'т': 'm', 'м': 'm', 'п': 'm',  # м/т/п → m (минуты)
+        'ч': 'h',                         # ч → h (часы)
+        'д': 'd',                         # д → d (дни)
+    }
+    if cleaned and cleaned[-1] in UNIT_FIXES:
+        cleaned = cleaned[:-1] + UNIT_FIXES[cleaned[-1]]
+
+    # Фикс цифр: OCR путает кириллицу с цифрами
+    DIGIT_FIXES = {
+        'г': '1', 'i': '1', 'l': '1', '|': '1',
+        'б': '6', 'в': '8', 'з': '3', 'о': '0',
+        'ч': '4', 'ь': '6', 'э': '9',
+    }
+
+    # Применяем фиксы к цифровой части (все кроме последнего символа)
+    if len(cleaned) >= 2:
+        digits_part = cleaned[:-1]
+        unit_part = cleaned[-1]
+        fixed_digits = ''
+        for ch in digits_part:
+            if ch in DIGIT_FIXES:
+                fixed_digits += DIGIT_FIXES[ch]
+            elif ch.isdigit():
+                fixed_digits += ch
+            # Пропускаем прочий мусор
+        cleaned = fixed_digits + unit_part
+
+    # Извлекаем паттерн {цифры}{m|h|d}
+    match = re.match(r'^(\d{1,2})([mhd])$', cleaned)
+    if match:
+        num = match.group(1)
+        unit = match.group(2)
+        candidate = f"{num}{unit}"
+        if candidate in VALID_DENOMS:
+            return candidate
 
     return None
 
