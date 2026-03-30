@@ -55,8 +55,8 @@ from utils.adb_controller import swipe
 # НАСТРОЙКИ ЭМУЛЯТОРА
 # ═══════════════════════════════════════════════════
 
-DEFAULT_EMULATOR_ID = 5
-DEFAULT_EMULATOR_PORT = 5564
+DEFAULT_EMULATOR_ID = 0
+DEFAULT_EMULATOR_PORT = 5554
 
 DEBUG_DIR = PROJECT_ROOT / "data" / "screenshots" / "debug" / "backpack_parser"
 

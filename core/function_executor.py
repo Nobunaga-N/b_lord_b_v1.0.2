@@ -31,12 +31,14 @@ from functions.mail_rewards.mail_rewards import MailRewardsFunction
 from functions.ponds.ponds import PondsFunction
 from functions.feeding_zone.feeding_zone import FeedingZoneFunction
 from functions.training.training import TrainingFunction
+from functions.backpack_speedups.backpack_scanner import BackpackSpeedupsFunction
 
 
 # Порядок выполнения функций
 # ОБНОВЛЕНО: building и wilds в начале, tiles после диких (нужны отряды)
 FUNCTION_ORDER = [
     'wilds',           # 1. Дикие (запустить автоохоту ПЕРВЫМ)
+    'backpack_speedups',   # 2. Парсинг ускорений (сервисная)
     'feeding_zone',    # 2. Зона кормления (сервисная — перед building)
     'building',        # 3. Строительство
     'training',        # 4. Тренировка войск
@@ -59,6 +61,7 @@ FUNCTION_CLASSES = {
     'tiles': TilesFunction,
     'prime_times': PrimeTimesFunction,
     'shield': ShieldFunction,
+    'backpack_speedups': BackpackSpeedupsFunction,
     'mail_rewards': MailRewardsFunction,
     'ponds': PondsFunction,
     'feeding_zone': FeedingZoneFunction,

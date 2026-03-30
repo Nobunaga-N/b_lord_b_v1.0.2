@@ -94,6 +94,7 @@ class FunctionsWindow(ctk.CTkToplevel):
             ("shield", "Щит"),
             ("mail_rewards", "Награды с почты"),
             ("feeding_zone", "Пополнение Зоны Корм."),
+            ("backpack_speedups", "Парсинг ускорений"),
         ]
 
         # Создать чекбоксы
