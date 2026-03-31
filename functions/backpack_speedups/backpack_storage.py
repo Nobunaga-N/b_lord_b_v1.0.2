@@ -13,8 +13,10 @@
   has_data()          — есть ли данные для эмулятора
   get_inventory()     — получить инвентарь
   get_total_seconds() — суммарные секунды ускорений
+  use_speedup()       — декремент quantity (после траты ускорения)
+  get_quantity()      — получить quantity конкретного номинала
 
-Версия: 1.0
+Версия: 1.1 — добавлены use_speedup(), get_quantity() для prime_times
 """
 
 import os
@@ -207,6 +209,113 @@ class BackpackStorage:
         """
         inventory = self.get_inventory(emulator_id, speedup_type)
         return self._calc_total_seconds(inventory)
+
+    def get_quantity(
+        self,
+        emulator_id: int,
+        speedup_type: str,
+        denomination: str
+    ) -> int:
+        """
+        Получить текущий quantity конкретного номинала.
+
+        Args:
+            emulator_id: ID эмулятора
+            speedup_type: тип ускорения ('building', 'universal', ...)
+            denomination: номинал ('1m', '5m', '1h', ...)
+
+        Returns:
+            int: quantity (0 если записи нет)
+        """
+        if emulator_id is None:
+            return 0
+
+        with self._lock:
+            cursor = self._conn.execute("""
+                SELECT quantity FROM speedup_inventory
+                WHERE emulator_id = ? AND speedup_type = ? AND denomination = ?
+            """, (emulator_id, speedup_type, denomination))
+
+            row = cursor.fetchone()
+
+        return row['quantity'] if row else 0
+
+    # ==================== РАСХОД УСКОРЕНИЙ ====================
+
+    def use_speedup(
+        self,
+        emulator_id: int,
+        speedup_type: str,
+        denomination: str,
+        count: int = 1
+    ) -> int:
+        """
+        Уменьшить quantity после использования ускорения.
+
+        Декремент на count. Если quantity <= 0 — удаляет запись.
+        Вызывается из speedup_applier после каждого клика "Использовать".
+
+        Args:
+            emulator_id: ID эмулятора
+            speedup_type: тип ускорения
+            denomination: номинал
+            count: сколько штук потрачено (обычно 1)
+
+        Returns:
+            int: новый quantity (0 если запись удалена или не найдена)
+        """
+        if emulator_id is None:
+            logger.error("❌ BackpackStorage.use_speedup: emulator_id is None")
+            return 0
+
+        now = datetime.now().isoformat()
+
+        with self._lock:
+            # Читаем текущее значение
+            cursor = self._conn.execute("""
+                SELECT quantity FROM speedup_inventory
+                WHERE emulator_id = ? AND speedup_type = ? AND denomination = ?
+            """, (emulator_id, speedup_type, denomination))
+
+            row = cursor.fetchone()
+
+            if row is None:
+                logger.warning(
+                    f"[Emulator {emulator_id}] ⚠️ use_speedup: "
+                    f"запись {speedup_type}/{denomination} не найдена"
+                )
+                return 0
+
+            old_qty = row['quantity']
+            new_qty = max(0, old_qty - count)
+
+            if new_qty <= 0:
+                # Удаляем запись — номинал закончился
+                self._conn.execute("""
+                    DELETE FROM speedup_inventory
+                    WHERE emulator_id = ? AND speedup_type = ? AND denomination = ?
+                """, (emulator_id, speedup_type, denomination))
+
+                logger.debug(
+                    f"[Emulator {emulator_id}] 🗑️ {speedup_type}/{denomination}: "
+                    f"{old_qty} → 0 (удалена)"
+                )
+            else:
+                # Декремент
+                self._conn.execute("""
+                    UPDATE speedup_inventory
+                    SET quantity = ?, last_updated = ?
+                    WHERE emulator_id = ? AND speedup_type = ? AND denomination = ?
+                """, (new_qty, now, emulator_id, speedup_type, denomination))
+
+                logger.debug(
+                    f"[Emulator {emulator_id}] ⬇️ {speedup_type}/{denomination}: "
+                    f"{old_qty} → {new_qty}"
+                )
+
+            self._conn.commit()
+
+        return new_qty
 
     # ==================== УТИЛИТЫ ====================
 
