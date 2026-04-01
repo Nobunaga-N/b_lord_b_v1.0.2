@@ -37,18 +37,18 @@ from functions.backpack_speedups.backpack_scanner import BackpackSpeedupsFunctio
 # Порядок выполнения функций
 # ОБНОВЛЕНО: building и wilds в начале, tiles после диких (нужны отряды)
 FUNCTION_ORDER = [
-    'wilds',           # 1. Дикие (запустить автоохоту ПЕРВЫМ)
-    'backpack_speedups',   # 2. Парсинг ускорений (сервисная)
-    'feeding_zone',    # 2. Зона кормления (сервисная — перед building)
-    'building',        # 3. Строительство
-    'training',        # 4. Тренировка войск
-    'research',        # 5. Эволюция
-    'ponds',           # 6. Пополнение прудов
-    'mail_rewards',    # 7. Награды с почты
-    'shield',          # 8. Щит
-    'tiles',           # 9. Плитки
-    'coop',            # 10. Кооперации
-    'prime_times',     # 11. Прайм таймы
+    'shield',          # 1. Щит
+    'wilds',           # 2. Дикие (запустить автоохоту ПЕРВЫМ)
+    'mail_rewards',    # 3. Награды с почты (полусервисная)
+    'backpack_speedups',   # 4. Парсинг ускорений (полусервисная)
+    'feeding_zone',    # 5. Зона кормления (сервисная — перед building)
+    'building',        # 6. Строительство
+    'training',        # 7. Тренировка войск
+    'research',        # 8. Эволюция
+    'ponds',           # 9. Пополнение прудов
+    'tiles',           # 10. Плитки
+    'coop',            # 11. Кооперации
+    'prime_times',     # 12. Прайм таймы
 ]
 
 # Маппинг имя → класс
