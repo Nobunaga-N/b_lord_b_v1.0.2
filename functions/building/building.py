@@ -136,36 +136,89 @@ class BuildingFunction(BaseFunction):
         Инициализация при первом запуске эмулятора
 
         1. Проверить есть ли записи в БД
-        2. Если нет - создать записи для всех зданий
-        3. Определить количество строителей через OCR
-        4. Выполнить первичное сканирование уровней
+        2. Если нет — создать записи для всех зданий + строителей + первичный скан
+        3. Если записи зданий есть, но строителей нет — досоздать строителей + скан
+        4. Если всё есть — проверить нужен ли первичный скан
 
         Returns:
             bool: True если инициализация успешна
         """
         emulator_id = self.emulator.get('id', 0)
 
-        cursor = self.db.conn.cursor()
-        cursor.execute("""
-            SELECT COUNT(*) FROM buildings WHERE emulator_id = ?
-        """, (emulator_id,))
+        with self.db.db_lock:
+            cursor = self.db.conn.cursor()
 
-        buildings_count = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) FROM buildings WHERE emulator_id = ?",
+                (emulator_id,)
+            )
+            buildings_count = cursor.fetchone()[0]
 
-        # Если записи уже есть - инициализация не нужна
-        if buildings_count > 0:
-            logger.debug(f"[{self.emulator_name}] БД уже инициализирована ({buildings_count} зданий)")
-            return True
+            cursor.execute(
+                "SELECT COUNT(*) FROM builders WHERE emulator_id = ?",
+                (emulator_id,)
+            )
+            builders_count = cursor.fetchone()[0]
 
-        logger.info(f"[{self.emulator_name}] 🆕 ПЕРВЫЙ ЗАПУСК - Начало инициализации...")
+        # ── Случай 1: Полная инициализация (нет зданий вообще) ──
+        if buildings_count == 0:
+            logger.info(
+                f"[{self.emulator_name}] 🆕 ПЕРВЫЙ ЗАПУСК — "
+                f"Начало полной инициализации..."
+            )
+            return self._run_full_initialization()
+
+        # ── Случай 2: Здания есть, строителей нет (частичная инициализация) ──
+        if builders_count == 0:
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ Обнаружена частичная инициализация: "
+                f"{buildings_count} зданий, 0 строителей. Досоздаём..."
+            )
+            return self._repair_initialization(buildings_count)
+
+        # ── Случай 3: Всё есть — проверяем нужен ли первичный скан ──
+        with self.db.db_lock:
+            cursor = self.db.conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM buildings "
+                "WHERE emulator_id = ? AND current_level = 0 AND action = 'upgrade'",
+                (emulator_id,)
+            )
+            unscanned_count = cursor.fetchone()[0]
+
+        if unscanned_count > 10:
+            # Много непросканированных зданий — скорее всего скан не проходил
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ {unscanned_count} зданий без уровня, "
+                f"запускаю первичное сканирование..."
+            )
+            success = self.db.perform_initial_scan(self.emulator)
+            if not success:
+                logger.warning(
+                    f"[{self.emulator_name}] ⚠️ Первичное сканирование "
+                    f"завершено с ошибками"
+                )
+                # Не возвращаем False — можно продолжать работу
+
+        logger.debug(
+            f"[{self.emulator_name}] БД уже инициализирована "
+            f"({buildings_count} зданий, {builders_count} строителей)"
+        )
+        return True
+
+    def _run_full_initialization(self) -> bool:
+        """
+        Полная инициализация: строители + здания + первичный скан.
+        Вызывается когда в БД нет записей зданий для этого эмулятора.
+        """
+        emulator_id = self.emulator.get('id', 0)
 
         # ШАГ 1: Определить количество строителей через OCR
         logger.info(f"[{self.emulator_name}] 🔍 Определение количества строителей...")
         busy, total = self.db.detect_builders_count(self.emulator)
-
         logger.info(f"[{self.emulator_name}] 🔨 Строители: {busy}/{total}")
 
-        # ШАГ 2: Создать записи для всех зданий
+        # ШАГ 2: Создать записи для всех зданий + строителей
         logger.info(f"[{self.emulator_name}] 📋 Создание записей в БД...")
         success = self.db.initialize_buildings_for_emulator(emulator_id, total)
 
@@ -173,17 +226,136 @@ class BuildingFunction(BaseFunction):
             logger.error(f"[{self.emulator_name}] ❌ Ошибка инициализации БД")
             return False
 
-        # ШАГ 3: Выполнить первичное сканирование
+        # ШАГ 3: Первичное сканирование
         logger.info(f"[{self.emulator_name}] 🔍 Запуск первичного сканирования...")
-
         success = self.db.perform_initial_scan(self.emulator)
 
         if not success:
-            logger.warning(f"[{self.emulator_name}] ⚠️ Первичное сканирование завершено с ошибками")
-            # Не возвращаем False - можно продолжать работу
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ Первичное сканирование "
+                f"завершено с ошибками"
+            )
+            # Не возвращаем False — можно продолжать работу
 
         logger.success(f"[{self.emulator_name}] ✅ Инициализация завершена")
         return True
+
+    def _repair_initialization(self, existing_buildings_count: int) -> bool:
+        """
+        Ремонт частичной инициализации: досоздать строителей и запустить скан.
+
+        Ситуация: в БД есть записи зданий (например, от тренировки, которая
+        точечно парсила 2 здания), но строители не созданы.
+
+        Args:
+            existing_buildings_count: сколько зданий уже есть в БД
+        """
+        emulator_id = self.emulator.get('id', 0)
+
+        # ШАГ 1: Определить количество строителей через OCR
+        logger.info(f"[{self.emulator_name}] 🔍 Определение количества строителей...")
+        busy, total = self.db.detect_builders_count(self.emulator)
+        logger.info(f"[{self.emulator_name}] 🔨 Строители: {busy}/{total}")
+
+        with self.db.db_lock:
+            cursor = self.db.conn.cursor()
+
+            # ШАГ 2: Создать записи строителей (если не существуют)
+            for slot in range(1, total + 1):
+                cursor.execute(
+                    "SELECT COUNT(*) FROM builders "
+                    "WHERE emulator_id = ? AND builder_slot = ?",
+                    (emulator_id, slot)
+                )
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("""
+                        INSERT INTO builders 
+                        (emulator_id, builder_slot, is_busy)
+                        VALUES (?, ?, 0)
+                    """, (emulator_id, slot))
+
+            self.db.conn.commit()
+
+        logger.success(
+            f"[{self.emulator_name}] ✅ Созданы записи строителей ({total} шт)"
+        )
+
+        # ШАГ 3: Доинициализировать здания (если их мало — добавляем остальные)
+        full_buildings_list = self.db._extract_unique_buildings()
+        expected_count = len(full_buildings_list)
+
+        if existing_buildings_count < expected_count:
+            logger.info(
+                f"[{self.emulator_name}] 📋 В БД {existing_buildings_count}/{expected_count} "
+                f"зданий, добавляю недостающие..."
+            )
+            self._add_missing_buildings(emulator_id, full_buildings_list)
+
+        # ШАГ 4: Первичное сканирование (для всех зданий с level=0)
+        logger.info(f"[{self.emulator_name}] 🔍 Запуск первичного сканирования...")
+        success = self.db.perform_initial_scan(self.emulator)
+
+        if not success:
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ Первичное сканирование "
+                f"завершено с ошибками"
+            )
+
+        logger.success(
+            f"[{self.emulator_name}] ✅ Ремонт инициализации завершён"
+        )
+        return True
+
+    def _add_missing_buildings(self, emulator_id: int, full_list: list):
+        """
+        Добавить в БД здания которых ещё нет.
+        Не трогает уже существующие записи (например точечно спарсенные тренировкой).
+        """
+        with self.db.db_lock:
+            cursor = self.db.conn.cursor()
+            added = 0
+
+            for b in full_list:
+                name = b['name']
+                index = b.get('index')
+                max_target = b['max_target_level']
+                btype = b['type']
+                action = b['action']
+
+                # Проверяем: уже есть такая запись?
+                if index is not None:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM buildings "
+                        "WHERE emulator_id = ? AND building_name = ? "
+                        "AND building_index = ?",
+                        (emulator_id, name, index)
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM buildings "
+                        "WHERE emulator_id = ? AND building_name = ? "
+                        "AND building_index IS NULL",
+                        (emulator_id, name)
+                    )
+
+                if cursor.fetchone()[0] > 0:
+                    continue  # Уже есть — не трогаем
+
+                cursor.execute("""
+                    INSERT INTO buildings 
+                    (emulator_id, building_name, building_type, building_index,
+                     current_level, target_level, status, action)
+                    VALUES (?, ?, ?, ?, 0, ?, 'idle', ?)
+                """, (emulator_id, name, btype, index, max_target, action))
+                added += 1
+
+            self.db.conn.commit()
+
+            if added > 0:
+                logger.info(
+                    f"[{self.emulator_name}] ✅ Добавлено {added} "
+                    f"недостающих зданий в БД"
+                )
 
     def can_execute(self) -> bool:
         """
@@ -660,18 +832,19 @@ class BuildingFunction(BaseFunction):
         return ds
 
     def _drain_building_in_prime(
-            self, ds: dict, event: dict, prime_st: PrimeStorage
-    ):
+        self, ds: dict, event: dict, prime_st: PrimeStorage
+):
         """
         Цикл drain строительных ускорений для ДС.
 
         Бот в поместье. Для каждой итерации:
         1. Найти здание с максимальным таймером
-        2. NavigationPanel → здание → "Ускорить" → окно ускорений
-        3. drain_speedups()
-        4. Обновить прогресс
-        5. Если здание достроилось → ставим следующее → continue
-        6. Если набрали очки → break
+        2. Если нет — поставить новое здание на улучшение
+        3. NavigationPanel → здание → "Ускорить" → окно ускорений
+        4. drain_speedups()
+        5. Обновить прогресс
+        6. Если здание достроилось → ставим следующее → continue
+        7. Если набрали очки → break
         """
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
@@ -687,9 +860,24 @@ class BuildingFunction(BaseFunction):
 
             # Найти здание с максимальным таймером
             building_info = self._find_best_building_for_drain(emu_id)
+
+            # ── FIX: Нет зданий с таймером → попробовать поставить новое ──
             if building_info is None:
-                logger.info(f"[{emu_name}] Prime: нет зданий с таймерами")
-                break
+                logger.info(
+                    f"[{emu_name}] Prime: нет зданий с таймерами, "
+                    f"пробуем поставить новое..."
+                )
+                if self._start_next_building(emu_id):
+                    # Здание поставлено — ищем его таймер
+                    time.sleep(1.0)
+                    building_info = self._find_best_building_for_drain(emu_id)
+
+                if building_info is None:
+                    logger.warning(
+                        f"[{emu_name}] Prime: не удалось поставить здание, "
+                        f"выходим из drain"
+                    )
+                    break
 
             b_name = building_info['name']
             b_index = building_info.get('index')
@@ -705,13 +893,22 @@ class BuildingFunction(BaseFunction):
                 self.emulator, b_name, building_index=b_index
             )
             if not nav_ok:
-                logger.error(f"[{emu_name}] Prime: навигация к {display} не удалась")
+                logger.error(
+                    f"[{emu_name}] Prime: навигация к {display} не удалась"
+                )
                 self._reset_panel_state()
                 break
 
+            # Клик по зданию → иконки действий вокруг здания
+            from utils.adb_controller import tap as adb_tap
+            adb_tap(self.emulator, x=268, y=517)
+            time.sleep(1.5)
+
             # Открыть окно ускорений
             if not self.upgrade._open_speedup_window(self.emulator):
-                logger.error(f"[{emu_name}] Prime: не удалось открыть окно ускорений")
+                logger.error(
+                    f"[{emu_name}] Prime: не удалось открыть окно ускорений"
+                )
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
                 self._reset_panel_state()
@@ -732,7 +929,9 @@ class BuildingFunction(BaseFunction):
             )
 
             if plan.is_skip:
-                logger.info(f"[{emu_name}] Prime: план пустой — {plan.skip_reason}")
+                logger.info(
+                    f"[{emu_name}] Prime: план пустой — {plan.skip_reason}"
+                )
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
                 self._reset_panel_state()
@@ -762,7 +961,10 @@ class BuildingFunction(BaseFunction):
 
                 # Ставим следующее здание на улучшение (если есть)
                 if not self._start_next_building(emu_id):
-                    logger.info(f"[{emu_name}] Prime: нет зданий для следующего улучшения")
+                    logger.info(
+                        f"[{emu_name}] Prime: нет зданий для "
+                        f"следующего улучшения"
+                    )
                     break
 
                 time.sleep(1.0)
