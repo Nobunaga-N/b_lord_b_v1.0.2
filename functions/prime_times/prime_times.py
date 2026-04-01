@@ -604,18 +604,29 @@ class PrimeTimesFunction(BaseFunction):
                 self._reset_nav_state()
                 break
 
-            # Рассчитать план на оставшееся
-            remaining_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            # ── Рассчитать план НА ЭТО ЗДАНИЕ (не на весь ДС) ──
+            remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            building_timer_min = max(1, building_info['timer_sec'] // 60)
+            batch_target = min(remaining_ds_min, building_timer_min)
+
+            logger.info(
+                f"[{emu_name}] Prime пачка: "
+                f"таймер здания={building_timer_min}мин, "
+                f"осталось ДС={remaining_ds_min}мин, "
+                f"batch={batch_target}мин"
+            )
+
             inventory = self.backpack_storage.get_inventory(emu_id)
             has_buildings = self._check_has_buildings(emu_id)
 
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=remaining_min,
+                target_minutes=batch_target,  # ← таймер здания
                 event_type=ds['event_type'],
                 drain_type='building',
                 has_buildings=has_buildings,
                 target_shell=ds['target_shell'],
+                skip_threshold=True,  # ← порог проверен при инит
             )
 
             if plan.is_skip:
@@ -762,6 +773,9 @@ class PrimeTimesFunction(BaseFunction):
             True = обработано
         """
         import os
+        from functions.prime_times.speedup_applier import _parse_remaining_timer
+        from utils.ocr_engine import OCREngine
+        ocr = OCREngine()
 
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
@@ -834,15 +848,15 @@ class PrimeTimesFunction(BaseFunction):
             tap(self.emulator, 268, 517)
             time.sleep(1.5)
 
-            # "Ускорить" → окно с таймером тренировки
-            if not self.building_upgrade._open_speedup_window(self.emulator):
-                logger.error(f"[{emu_name}] ❌ Иконка 'Ускорить' не найдена")
+            # Иконка "Обучение" → окно тренировки с таймером
+            if not self.training_nav._click_training_icon(self.emulator):
+                logger.error(f"[{emu_name}] ❌ Иконка 'Обучение' не найдена")
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
                 self._reset_nav_state()
                 break
 
-            # "Ускорение" → окно с ускорениями
+            # Кнопка "Ускорение" → окно с ускорениями
             if not self._click_template(speedup_btn_path, 'Ускорение'):
                 logger.error(f"[{emu_name}] ❌ Кнопка 'Ускорение' не найдена")
                 press_key(self.emulator, "ESC")
@@ -852,18 +866,45 @@ class PrimeTimesFunction(BaseFunction):
 
             time.sleep(1.0)
 
-            # ── Рассчитываем план и делаем drain ──
-            remaining_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            # ── Парсим таймер ТЕКУЩЕЙ пачки из окна ускорений ──
+            batch_timer_sec = _parse_remaining_timer(
+                self.emulator, ocr, 'training'
+            )
+
+            if not batch_timer_sec or batch_timer_sec <= 0:
+                logger.warning(
+                    f"[{emu_name}] Prime: не удалось спарсить "
+                    f"таймер тренировки"
+                )
+                press_key(self.emulator, "ESC")
+                time.sleep(0.5)
+                press_key(self.emulator, "ESC")
+                time.sleep(0.5)
+                self._reset_nav_state()
+                break
+
+            batch_timer_min = max(1, batch_timer_sec // 60)
+            remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            batch_target = min(remaining_ds_min, batch_timer_min)
+
+            logger.info(
+                f"[{emu_name}] Prime пачка: тренировка, "
+                f"таймер={batch_timer_min}мин, "
+                f"осталось ДС={remaining_ds_min}мин, "
+                f"batch={batch_target}мин"
+            )
+
             inventory = self.backpack_storage.get_inventory(emu_id)
             has_buildings = self._check_has_buildings(emu_id)
 
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=remaining_min,
+                target_minutes=batch_target,  # ← таймер пачки
                 event_type=ds['event_type'],
                 drain_type='training',
                 has_buildings=has_buildings,
                 target_shell=ds['target_shell'],
+                skip_threshold=True,  # ← порог проверен при инит
             )
 
             if plan.is_skip:
@@ -937,6 +978,9 @@ class PrimeTimesFunction(BaseFunction):
         Returns:
             True = обработано
         """
+        from functions.prime_times.speedup_applier import _parse_remaining_timer
+        from utils.ocr_engine import OCREngine
+        ocr = OCREngine()
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
 
@@ -1039,17 +1083,41 @@ class PrimeTimesFunction(BaseFunction):
 
             time.sleep(1.0)
 
+            # ── Парсим таймер ТЕКУЩЕЙ эволюции из окна ускорений ──
+            evo_timer_sec = _parse_remaining_timer(
+                self.emulator, ocr, 'evolution'
+            )
+
+            if not evo_timer_sec or evo_timer_sec <= 0:
+                logger.warning(
+                    f"[{emu_name}] Prime: не удалось спарсить "
+                    f"таймер эволюции"
+                )
+                self._close_evolution(4)
+                break
+
+            evo_timer_min = max(1, evo_timer_sec // 60)
+            remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            batch_target = min(remaining_ds_min, evo_timer_min)
+
+            logger.info(
+                f"[{emu_name}] Prime пачка: эволюция, "
+                f"таймер={evo_timer_min}мин, "
+                f"осталось ДС={remaining_ds_min}мин, "
+                f"batch={batch_target}мин"
+            )
+
             # Рассчитать план (universal НИКОГДА для эволюции)
-            remaining_min = int(ds['target_minutes'] - ds['spent_minutes'])
             inventory = self.backpack_storage.get_inventory(emu_id)
 
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=remaining_min,
+                target_minutes=batch_target,  # ← таймер эволюции
                 event_type=ds['event_type'],
                 drain_type='evolution',
-                has_buildings=True,  # не влияет, universal запрещён
+                has_buildings=True,
                 target_shell=ds['target_shell'],
+                skip_threshold=True,  # ← порог проверен при инит
             )
 
             if plan.is_skip:

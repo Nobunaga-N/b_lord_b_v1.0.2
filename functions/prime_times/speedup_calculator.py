@@ -223,8 +223,9 @@ def calculate_plan(
     event_type: str,
     drain_type: str,
     has_buildings: bool = True,
-    timers: Optional[Dict[str, int]] = None,
     target_shell: int = 2,
+    timers: Optional[Dict[str, int]] = None,
+    skip_threshold: bool = False,       # ← НОВЫЙ ПАРАМЕТР
 ) -> SpeedupPlan:
     """
     Рассчитать оптимальный план расхода ускорений.
@@ -239,6 +240,9 @@ def calculate_plan(
                 (building_1, building_2, ..., evolution,
                  training_carnivore, training_omnivore)
         target_shell: целевая ракушка (1 или 2)
+        skip_threshold: Пропустить проверку порога 30ч.
+                        True при расчёте плана на одну пачку
+                        (порог уже проверен при инициализации ДС)
 
     Returns:
         SpeedupPlan с заполненными items
@@ -267,17 +271,19 @@ def calculate_plan(
         plan.skip_reason = 'not_enough_speedups'
         return plan
 
-    # ── Проверяем порог 30ч ──
-    threshold_sec = _calc_threshold_seconds_from_available(available)
-    threshold_hours = threshold_sec / 3600
+    # ── Проверяем порог 30ч (только при первичном расчёте) ──
+    if not skip_threshold:
+        threshold_sec = _calc_threshold_seconds_from_available(available)
+        threshold_hours = threshold_sec / 3600
 
-    if threshold_hours < THRESHOLD_HOURS:
-        plan.skip_reason = 'not_enough_speedups'
-        logger.info(
-            f"⏭️ ДС пропущен: {drain_type} = {threshold_hours:.1f}ч "
-            f"(< {THRESHOLD_HOURS}ч порог)"
-        )
-        return plan
+        if threshold_hours < THRESHOLD_HOURS:
+            plan.skip_reason = 'not_enough_speedups'
+            logger.info(
+                f"⏭️ ДС пропущен: {drain_type} = "
+                f"{threshold_hours:.1f}ч "
+                f"(< {THRESHOLD_HOURS}ч порог)"
+            )
+            return plan
 
     # ── Распределяем номиналы ──
     target_sec = target_minutes * 60

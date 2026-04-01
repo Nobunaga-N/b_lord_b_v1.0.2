@@ -77,6 +77,11 @@ class TrainingNavigation:
             BASE_DIR, 'data', 'templates', 'training', 'button_training.png'
         ),
 
+        # Иконка "Обучение" уменьшённая (тренировка уже идёт)
+        'training_icon_active': os.path.join(
+            BASE_DIR, 'data', 'templates', 'training', 'training_icon_active.png'
+        ),
+
         # Шаблоны тиров юнитов (картинки животных)
         'tier4_carnivore': os.path.join(
             BASE_DIR, 'data', 'templates', 'training', 'tier4_carnivore.png'
@@ -236,30 +241,40 @@ class TrainingNavigation:
 
     def _click_training_icon(self, emulator: Dict) -> bool:
         """
-        Найти и кликнуть иконку "Обучение" на здании
+        Найти и кликнуть иконку "Обучение" на здании.
+
+        Ищет два шаблона:
+        - training_icon        — обычный размер (слот свободен)
+        - training_icon_active — уменьшённый (тренировка уже идёт)
 
         Returns:
             True — иконка найдена и нажата
-            False — не найдена (возможно, тренировка уже идёт)
+            False — не найдена
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-
         logger.debug(f"[{emu_name}] Поиск иконки 'Обучение'...")
 
+        icon_keys = ['training_icon', 'training_icon_active']
+
         for attempt in range(3):
-            result = find_image(
-                emulator,
-                self.TEMPLATES['training_icon'],
-                threshold=self.THRESHOLD_ICON,
-            )
-            if result:
-                cx, cy = result
-                logger.debug(
-                    f"[{emu_name}] Иконка 'Обучение' найдена: ({cx}, {cy})"
+            for key in icon_keys:
+                template_path = self.TEMPLATES.get(key)
+                if not template_path or not os.path.exists(template_path):
+                    continue
+
+                result = find_image(
+                    emulator, template_path,
+                    threshold=self.THRESHOLD_ICON,
                 )
-                tap(emulator, x=cx, y=cy)
-                time.sleep(1.5)
-                return True
+                if result:
+                    cx, cy = result
+                    logger.debug(
+                        f"[{emu_name}] Иконка 'Обучение' ({key}) "
+                        f"найдена: ({cx}, {cy})"
+                    )
+                    tap(emulator, x=cx, y=cy)
+                    time.sleep(1.5)
+                    return True
 
             time.sleep(0.5)
 

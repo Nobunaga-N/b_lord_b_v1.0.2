@@ -583,20 +583,23 @@ class TrainingFunction(BaseFunction):
         """
         Цикл drain тренировочных ускорений для ДС.
 
-        Бот в поместье. Три сценария:
+        Архитектура: двойной цикл.
+        - Внешний: обеспечивает тренировку активной + навигация к окну ускорений
+        - Внутренний: drain по пачкам (парсим таймер → план на пачку → drain →
+          если завершилось → новая пачка → continue)
 
-        1) Слот свободен:
-           NavigationPanel → train_troops() (ставит зверей + ESC)
-           → NavigationPanel → клик здание → "Ускорить" → "Ускорение" → drain
+        Ключевое: calculate_plan получает таймер ТЕКУЩЕЙ ПАЧКИ, а не весь ДС.
+        Это обеспечивает правильный подбор номиналов без перерасхода.
 
-        2) Слот занят (тренировка уже идёт):
-           NavigationPanel → клик здание → "Ускорить" → "Ускорение" → drain
-
-        3) Drain завершил тренировку (building_completed=True):
-           Бот видит окно выбора зверей с кнопкой "Обучение"
-           → клик "Обучение" → таймер → "Ускорение" → drain → loop
+        Три сценария:
+        1) Слот свободен → train_troops() → ESC → проваливаемся в (2)
+        2) Слот занят → навигация → окно ускорений → внутренний цикл
+        3) Тренировка завершилась → "Обучение" → новая пачка → "Ускорение" → continue
         """
         import os
+        from utils.adb_controller import tap
+        from functions.prime_times.speedup_applier import _parse_remaining_timer
+        from utils.ocr_engine import OCREngine
 
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
@@ -605,7 +608,6 @@ class TrainingFunction(BaseFunction):
         building_type = 'carnivore'
         building_name = TRAINING_BUILDINGS[building_type]['building_name']
 
-        # Шаблоны
         BASE_DIR = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
@@ -616,31 +618,33 @@ class TrainingFunction(BaseFunction):
             BASE_DIR, 'data', 'templates', 'training', 'button_training.png'
         )
 
-        # Для открытия окна ускорений (иконка "Ускорить" на здании)
-        # Переиспользуем BuildingUpgrade._open_speedup_window()
-        from functions.building.building_upgrade import BuildingUpgrade
-        building_upgrade = BuildingUpgrade()
+        ocr = OCREngine()
 
+        # ════════════════════════════════════════════
+        # ВНЕШНИЙ ЦИКЛ: навигация + запуск тренировки
+        # ════════════════════════════════════════════
         while ds['spent_minutes'] < ds['target_minutes']:
-            # Проверяем время ДС
+            # ── Проверка времени ДС ──
             if not is_safe_to_start(min_minutes=5):
                 if ds['spent_minutes'] <= 0:
                     logger.info(f"[{emu_name}] Prime: мало времени до конца ДС")
-                    break
+                break
 
-            # ── Определяем сценарий: слот свободен или занят? ──
+            # ── ШАГ 1: Убедиться что тренировка активна ──
             self.db.clear_finished_slots(emu_id)
             slot_free = self.db.is_slot_free(emu_id, building_type)
 
             if slot_free:
-                # ═══ СЦЕНАРИЙ 1: Слот свободен → поставить зверей ═══
                 logger.info(f"[{emu_name}] Prime: слот свободен, ставим зверей")
 
                 nav_ok = self.panel.navigate_to_building(
                     self.emulator, building_name
                 )
                 if not nav_ok:
-                    logger.error(f"[{emu_name}] Prime: навигация к {building_name} провалилась")
+                    logger.error(
+                        f"[{emu_name}] Prime: навигация к "
+                        f"{building_name} провалилась"
+                    )
                     self._reset_nav_state()
                     break
 
@@ -648,48 +652,52 @@ class TrainingFunction(BaseFunction):
                 status, timer_sec, _ = self.nav.train_troops(
                     self.emulator, building_type, tier
                 )
-                # train_troops() делает ESC → бот в поместье
-                self._reset_nav_state()
+                self._reset_nav_state()  # train_troops() → ESC → поместье
 
                 if status != 'started':
-                    logger.warning(f"[{emu_name}] Prime: train_troops → {status}")
+                    logger.warning(
+                        f"[{emu_name}] Prime: train_troops → {status}"
+                    )
                     break
 
                 if timer_sec:
-                    self.db.start_training(emu_id, building_type, tier, timer_sec)
+                    self.db.start_training(
+                        emu_id, building_type, tier, timer_sec
+                    )
+                # Проваливаемся в шаг 2 ↓
 
-                # Бот в поместье → нужно зайти обратно для drain
-                # → проваливаемся в сценарий 2 ниже
+            # ── ШАГ 2: Навигация к окну ускорений ──
+            logger.info(
+                f"[{emu_name}] Prime: открываем окно ускорений тренировки"
+            )
 
-            # ═══ СЦЕНАРИЙ 2: Слот занят → зайти и ускорить ═══
-            logger.info(f"[{emu_name}] Prime: открываем окно ускорений тренировки")
-
-            # Навигация к зданию
             nav_ok = self.panel.navigate_to_building(
                 self.emulator, building_name
             )
             if not nav_ok:
-                logger.error(f"[{emu_name}] Prime: навигация к {building_name} провалилась")
+                logger.error(
+                    f"[{emu_name}] Prime: навигация к "
+                    f"{building_name} провалилась"
+                )
                 self._reset_nav_state()
                 break
 
-            # Клик по зданию → иконки вокруг
-            from utils.adb_controller import tap
             tap(self.emulator, 268, 517)
             time.sleep(1.5)
 
-            # Клик "Ускорить" → открывается окно с таймером тренировки
-            if not building_upgrade._open_speedup_window(self.emulator):
-                logger.error(f"[{emu_name}] Prime: иконка 'Ускорить' не найдена")
+            if not self.nav._click_training_icon(self.emulator):
+                logger.error(
+                    f"[{emu_name}] Prime: иконка 'Обучение' не найдена"
+                )
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
                 self._reset_nav_state()
                 break
 
-            # Теперь бот в окне тренировки с таймером.
-            # Ищем кнопку "Ускорение" → откроет окно с ускорениями
             if not self._click_speedup_button(speedup_btn_path):
-                logger.error(f"[{emu_name}] Prime: кнопка 'Ускорение' не найдена")
+                logger.error(
+                    f"[{emu_name}] Prime: кнопка 'Ускорение' не найдена"
+                )
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
                 self._reset_nav_state()
@@ -697,94 +705,171 @@ class TrainingFunction(BaseFunction):
 
             time.sleep(1.0)
 
-            # ── Окно ускорений открыто → рассчитываем план и делаем drain ──
-            remaining_min = int(ds['target_minutes'] - ds['spent_minutes'])
-            inventory = bp_storage.get_inventory(emu_id)
+            # ════════════════════════════════════════
+            # ШАГ 3: ВНУТРЕННИЙ ЦИКЛ — drain по пачкам
+            # Бот в окне ускорений. Каждая итерация = 1 пачка.
+            # ════════════════════════════════════════
+            while ds['spent_minutes'] < ds['target_minutes']:
+                # Проверка времени ДС
+                if not is_safe_to_start(min_minutes=5):
+                    if ds['spent_minutes'] <= 0:
+                        logger.info(
+                            f"[{emu_name}] Prime: мало времени до конца ДС"
+                        )
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    break
 
-            has_buildings = True
-            try:
-                has_buildings = self.building_db.has_buildings_to_upgrade(emu_id)
-            except Exception:
-                pass
+                # ── Парсим таймер ТЕКУЩЕЙ пачки из окна ускорений ──
+                batch_timer_sec = _parse_remaining_timer(
+                    self.emulator, ocr, 'training'
+                )
 
-            plan = calculate_plan(
-                inventory=inventory,
-                target_minutes=remaining_min,
-                event_type=ds['event_type'],
-                drain_type='training',
-                has_buildings=has_buildings,
-                target_shell=ds['target_shell'],
-            )
+                if not batch_timer_sec or batch_timer_sec <= 0:
+                    logger.warning(
+                        f"[{emu_name}] Prime: не удалось спарсить "
+                        f"таймер тренировки"
+                    )
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    break
 
-            if plan.is_skip:
-                logger.info(f"[{emu_name}] Prime: план пустой — {plan.skip_reason}")
-                press_key(self.emulator, "ESC")  # закрыть ускорения
-                time.sleep(0.5)
-                press_key(self.emulator, "ESC")  # закрыть окно тренировки
-                time.sleep(0.5)
-                self._reset_nav_state()
-                break
+                batch_timer_min = max(1, batch_timer_sec // 60)
+                remaining_ds_min = int(
+                    ds['target_minutes'] - ds['spent_minutes']
+                )
+                batch_target = min(remaining_ds_min, batch_timer_min)
 
-            # Drain!
-            result = drain_speedups(
-                self.emulator, plan, 'training', self.session_state
-            )
+                logger.info(
+                    f"[{emu_name}] Prime пачка: "
+                    f"таймер={batch_timer_min}мин, "
+                    f"осталось ДС={remaining_ds_min}мин, "
+                    f"batch_target={batch_target}мин"
+                )
 
-            # Обновляем прогресс
-            ds['spent_minutes'] += result.minutes_spent
-            prime_st.add_spent_minutes(
-                emu_id, event['event_key'], int(result.minutes_spent)
-            )
-            logger.info(
-                f"[{emu_name}] Prime: +{result.minutes_spent:.0f} мин, "
-                f"итого {ds['spent_minutes']:.0f}/{ds['target_minutes']}"
-            )
+                # ── План на ЭТУ ПАЧКУ ──
+                inventory = bp_storage.get_inventory(emu_id)
 
-            if result.building_completed:
+                has_buildings = True
+                try:
+                    has_buildings = (
+                        self.building_db.has_buildings_to_upgrade(emu_id)
+                    )
+                except Exception:
+                    pass
+
+                plan = calculate_plan(
+                    inventory=inventory,
+                    target_minutes=batch_target,
+                    event_type=ds['event_type'],
+                    drain_type='training',
+                    has_buildings=has_buildings,
+                    target_shell=ds['target_shell'],
+                    skip_threshold=True,  # Порог 30ч проверен при инит ДС
+                )
+
+                if plan.is_skip:
+                    logger.info(
+                        f"[{emu_name}] Prime: план пустой — "
+                        f"{plan.skip_reason}"
+                    )
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    break
+
+                # ── Drain этой пачки ──
+                result = drain_speedups(
+                    self.emulator, plan, 'training',
+                    self.session_state
+                )
+
+                # ── Обновляем прогресс ──
+                ds['spent_minutes'] += result.minutes_spent
+                prime_st.add_spent_minutes(
+                    emu_id, event['event_key'],
+                    int(result.minutes_spent)
+                )
+                logger.info(
+                    f"[{emu_name}] Prime: "
+                    f"+{result.minutes_spent:.0f} мин, "
+                    f"итого {ds['spent_minutes']:.0f}/"
+                    f"{ds['target_minutes']}"
+                )
+
+                if not result.building_completed:
+                    # Тренировка ещё идёт → ускорения по плану потрачены
+                    # Закрываем окно ускорений + окно тренировки
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    break
+
                 # ═══ СЦЕНАРИЙ 3: Тренировка завершилась ═══
-                # Окно ускорений закрылось → бот видит окно выбора зверей
-                # Тип зверя уже выбран (последний), кнопка "Обучение" видна
-                logger.info(f"[{emu_name}] Prime: тренировка завершилась!")
-
-                # Обновляем БД тренировки (слот свободен)
+                # Окно ускорений закрылось → бот видит окно зверей
+                logger.info(
+                    f"[{emu_name}] Prime: тренировка завершилась!"
+                )
                 self.db.clear_finished_slots(emu_id)
 
+                # Проверяем: набрали ли очки ДС?
+                if ds['spent_minutes'] >= ds['target_minutes']:
+                    logger.info(
+                        f"[{emu_name}] Prime: ДС цель достигнута, "
+                        f"выходим"
+                    )
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    break
+
                 # Кликаем "Обучение" → ставим новых зверей
-                if self._click_training_button(training_btn_path):
-                    logger.info(f"[{emu_name}] Prime: новые звери поставлены на обучение")
+                if not self._click_training_button(training_btn_path):
+                    logger.warning(
+                        f"[{emu_name}] Prime: кнопка 'Обучение' "
+                        f"не найдена"
+                    )
+                    break
 
-                    # Парсим таймер новой тренировки
-                    timer_sec = self.nav._parse_training_timer(self.emulator)
-                    if timer_sec:
-                        tier = self.db.get_carnivore_tier(emu_id)
-                        self.db.start_training(emu_id, building_type, tier, timer_sec)
+                logger.info(
+                    f"[{emu_name}] Prime: новые звери поставлены"
+                )
 
-                    # Теперь бот в окне тренировки с таймером
-                    # Кликаем "Ускорение" → обратно в окно ускорений
-                    if self._click_speedup_button(speedup_btn_path):
-                        time.sleep(1.0)
-                        # loop continues → следующая итерация drain
-                        self._reset_nav_state()
-                        continue
-                    else:
-                        # "Ускорение" не найдена → закрываем и выходим
-                        press_key(self.emulator, "ESC")
-                        time.sleep(0.5)
+                # Парсим таймер новой пачки
+                new_timer_sec = self.nav._parse_training_timer(
+                    self.emulator
+                )
+                if new_timer_sec:
+                    tier = self.db.get_carnivore_tier(emu_id)
+                    self.db.start_training(
+                        emu_id, building_type, tier, new_timer_sec
+                    )
 
-                # Не удалось поставить новых или открыть ускорения
-                self._reset_nav_state()
+                # "Ускорение" → обратно в окно ускорений
+                if not self._click_speedup_button(speedup_btn_path):
+                    logger.error(
+                        f"[{emu_name}] Prime: кнопка 'Ускорение' "
+                        f"не найдена"
+                    )
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    break
+
                 time.sleep(1.0)
-                continue  # loop перезайдёт: slot_free=True → сценарий 1
-            else:
-                # Тренировка НЕ завершилась → закрываем и выходим
-                press_key(self.emulator, "ESC")   # закрыть окно ускорений
-                time.sleep(0.5)
-                press_key(self.emulator, "ESC")   # закрыть окно тренировки
-                time.sleep(0.5)
-                self._reset_nav_state()
-                break
+                # continue → внутренний цикл: следующая пачка
 
-        # ── Финализация ──
+            # Внутренний цикл завершён
+            self._reset_nav_state()
+            break  # Внешний цикл: одна навигация, всё через внутренний
+
+        # ════════════════════════════════════════════
+        # ФИНАЛИЗАЦИЯ
+        # ════════════════════════════════════════════
         if ds['spent_minutes'] >= ds['target_minutes']:
             self._set_prime_completed(event['event_key'], prime_st)
         else:

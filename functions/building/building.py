@@ -913,18 +913,29 @@ class BuildingFunction(BaseFunction):
                 self._reset_panel_state()
                 break
 
-            # Рассчитать план на оставшееся
-            remaining_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            # ── Рассчитать план НА ЭТО ЗДАНИЕ (не на весь ДС) ──
+            remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            building_timer_min = max(1, building_info['timer_sec'] // 60)
+            batch_target = min(remaining_ds_min, building_timer_min)
+
+            logger.info(
+                f"[{emu_name}] Prime пачка: "
+                f"таймер здания={building_timer_min}мин, "
+                f"осталось ДС={remaining_ds_min}мин, "
+                f"batch={batch_target}мин"
+            )
+
             inventory = bp_storage.get_inventory(emu_id)
             has_buildings = self.db.has_buildings_to_upgrade(emu_id)
 
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=remaining_min,
+                target_minutes=batch_target,  # ← таймер здания
                 event_type=ds['event_type'],
                 drain_type='building',
                 has_buildings=has_buildings,
                 target_shell=ds['target_shell'],
+                skip_threshold=True,  # ← порог проверен при инит
             )
 
             if plan.is_skip:

@@ -535,22 +535,18 @@ def _apply_clicks(
     После каждого клика:
     - Обновляет БД (use_speedup)
     - Проверяет: закончился ли номинал (quantity=0 → выход, нужен rescan)
-    - Проверяет: могло ли улучшение завершиться (→ check_completion)
+    - Проверяет: завершилось ли улучшение (confirm / контекстный маркер)
 
-    Args:
-        slot: куда кликать
-        max_clicks: сколько раз максимум
-        speedup_type: тип ускорения в БД
-        denomination: номинал в БД
-        storage: BackpackStorage для обновления
-        emu_id: ID эмулятора
-        context: 'building' / 'training' / 'evolution'
-        result: DrainResult для обновления minutes_spent (для оценки)
+    ВАЖНО: проверка завершения выполняется ПОСЛЕ КАЖДОГО клика.
+    Даже с per-batch планированием, таймер мог уменьшиться
+    между парсингом и drain (навигация, задержки). Без проверки
+    бот продолжает кликать в пустоту после закрытия окна.
 
     Returns:
         (used_count, completed): сколько использовали, завершилось ли
     """
     emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
     used = 0
     denom_sec = DENOM_SECONDS.get(denomination, 0)
 
@@ -574,22 +570,21 @@ def _apply_clicks(
         )
         db_qty = new_qty
 
-        # Определяем задержку
+        # Определяем контекст клика
         is_last_of_this_denom = (new_qty <= 0)
         is_last_click = (i == max_clicks - 1)
 
+        # ── Пауза после клика ──
+        # Последний клик (по номиналу или по плану) → дольше ждём
         if is_last_of_this_denom or is_last_click:
-            # Последний клик по этому номиналу — дольше ждём
             time.sleep(DELAY_AFTER_LAST_USE)
         else:
             time.sleep(DELAY_AFTER_USE)
 
-        # Проверяем завершение улучшения
-        # (всегда проверяем на последнем клике или если номинал закончился)
-        if is_last_of_this_denom or is_last_click:
-            completed = _check_confirm_or_completed(emulator, context)
-            if completed:
-                return used, True
+        # ── Проверяем завершение ПОСЛЕ КАЖДОГО клика ──
+        completed = _check_confirm_or_completed(emulator, context)
+        if completed:
+            return used, True
 
         # Если номинал закончился → строки сдвинулись → выходим
         if is_last_of_this_denom:

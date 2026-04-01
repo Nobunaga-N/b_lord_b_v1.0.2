@@ -711,6 +711,9 @@ class ResearchFunction(BaseFunction):
         (обеспечивается speedup_calculator через UNIVERSAL_RULES).
         """
         import os
+        from functions.prime_times.speedup_applier import _parse_remaining_timer
+        from utils.ocr_engine import OCREngine
+        ocr = OCREngine()
 
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
@@ -814,17 +817,40 @@ class ResearchFunction(BaseFunction):
                 self._close_evo_windows(4)
                 break
 
-            # План (universal НИКОГДА для эволюции — обеспечено speedup_calculator)
-            remaining_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            # ── Парсим таймер ТЕКУЩЕЙ эволюции из окна ускорений ──
+            evo_timer_sec = _parse_remaining_timer(
+                self.emulator, ocr, 'evolution'
+            )
+
+            if not evo_timer_sec or evo_timer_sec <= 0:
+                logger.warning(
+                    f"[{emu_name}] Prime: не удалось спарсить "
+                    f"таймер эволюции"
+                )
+                self._close_evo_windows(4)
+                break
+
+            evo_timer_min = max(1, evo_timer_sec // 60)
+            remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            batch_target = min(remaining_ds_min, evo_timer_min)
+
+            logger.info(
+                f"[{emu_name}] Prime пачка: эволюция, "
+                f"таймер={evo_timer_min}мин, "
+                f"осталось ДС={remaining_ds_min}мин, "
+                f"batch={batch_target}мин"
+            )
+
             inventory = bp_storage.get_inventory(emu_id)
 
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=remaining_min,
+                target_minutes=batch_target,  # ← таймер эволюции
                 event_type=ds['event_type'],
                 drain_type='evolution',
                 has_buildings=True,
                 target_shell=ds['target_shell'],
+                skip_threshold=True,  # ← порог проверен при инит
             )
 
             if plan.is_skip:
