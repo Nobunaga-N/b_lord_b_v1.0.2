@@ -20,6 +20,17 @@ from utils.logger import logger
 from utils.adb_controller import press_key
 from utils.adb_controller import press_key, execute_command, get_adb_device
 from core.game_launcher import GameLauncher
+from functions.prime_times.ds_schedule import (
+    get_current_event, is_safe_to_start,
+)
+from functions.prime_times.ds_navigator import parse_ds_points
+from functions.prime_times.speedup_calculator import (
+    calculate_plan, choose_drain_type, calculate_target_minutes,
+    MAX_TARGET_HOURS,
+)
+from functions.prime_times.speedup_applier import drain_speedups
+from functions.prime_times.prime_storage import PrimeStorage
+from functions.backpack_speedups.backpack_storage import BackpackStorage
 
 
 class BuildingFunction(BaseFunction):
@@ -383,6 +394,9 @@ class BuildingFunction(BaseFunction):
                     resources_frozen = True
                     break
 
+        # === ПРАЙМ ТАЙМ (точка А — строительство) ===
+        self._handle_prime_time()
+
         # === ИТОГ ===
         total = upgraded_count + constructed_count
         logger.info(f"[{self.emulator_name}] 📊 Строительство: "
@@ -462,6 +476,478 @@ class BuildingFunction(BaseFunction):
                     actual_level=lord_level
                 )
             return 'timer_set'
+
+    def _handle_prime_time(self):
+        """
+        Проверить и выполнить drain ускорений строительства в ДС.
+
+        Вызывается ПОСЛЕ основного цикла строительства (все строители заняты).
+        Бот находится в поместье.
+
+        Точка входа A — бот уже работает со строительством,
+        навигация минимальна (только к зданию с таймером).
+
+        Ничего не возвращает, не влияет на return execute().
+        Все ошибки обрабатываются внутри (логируются, не пробрасываются).
+        """
+        emu_id = self.emulator.get('id')
+        emu_name = self.emulator_name
+
+        try:
+            # ── 1. Проверяем включён ли prime_times ──
+            active_funcs = self.session_state.get('_active_functions', [])
+            if 'prime_times' not in active_funcs:
+                return
+
+            # ── 2. Активный ДС? ──
+            now = datetime.now()
+            event = get_current_event(now)
+            if event is None:
+                return
+
+            event_key = event['event_key']
+            event_type = event['type']
+
+            # ── 3. ДС уже завершён? ──
+            ds = self.session_state.get('prime_times')
+            if ds and ds.get('completed') and ds.get('event_key') == event_key:
+                return
+
+            prime_st = PrimeStorage()
+            if prime_st.is_completed(emu_id, event_key):
+                return
+
+            # ── 4. Безопасно ли начинать? ──
+            # Если уже начали (spent > 0) — продолжаем в любом случае
+            progress = prime_st.get_progress(emu_id, event_key)
+            spent = float(progress['spent_minutes']) if progress else 0.0
+
+            if spent <= 0 and not is_safe_to_start(now, min_minutes=5):
+                return
+
+            # ── 5. Инициализация session_state если нужно ──
+            if ds is None or ds.get('event_key') != event_key:
+                ds = self._init_prime_session(event, prime_st)
+                if ds is None:
+                    return
+
+            # ── 6. Проверяем что drain_type = building ──
+            if ds.get('skip_reason') or ds.get('completed'):
+                return
+
+            if ds['drain_type'] != 'building':
+                # Не building → оставляем для fallback (prime_times.py)
+                return
+
+            # ── 7. Цикл drain ──
+            logger.info(
+                f"[{emu_name}] 🎯 Prime Time (building): "
+                f"target={ds['target_minutes']} мин, "
+                f"spent={ds['spent_minutes']:.0f} мин"
+            )
+
+            self._drain_building_in_prime(ds, event, prime_st)
+
+        except Exception as e:
+            logger.error(
+                f"[{emu_name}] ❌ Ошибка в _handle_prime_time: {e}"
+            )
+            # Не пробрасываем — prime time не должен ломать building
+
+    def _init_prime_session(
+            self, event: dict, prime_st: PrimeStorage
+    ) -> dict | None:
+        """
+        Инициализировать session_state['prime_times'] для точки A.
+
+        Парсит очки ДС, выбирает drain_type, считает target_minutes.
+
+        Returns:
+            dict (session_state['prime_times']) или None при ошибке
+        """
+        emu_id = self.emulator.get('id')
+        emu_name = self.emulator_name
+
+        event_key = event['event_key']
+        event_type = event['type']
+        ppm = event['points_per_min']
+
+        # Инвентарь
+        bp_storage = BackpackStorage()
+        inventory = bp_storage.get_inventory(emu_id)
+        if not inventory:
+            logger.debug(f"[{emu_name}] Prime: нет данных ускорений")
+            return None
+
+        # Есть ли здания для строительства
+        has_buildings = self.db.has_buildings_to_upgrade(emu_id)
+
+        # Выбор drain_type
+        drain_type, total_hours = choose_drain_type(
+            inventory, event_type, has_buildings
+        )
+        if drain_type is None:
+            logger.debug(f"[{emu_name}] Prime: не хватает ускорений")
+            self._set_prime_skip(event_key, 'not_enough_speedups', prime_st)
+            return self.session_state.get('prime_times')
+
+        # Парсим очки ДС
+        ds_points = parse_ds_points(self.emulator)
+        if ds_points is None:
+            logger.warning(f"[{emu_name}] Prime: не удалось спарсить очки ДС")
+            from utils.function_freeze_manager import function_freeze_manager
+            function_freeze_manager.freeze(
+                emu_id, 'prime_times', hours=1,
+                reason="Ошибка парсинга очков ДС",
+            )
+            return None
+
+        # Target minutes
+        target_shell = 2
+        target_min = calculate_target_minutes(
+            ds_points['current'], ds_points['shell_2'], ppm
+        )
+
+        if target_min > MAX_TARGET_HOURS * 60:
+            target_min_1 = calculate_target_minutes(
+                ds_points['current'], ds_points['shell_1'], ppm
+            )
+            if target_min_1 <= MAX_TARGET_HOURS * 60:
+                target_min = target_min_1
+                target_shell = 1
+            else:
+                self._set_prime_skip(event_key, '>65h', prime_st)
+                return self.session_state.get('prime_times')
+
+        if target_min <= 0:
+            self._set_prime_completed(event_key, prime_st)
+            return self.session_state.get('prime_times')
+
+        # Восстановление из ds_progress
+        progress = prime_st.get_progress(emu_id, event_key)
+        spent = 0.0
+        if progress and progress['status'] == 'in_progress':
+            spent = float(progress['spent_minutes'])
+
+        # Формируем session_state
+        ds = {
+            'event_type': event_type,
+            'points_per_min': ppm,
+            'event_end': event['end'],
+            'event_key': event_key,
+            'ds_parsed': True,
+            'current_points': ds_points['current'],
+            'shell_1_points': ds_points['shell_1'],
+            'shell_2_points': ds_points['shell_2'],
+            'target_minutes': target_min,
+            'target_shell': target_shell,
+            'spent_minutes': spent,
+            'drain_type': drain_type,
+            'completed': False,
+            'skip_reason': None,
+        }
+        self.session_state['prime_times'] = ds
+
+        prime_st.save_progress(
+            emu_id, event_key, target_min,
+            int(spent), target_shell, 'in_progress',
+        )
+
+        logger.info(
+            f"[{emu_name}] Prime init: drain={drain_type}, "
+            f"target={target_min} мин (shell {target_shell})"
+        )
+        return ds
+
+    def _drain_building_in_prime(
+            self, ds: dict, event: dict, prime_st: PrimeStorage
+    ):
+        """
+        Цикл drain строительных ускорений для ДС.
+
+        Бот в поместье. Для каждой итерации:
+        1. Найти здание с максимальным таймером
+        2. NavigationPanel → здание → "Ускорить" → окно ускорений
+        3. drain_speedups()
+        4. Обновить прогресс
+        5. Если здание достроилось → ставим следующее → continue
+        6. Если набрали очки → break
+        """
+        emu_id = self.emulator.get('id')
+        emu_name = self.emulator_name
+
+        bp_storage = BackpackStorage()
+
+        while ds['spent_minutes'] < ds['target_minutes']:
+            # Проверяем время
+            if not is_safe_to_start(min_minutes=5):
+                if ds['spent_minutes'] <= 0:
+                    logger.info(f"[{emu_name}] Prime: мало времени до конца ДС")
+                    break
+
+            # Найти здание с максимальным таймером
+            building_info = self._find_best_building_for_drain(emu_id)
+            if building_info is None:
+                logger.info(f"[{emu_name}] Prime: нет зданий с таймерами")
+                break
+
+            b_name = building_info['name']
+            b_index = building_info.get('index')
+            display = b_name + (f" #{b_index}" if b_index else "")
+
+            logger.info(
+                f"[{emu_name}] Prime: drain → {display} "
+                f"(таймер ~{building_info['timer_sec'] // 60} мин)"
+            )
+
+            # Навигация
+            nav_ok = self.panel.navigate_to_building(
+                self.emulator, b_name, building_index=b_index
+            )
+            if not nav_ok:
+                logger.error(f"[{emu_name}] Prime: навигация к {display} не удалась")
+                self._reset_panel_state()
+                break
+
+            # Открыть окно ускорений
+            if not self.upgrade._open_speedup_window(self.emulator):
+                logger.error(f"[{emu_name}] Prime: не удалось открыть окно ускорений")
+                press_key(self.emulator, "ESC")
+                time.sleep(0.5)
+                self._reset_panel_state()
+                break
+
+            # Рассчитать план на оставшееся
+            remaining_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            inventory = bp_storage.get_inventory(emu_id)
+            has_buildings = self.db.has_buildings_to_upgrade(emu_id)
+
+            plan = calculate_plan(
+                inventory=inventory,
+                target_minutes=remaining_min,
+                event_type=ds['event_type'],
+                drain_type='building',
+                has_buildings=has_buildings,
+                target_shell=ds['target_shell'],
+            )
+
+            if plan.is_skip:
+                logger.info(f"[{emu_name}] Prime: план пустой — {plan.skip_reason}")
+                press_key(self.emulator, "ESC")
+                time.sleep(0.5)
+                self._reset_panel_state()
+                break
+
+            # Drain!
+            result = drain_speedups(
+                self.emulator, plan, 'building', self.session_state
+            )
+
+            # Обновляем прогресс
+            ds['spent_minutes'] += result.minutes_spent
+            prime_st.add_spent_minutes(
+                emu_id, event['event_key'], int(result.minutes_spent)
+            )
+
+            logger.info(
+                f"[{emu_name}] Prime: +{result.minutes_spent:.0f} мин, "
+                f"итого {ds['spent_minutes']:.0f}/{ds['target_minutes']}"
+            )
+
+            self._reset_panel_state()
+
+            if result.building_completed:
+                # Здание достроилось → обновляем БД
+                self._complete_building_after_drain(emu_id, b_name, b_index)
+
+                # Ставим следующее здание на улучшение (если есть)
+                if not self._start_next_building(emu_id):
+                    logger.info(f"[{emu_name}] Prime: нет зданий для следующего улучшения")
+                    break
+
+                time.sleep(1.0)
+                continue  # Следующая итерация drain
+
+            # Не достроилось → закрываем окно ускорений
+            press_key(self.emulator, "ESC")
+            time.sleep(0.5)
+            break
+
+        # Финализация
+        if ds['spent_minutes'] >= ds['target_minutes']:
+            self._set_prime_completed(event['event_key'], prime_st)
+        else:
+            logger.info(
+                f"[{emu_name}] Prime: итого "
+                f"{ds['spent_minutes']:.0f}/{ds['target_minutes']} мин"
+            )
+
+    def _find_best_building_for_drain(self, emu_id: int) -> dict | None:
+        """
+        Найти здание с максимальным оставшимся таймером.
+
+        Returns:
+            {'name': str, 'index': int|None, 'timer_sec': int}
+            или None
+        """
+        now = datetime.now()
+        best = None
+        best_remaining = 0
+
+        try:
+            with self.db.db_lock:
+                cursor = self.db.conn.cursor()
+                cursor.execute("""
+                    SELECT b.building_name, b.building_index,
+                           br.finish_time
+                    FROM builders br
+                    JOIN buildings b ON br.building_id = b.id
+                    WHERE br.emulator_id = ? AND br.is_busy = 1
+                          AND br.finish_time IS NOT NULL
+                """, (emu_id,))
+
+                for row in cursor.fetchall():
+                    ft = row['finish_time']
+                    if isinstance(ft, str):
+                        ft = datetime.fromisoformat(ft)
+                    remaining = (ft - now).total_seconds()
+                    if remaining > best_remaining:
+                        best_remaining = remaining
+                        best = {
+                            'name': row['building_name'],
+                            'index': row['building_index'],
+                            'timer_sec': int(remaining),
+                        }
+        except Exception as e:
+            logger.error(f"Ошибка _find_best_building_for_drain: {e}")
+
+        return best
+
+    def _complete_building_after_drain(
+            self, emu_id: int, building_name: str, building_index: int | None
+    ):
+        """
+        Обновить БД после того как drain завершил строительство.
+
+        Здание достроилось через ускорения:
+        - level += 1
+        - status = idle
+        - освобождаем строителя
+        """
+        try:
+            building = self.db.get_building(emu_id, building_name, building_index)
+            if building is None:
+                return
+
+            new_level = building.get('upgrading_to_level') or (building['current_level'] + 1)
+            self.db.update_building_level(
+                emu_id, building_name, building_index, new_level
+            )
+
+            logger.success(
+                f"[{self.emulator_name}] 🏗️ Prime: {building_name} "
+                f"достроено → Lv.{new_level}"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка _complete_building_after_drain: {e}")
+
+    def _start_next_building(self, emu_id: int) -> bool:
+        """
+        Поставить следующее здание на улучшение (для продолжения drain).
+
+        Используется внутри prime time drain когда текущее здание
+        достроилось и нужно поставить новое чтобы продолжить слив ускорений.
+
+        Returns:
+            True если здание поставлено (навигация + upgrade_building)
+        """
+        free_builder = self.db.get_free_builder(emu_id)
+        if free_builder is None:
+            return False
+
+        next_building = self.db.get_next_building_to_upgrade(
+            self.emulator, auto_scan=False
+        )
+        if not next_building:
+            return False
+
+        b_name = next_building['name']
+        b_index = next_building.get('index')
+        action = next_building.get('action', 'upgrade')
+
+        if action == 'build':
+            # Постройка — слишком сложно для inline prime,
+            # оставляем для основного цикла
+            return False
+
+        # Навигация
+        success = self.panel.navigate_to_building(
+            self.emulator, b_name, building_index=b_index,
+            expected_level=next_building['current_level'],
+        )
+        if not success:
+            self._reset_panel_state()
+            return False
+
+        detected_level = self.panel.last_detected_level
+
+        # Улучшение
+        upgrade_ok, timer_sec = self.upgrade.upgrade_building(
+            self.emulator, building_name=b_name, building_index=b_index
+        )
+
+        self._reset_panel_state()
+
+        if upgrade_ok and timer_sec and timer_sec > 0:
+            timer_finish = datetime.now() + timedelta(seconds=timer_sec)
+            self.db.set_building_upgrading(
+                emu_id, b_name, b_index,
+                timer_finish, free_builder,
+                actual_level=detected_level,
+            )
+            display = b_name + (f" #{b_index}" if b_index else "")
+            logger.success(
+                f"[{self.emulator_name}] Prime: {display} "
+                f"поставлено на улучшение ({self._format_time(timer_sec)})"
+            )
+            return True
+
+        elif upgrade_ok and (timer_sec == 0 or timer_sec is None):
+            # Мгновенное улучшение
+            new_level = (detected_level or next_building['current_level']) + 1
+            self.db.update_building_level(emu_id, b_name, b_index, new_level)
+            return True
+
+        return False
+
+    def _reset_panel_state(self):
+        """Сбросить состояние навигационной панели."""
+        try:
+            self.panel.nav_state.close_panel()
+        except Exception:
+            pass
+
+    # ── Prime helpers (статус) ──
+
+    def _set_prime_completed(self, event_key: str, prime_st: PrimeStorage):
+        """Пометить ДС как завершённый."""
+        emu_id = self.emulator.get('id')
+        ds = self.session_state.get('prime_times', {})
+        ds['completed'] = True
+        ds['event_key'] = event_key
+        self.session_state['prime_times'] = ds
+        prime_st.mark_completed(emu_id, event_key)
+        logger.success(f"[{self.emulator_name}] 🎉 Prime: ДС {event_key} завершён!")
+
+    def _set_prime_skip(self, event_key: str, reason: str, prime_st: PrimeStorage):
+        """Пометить ДС как пропущенный."""
+        emu_id = self.emulator.get('id')
+        ds = self.session_state.get('prime_times', {})
+        ds['event_key'] = event_key
+        ds['skip_reason'] = reason
+        ds['completed'] = False
+        self.session_state['prime_times'] = ds
+        prime_st.mark_skipped(emu_id, event_key, reason)
 
     def _lord_instant_finish(self, emulator_id: int, old_level: int,
                              expected_new: int) -> str:

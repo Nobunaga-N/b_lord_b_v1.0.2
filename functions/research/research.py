@@ -22,6 +22,19 @@ from functions.research.evolution_database import EvolutionDatabase
 from functions.research.evolution_upgrade import EvolutionUpgrade
 from utils.logger import logger
 from utils.adb_controller import press_key
+from datetime import datetime  # может уже быть, не дублировать
+from functions.prime_times.ds_schedule import (
+    get_current_event, is_safe_to_start,
+)
+from functions.prime_times.ds_navigator import parse_ds_points
+from functions.prime_times.speedup_calculator import (
+    calculate_plan, choose_drain_type, calculate_target_minutes,
+    MAX_TARGET_HOURS,
+)
+from functions.prime_times.speedup_applier import drain_speedups
+from functions.prime_times.prime_storage import PrimeStorage
+from functions.backpack_speedups.backpack_storage import BackpackStorage
+from utils.image_recognition import find_image
 
 
 class ResearchFunction(BaseFunction):
@@ -238,6 +251,9 @@ class ResearchFunction(BaseFunction):
                                f"ставим 7200с по умолчанию")
                 self.db.start_research(emulator_id, tech_name,
                                        section_name, 7200)
+
+            # === ПРАЙМ ТАЙМ (точка А — эволюция) ===
+            self._handle_prime_time()
             return True  # ← Успех
 
         elif status == "no_resources":
@@ -537,3 +553,360 @@ class ResearchFunction(BaseFunction):
                 matched += 1
 
         return matched
+
+    # ==================== PRIME TIME (ТОЧКА А) ====================
+    def _handle_prime_time(self):
+        """
+        Проверить и выполнить drain ускорений эволюции в ДС.
+
+        Вызывается ПОСЛЕ запуска исследования.
+        Бот находится в поместье (research_tech закрывает всё ESC×3).
+
+        ВАЖНО: universal НИКОГДА не тратится на эволюцию.
+        """
+        emu_id = self.emulator.get('id')
+        emu_name = self.emulator_name
+
+        try:
+            active_funcs = self.session_state.get('_active_functions', [])
+            if 'prime_times' not in active_funcs:
+                return
+
+            now = datetime.now()
+            event = get_current_event(now)
+            if event is None:
+                return
+
+            event_key = event['event_key']
+
+            ds = self.session_state.get('prime_times')
+            if ds and ds.get('completed') and ds.get('event_key') == event_key:
+                return
+
+            prime_st = PrimeStorage()
+            if prime_st.is_completed(emu_id, event_key):
+                return
+
+            progress = prime_st.get_progress(emu_id, event_key)
+            spent = float(progress['spent_minutes']) if progress else 0.0
+
+            if spent <= 0 and not is_safe_to_start(now, min_minutes=5):
+                return
+
+            if ds is None or ds.get('event_key') != event_key:
+                ds = self._init_prime_session(event, prime_st)
+                if ds is None:
+                    return
+
+            if ds.get('skip_reason') or ds.get('completed'):
+                return
+
+            if ds['drain_type'] != 'evolution':
+                return
+
+            logger.info(
+                f"[{emu_name}] 🎯 Prime Time (evolution): "
+                f"target={ds['target_minutes']} мин, "
+                f"spent={ds['spent_minutes']:.0f} мин"
+            )
+            self._drain_evolution_in_prime(ds, event, prime_st)
+
+        except Exception as e:
+            logger.error(f"[{emu_name}] ❌ Ошибка в _handle_prime_time: {e}")
+
+    def _init_prime_session(
+            self, event: dict, prime_st: PrimeStorage
+    ) -> dict | None:
+        """Инициализировать session_state['prime_times'] для эволюции."""
+        emu_id = self.emulator.get('id')
+        emu_name = self.emulator_name
+        event_key = event['event_key']
+        ppm = event['points_per_min']
+
+        bp_storage = BackpackStorage()
+        inventory = bp_storage.get_inventory(emu_id)
+        if not inventory:
+            return None
+
+        # has_buildings не влияет на evolution (universal = NEVER)
+        drain_type, _ = choose_drain_type(inventory, event['type'], True)
+        if drain_type is None:
+            self._set_prime_skip(event_key, 'not_enough_speedups', prime_st)
+            return self.session_state.get('prime_times')
+
+        ds_points = parse_ds_points(self.emulator)
+        if ds_points is None:
+            from utils.function_freeze_manager import function_freeze_manager
+            function_freeze_manager.freeze(
+                emu_id, 'prime_times', hours=1,
+                reason="Ошибка парсинга очков ДС",
+            )
+            return None
+
+        target_shell = 2
+        target_min = calculate_target_minutes(
+            ds_points['current'], ds_points['shell_2'], ppm
+        )
+        if target_min > MAX_TARGET_HOURS * 60:
+            target_min_1 = calculate_target_minutes(
+                ds_points['current'], ds_points['shell_1'], ppm
+            )
+            if target_min_1 <= MAX_TARGET_HOURS * 60:
+                target_min = target_min_1
+                target_shell = 1
+            else:
+                self._set_prime_skip(event_key, '>65h', prime_st)
+                return self.session_state.get('prime_times')
+
+        if target_min <= 0:
+            self._set_prime_completed(event_key, prime_st)
+            return self.session_state.get('prime_times')
+
+        progress = prime_st.get_progress(emu_id, event_key)
+        spent = float(progress['spent_minutes']) if progress and progress['status'] == 'in_progress' else 0.0
+
+        ds = {
+            'event_type': event['type'],
+            'points_per_min': ppm,
+            'event_end': event['end'],
+            'event_key': event_key,
+            'ds_parsed': True,
+            'current_points': ds_points['current'],
+            'shell_1_points': ds_points['shell_1'],
+            'shell_2_points': ds_points['shell_2'],
+            'target_minutes': target_min,
+            'target_shell': target_shell,
+            'spent_minutes': spent,
+            'drain_type': drain_type,
+            'completed': False,
+            'skip_reason': None,
+        }
+        self.session_state['prime_times'] = ds
+        prime_st.save_progress(
+            emu_id, event_key, target_min,
+            int(spent), target_shell, 'in_progress',
+        )
+        logger.info(
+            f"[{emu_name}] Prime init: drain={drain_type}, "
+            f"target={target_min} мин (shell {target_shell})"
+        )
+        return ds
+
+    def _drain_evolution_in_prime(
+            self, ds: dict, event: dict, prime_st: PrimeStorage
+    ):
+        """
+        Цикл drain эволюционных ускорений для ДС.
+
+        Бот в поместье (после research_tech → ESC×3).
+
+        Для каждой итерации:
+        1. Открыть эволюцию → найти активную технологию
+        2. Кликнуть по ней → кнопка "Ускорение"
+        3. drain_speedups()
+        4. Если эволюция завершилась → ESC → запустить следующую → continue
+        5. Если набрали очки → парсить таймер → ESC × 3 → break
+
+        ВАЖНО: universal НИКОГДА не тратится на эволюцию
+        (обеспечивается speedup_calculator через UNIVERSAL_RULES).
+        """
+        import os
+
+        emu_id = self.emulator.get('id')
+        emu_name = self.emulator_name
+        bp_storage = BackpackStorage()
+
+        BASE_DIR = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        speedup_btn_path = os.path.join(
+            BASE_DIR, 'data', 'templates', 'prime_times', 'button_speedup.png'
+        )
+
+        while ds['spent_minutes'] < ds['target_minutes']:
+            if not is_safe_to_start(min_minutes=5):
+                if ds['spent_minutes'] <= 0:
+                    break
+
+            # Проверяем/запускаем эволюцию
+            self.db.check_and_complete_research(emu_id)
+
+            if not self.db.is_slot_busy(emu_id):
+                # Нужно запустить новую
+                next_tech = self.db.get_next_tech_to_research(emu_id)
+                if next_tech is None:
+                    logger.info(f"[{emu_name}] Prime: нет технологий для эволюции")
+                    break
+
+                tech_name = next_tech['tech_name']
+                section_name = next_tech['section_name']
+                swipe_config = self.db.get_swipe_config(section_name)
+                swipe_group = next_tech.get('swipe_group', 0)
+
+                status, timer_sec = self.upgrade.research_tech(
+                    self.emulator,
+                    tech_name=tech_name,
+                    section_name=section_name,
+                    swipe_config=swipe_config,
+                    swipe_group=swipe_group,
+                )
+
+                if status != 'started':
+                    logger.warning(f"[{emu_name}] Prime: не удалось запустить эволюцию: {status}")
+                    break
+
+                if timer_sec:
+                    self.db.start_research(emu_id, tech_name, section_name, timer_sec)
+
+            # Бот в поместье. Открываем эволюцию → ищем активную технологию
+            if not self.upgrade.open_evolution_window(self.emulator):
+                logger.error(f"[{emu_name}] Prime: не удалось открыть окно эволюции")
+                break
+
+            # Найти активную технологию в БД
+            active_tech = self._get_active_tech(emu_id)
+            if active_tech is None:
+                logger.error(f"[{emu_name}] Prime: нет активной эволюции в БД")
+                press_key(self.emulator, "ESC")
+                time.sleep(0.5)
+                break
+
+            section_name = active_tech['section_name']
+            tech_name = active_tech['tech_name']
+
+            # Навигация к разделу
+            if not self.upgrade.navigate_to_section(self.emulator, section_name):
+                logger.error(f"[{emu_name}] Prime: навигация к {section_name} провалилась")
+                self._close_evo_windows(3)
+                break
+
+            # Свайпы + поиск технологии
+            swipe_config = self.db.get_swipe_config(section_name)
+            swipe_group = active_tech.get('swipe_group', 0)
+            self.upgrade.perform_swipes(self.emulator, swipe_config, swipe_group)
+
+            tech_coords = self.upgrade.find_tech_on_screen(self.emulator, tech_name)
+            if tech_coords is None:
+                logger.error(f"[{emu_name}] Prime: технология {tech_name} не найдена")
+                self._close_evo_windows(3)
+                break
+
+            from utils.adb_controller import tap
+            tap(self.emulator, x=tech_coords[0], y=tech_coords[1])
+            time.sleep(2.0)
+
+            # Кнопка "Ускорение"
+            speedup_found = False
+            if os.path.exists(speedup_btn_path):
+                for attempt in range(3):
+                    result = find_image(
+                        self.emulator, speedup_btn_path, threshold=0.85
+                    )
+                    if result:
+                        tap(self.emulator, x=result[0], y=result[1])
+                        time.sleep(1.0)
+                        speedup_found = True
+                        break
+                    time.sleep(0.5)
+
+            if not speedup_found:
+                logger.error(f"[{emu_name}] Prime: кнопка 'Ускорение' не найдена")
+                self._close_evo_windows(4)
+                break
+
+            # План (universal НИКОГДА для эволюции — обеспечено speedup_calculator)
+            remaining_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            inventory = bp_storage.get_inventory(emu_id)
+
+            plan = calculate_plan(
+                inventory=inventory,
+                target_minutes=remaining_min,
+                event_type=ds['event_type'],
+                drain_type='evolution',
+                has_buildings=True,
+                target_shell=ds['target_shell'],
+            )
+
+            if plan.is_skip:
+                logger.info(f"[{emu_name}] Prime: план пустой — {plan.skip_reason}")
+                self._close_evo_windows(4)
+                break
+
+            # Drain
+            result = drain_speedups(
+                self.emulator, plan, 'evolution', self.session_state
+            )
+
+            ds['spent_minutes'] += result.minutes_spent
+            prime_st.add_spent_minutes(
+                emu_id, event['event_key'], int(result.minutes_spent)
+            )
+            logger.info(
+                f"[{emu_name}] Prime: +{result.minutes_spent:.0f} мин, "
+                f"итого {ds['spent_minutes']:.0f}/{ds['target_minutes']}"
+            )
+
+            if result.building_completed:
+                # Эволюция завершилась → закрылись 2 окна → видно крестик
+                logger.info(f"[{emu_name}] Prime: эволюция завершилась!")
+                press_key(self.emulator, "ESC")  # крестик
+                time.sleep(0.5)
+                self._close_evo_windows(2)  # закрыть окно эволюции
+                time.sleep(1.0)
+                continue  # Следующая итерация: запустит новую эволюцию
+
+            # Не завершилась → парсим таймер → закрываем
+            # Таймер эволюции в окне ускорений: (214:74, 317:74, 317:104, 214:104)
+            # Обновление БД таймера — опционально (для точности)
+            self._close_evo_windows(4)
+            break
+
+        # Финализация
+        if ds['spent_minutes'] >= ds['target_minutes']:
+            self._set_prime_completed(event['event_key'], prime_st)
+
+    def _get_active_tech(self, emu_id: int) -> dict | None:
+        """Получить активную технологию из evolution_slot."""
+        try:
+            with self.db.db_lock:
+                cursor = self.db.conn.cursor()
+                cursor.execute("""
+                    SELECT e.tech_name, e.section_name, e.swipe_group
+                    FROM evolution_slot es
+                    JOIN evolutions e ON es.tech_id = e.id
+                    WHERE es.emulator_id = ? AND es.is_busy = 1
+                """, (emu_id,))
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'tech_name': row['tech_name'],
+                        'section_name': row['section_name'],
+                        'swipe_group': row['swipe_group'] if 'swipe_group' in row.keys() else 0,
+                    }
+        except Exception as e:
+            logger.error(f"Ошибка _get_active_tech: {e}")
+        return None
+
+    def _close_evo_windows(self, count: int):
+        """Закрыть N окон эволюции."""
+        for _ in range(count):
+            press_key(self.emulator, "ESC")
+            time.sleep(0.5)
+
+    def _set_prime_completed(self, event_key: str, prime_st: PrimeStorage):
+        emu_id = self.emulator.get('id')
+        ds = self.session_state.get('prime_times', {})
+        ds['completed'] = True
+        ds['event_key'] = event_key
+        self.session_state['prime_times'] = ds
+        prime_st.mark_completed(emu_id, event_key)
+        logger.success(f"[{self.emulator_name}] 🎉 Prime: ДС {event_key} завершён!")
+
+    def _set_prime_skip(self, event_key: str, reason: str, prime_st: PrimeStorage):
+        emu_id = self.emulator.get('id')
+        ds = self.session_state.get('prime_times', {})
+        ds['event_key'] = event_key
+        ds['skip_reason'] = reason
+        ds['completed'] = False
+        self.session_state['prime_times'] = ds
+        prime_st.mark_skipped(emu_id, event_key, reason)
