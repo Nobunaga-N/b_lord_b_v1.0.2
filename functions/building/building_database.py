@@ -2436,6 +2436,25 @@ class BuildingDatabase:
         # 4. Все здания во ВСЕХ уровнях достигли целевого уровня
         return None
 
+    def has_builders(self, emulator_id: int) -> bool:
+        """
+        Есть ли записи строителей для этого эмулятора?
+
+        Используется планировщиком для обнаружения частичной
+        инициализации (здания есть, строителей нет → нужен запуск).
+
+        Returns:
+            True если есть хотя бы один строитель
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM builders WHERE emulator_id = ?",
+                (emulator_id,)
+            )
+            return cursor.fetchone()[0] > 0
+
+
     def update_building_after_construction(self, emulator_id: int, building_name: str,
                                            building_index: Optional[int] = None,
                                            actual_level: Optional[int] = None) -> None:

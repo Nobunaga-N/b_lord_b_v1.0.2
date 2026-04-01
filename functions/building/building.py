@@ -70,12 +70,13 @@ class BuildingFunction(BaseFunction):
         Вызывается планировщиком для определения времени запуска.
 
         Логика:
-        1. Нет записей в БД → datetime.min (новый эмулятор, первичное сканирование)
-        2. Эмулятор заморожен → время разморозки
-        3. Есть свободный строитель + есть что строить → datetime.now() (нужен сейчас)
-        4. Есть свободный строитель, но строить нечего → None
-        5. Все строители заняты + есть что строить → время ближайшего освобождения
-        6. Все строители заняты + строить нечего → None
+        1. Заморожена → время разморозки
+        2. Нет записей зданий → datetime.min (новый эмулятор)
+        3. Здания есть, но строителей нет → datetime.min (частичная инициализация)
+        4. Есть свободный строитель + есть что строить → datetime.now()
+        5. Есть свободный строитель, но строить нечего → None
+        6. Все строители заняты + есть что строить → время ближайшего освобождения
+        7. Все строители заняты + строить нечего → None
 
         Returns:
             datetime — когда нужен эмулятор
@@ -87,16 +88,11 @@ class BuildingFunction(BaseFunction):
         # ===== НОВОЕ: Проверка in-memory заморозки =====
         from utils.function_freeze_manager import function_freeze_manager
 
-        # Единая проверка заморозки
         if function_freeze_manager.is_frozen(emulator_id, 'building'):
             unfreeze_at = function_freeze_manager.get_unfreeze_time(
                 emulator_id, 'building'
             )
             if unfreeze_at:
-                logger.debug(
-                    f"[Emulator {emulator_id}] 🧊 building заморожена "
-                    f"до {unfreeze_at.strftime('%H:%M:%S')}"
-                )
                 return unfreeze_at
             return None
 
@@ -107,8 +103,9 @@ class BuildingFunction(BaseFunction):
             if not db.has_buildings(emulator_id):
                 return datetime.min
 
-            # 2. УБРАНО: db.is_emulator_frozen() — больше не нужно!
-            #    Менеджер уже проверен выше.
+            # 2. Частичная инициализация? (здания есть, строителей нет)
+            if not db.has_builders(emulator_id):
+                return datetime.min
 
             # 3. Свободный строитель?
             free_builder = db.get_free_builder(emulator_id)
@@ -127,8 +124,10 @@ class BuildingFunction(BaseFunction):
             return nearest
 
         except Exception as e:
-            logger.error(f"[Emulator {emulator_id}] Ошибка в "
-                         f"BuildingFunction.get_next_event_time: {e}")
+            logger.error(
+                f"[Emulator {emulator_id}] Ошибка в "
+                f"BuildingFunction.get_next_event_time: {e}"
+            )
             return None
 
     def _first_time_initialization(self) -> bool:
