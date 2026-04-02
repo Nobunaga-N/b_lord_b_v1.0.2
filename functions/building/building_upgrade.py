@@ -10,7 +10,7 @@ import os
 import time
 import re
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 from utils.adb_controller import tap, press_key
 from utils.image_recognition import find_image, get_screenshot
 from utils.ocr_engine import OCREngine
@@ -43,7 +43,9 @@ class BuildingUpgrade:
     TEMPLATES = {
         # Иконки действий
         'upgrade_icon': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'upgrade_icon.png'),
+        'upgrade_icon_small': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'upgrade_icon_small.png'),
         'speedup_icon': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'speedup_icon.png'),
+        'speedup_icon_small': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'speedup_icon_small.png'),
 
         # Кнопки
         'button_upgrade_grey': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'button_upgrade_grey.png'),
@@ -167,29 +169,28 @@ class BuildingUpgrade:
 
     def _click_upgrade_icon(self, emulator: Dict) -> bool:
         """
-        Найти и кликнуть иконку "Улучшить"
+        Найти и кликнуть иконку "Улучшить" на здании.
+        Ищет два шаблона: стандартный и уменьшённый.
 
-        Иконка - стрелка вверх, размер может быть разным для разных зданий
+        Returns:
+            True — иконка найдена и нажата
+            False — не найдена
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-
         logger.debug(f"[{emulator_name}] Поиск иконки 'Улучшить'...")
 
-        # Попытка найти иконку (несколько попыток т.к. иконка может быть разных размеров)
-        for attempt in range(3):
-            result = find_image(emulator, self.TEMPLATES['upgrade_icon'],
-                              threshold=self.THRESHOLD_ICON)
+        result = self._find_icon_variants(
+            emulator,
+            template_keys=['upgrade_icon', 'upgrade_icon_small'],
+            thresholds=[self.THRESHOLD_ICON],
+            label="Улучшить",
+        )
 
-            if result:
-                # find_image возвращает (x, y) координаты центра
-                center_x, center_y = result
-
-                logger.debug(f"[{emulator_name}] Найдена иконка 'Улучшить' на ({center_x}, {center_y})")
-                tap(emulator, x=center_x, y=center_y)
-                time.sleep(1.5)  # Ждем открытия окна
-                return True
-
-            time.sleep(0.5)
+        if result:
+            center_x, center_y = result
+            tap(emulator, x=center_x, y=center_y)
+            time.sleep(1.5)
+            return True
 
         logger.error(f"[{emulator_name}] ❌ Иконка 'Улучшить' не найдена")
         return False
@@ -418,11 +419,11 @@ class BuildingUpgrade:
         keep_speedup_open: bool = False,
     ) -> Optional[int]:
         """
-        Спарсить таймер улучшения через иконку "Ускорить"
+        Спарсить таймер улучшения через клик по иконке "Ускорить".
 
-        Процесс:
-        1. Найти и кликнуть иконку "Ускорить" (template matching с разными порогами)
-        2. Если не нашли — fallback на OCR поиск текста "Ускорить"
+        Алгоритм:
+        1. Найти иконку "Ускорить" (2 шаблона + OCR fallback)
+        2. Клик → открыть окно ускорений
         3. Спарсить таймер в области TIMER_AREA
         4. Конвертировать в секунды
         5. Закрыть окно через ESC (если keep_speedup_open=False)
@@ -430,87 +431,40 @@ class BuildingUpgrade:
         Args:
             emulator: объект эмулятора
             keep_speedup_open: если True — НЕ закрывать окно ускорений.
-                               Используется для prime time drain, чтобы
-                               сразу после парсинга начать тратить ускорения.
+                               Используется для prime time drain.
 
         Returns:
-            секунды или None (если таймер не найден — быстрое завершение)
+        секунды или None (если таймер не найден — быстрое завершение)
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-
         logger.debug(f"[{emulator_name}] Парсинг таймера через 'Ускорить'...")
 
-        # ═══ ПОПЫТКА 1: TEMPLATE MATCHING С РАЗНЫМИ ПОРОГАМИ ═══
-        thresholds = [0.75, 0.65, 0.55]
+        # Поиск иконки (2 шаблона + OCR fallback)
+        icon_pos = self._find_speedup_icon(emulator)
 
-        for threshold in thresholds:
-            logger.debug(
-                f"[{emulator_name}] 🔍 Поиск иконки 'Ускорить' "
-                f"(порог {threshold})..."
-            )
-
-            for attempt in range(3):
-                result = find_image(
-                    emulator, self.TEMPLATES['speedup_icon'],
-                    threshold=threshold,
-                )
-
-                if result:
-                    center_x, center_y = result
-                    logger.success(
-                        f"[{emulator_name}] ✅ Найдена иконка 'Ускорить' "
-                        f"на ({center_x}, {center_y}) с порогом {threshold}"
-                    )
-                    tap(emulator, x=center_x, y=center_y)
-                    time.sleep(1.5)
-
-                    # Парсим таймер
-                    timer_seconds = self._extract_timer_from_window(emulator)
-
-                    # ✅ FIX: закрываем только если НЕ keep_speedup_open
-                    if not keep_speedup_open:
-                        press_key(emulator, "ESC")
-                        time.sleep(0.5)
-
-                    return timer_seconds
-
-                time.sleep(0.3)
-
-            logger.debug(
-                f"[{emulator_name}] ⚠️ Иконка не найдена "
-                f"с порогом {threshold}"
-            )
-
-        # ═══ ПОПЫТКА 2: OCR FALLBACK ═══
-        logger.warning(
-            f"[{emulator_name}] ⚠️ Template matching не сработал, "
-            f"пробую OCR fallback..."
-        )
-
-        speedup_coords = self._find_speedup_by_ocr(emulator)
-
-        if speedup_coords:
-            center_x, center_y = speedup_coords
+        if icon_pos:
+            center_x, center_y = icon_pos
             logger.success(
-                f"[{emulator_name}] ✅ Найден текст 'Ускорить' "
-                f"через OCR на ({center_x}, {center_y})"
+                f"[{emulator_name}] ✅ Найдена иконка 'Ускорить' "
+                f"на ({center_x}, {center_y})"
             )
             tap(emulator, x=center_x, y=center_y)
             time.sleep(1.5)
 
+            # Парсим таймер
             timer_seconds = self._extract_timer_from_window(emulator)
 
-            # ✅ FIX: закрываем только если НЕ keep_speedup_open
+            # Закрываем только если НЕ keep_speedup_open
             if not keep_speedup_open:
                 press_key(emulator, "ESC")
                 time.sleep(0.5)
 
             return timer_seconds
 
-        # ═══ НИЧЕГО НЕ НАШЛИ — БЫСТРОЕ ЗАВЕРШЕНИЕ ═══
+        # Ничего не нашли — быстрое завершение
         logger.info(
             f"[{emulator_name}] 🚀 Иконка 'Ускорить' не найдена "
-            f"за все попытки — возможно быстрое завершение"
+            f"— возможно быстрое завершение"
         )
         return None
 
@@ -553,42 +507,23 @@ class BuildingUpgrade:
 
     def _open_speedup_window(self, emulator: Dict) -> bool:
         """
-        Открыть окно ускорения (клик по иконке "Ускорить")
-        НЕ закрывает окно после открытия (в отличие от _parse_upgrade_timer).
+        Открыть окно ускорения (клик по иконке "Ускорить").
+        НЕ закрывает окно после открытия.
 
         Returns:
-            bool: True если окно открыто
+        bool: True если окно открыто
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        # Попытка 1: Template matching
-        thresholds = [0.75, 0.65, 0.55]
+        icon_pos = self._find_speedup_icon(emulator)
 
-        for threshold in thresholds:
-            for attempt in range(3):
-                result = find_image(
-                    emulator, self.TEMPLATES['speedup_icon'],
-                    threshold=threshold
-                )
-                if result:
-                    center_x, center_y = result
-                    logger.debug(f"[{emulator_name}] ✅ Иконка 'Ускорить' найдена "
-                                 f"({center_x}, {center_y}), порог {threshold}")
-                    tap(emulator, x=center_x, y=center_y)
-                    time.sleep(1.5)
-                    return True
-                time.sleep(0.3)
-
-        # Попытка 2: OCR fallback
-        speedup_coords = self._find_speedup_by_ocr(emulator)
-        if speedup_coords:
-            center_x, center_y = speedup_coords
-            logger.debug(f"[{emulator_name}] ✅ 'Ускорить' через OCR ({center_x}, {center_y})")
+        if icon_pos:
+            center_x, center_y = icon_pos
             tap(emulator, x=center_x, y=center_y)
             time.sleep(1.5)
             return True
 
-        logger.warning(f"[{emulator_name}] ❌ Иконка 'Ускорить' не найдена")
+        logger.warning(f"[{emulator_name}] ❌ Не удалось открыть окно ускорений")
         return False
 
     def speedup_lord(self, emulator: Dict) -> Dict:
@@ -780,3 +715,102 @@ class BuildingUpgrade:
             days = seconds // 86400
             hours = (seconds % 86400) // 3600
             return f"{days} д {hours} ч"
+
+    def _find_icon_variants(
+        self,
+        emulator: Dict,
+        template_keys: List[str],
+        thresholds: Optional[List[float]] = None,
+        max_attempts: int = 3,
+        label: str = "иконка",
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Поиск иконки по нескольким шаблонам (стандартный + уменьшённый)
+        с каскадом порогов.
+
+        Логика: для каждого порога перебираем ВСЕ шаблоны,
+        для каждого шаблона — max_attempts попыток.
+        Первое совпадение — возврат.
+
+        Args:
+            emulator: объект эмулятора
+            template_keys: ключи в self.TEMPLATES (например ['speedup_icon', 'speedup_icon_small'])
+            thresholds: список порогов (по убыванию). None → [0.75, 0.65, 0.55]
+            max_attempts: попыток на каждый шаблон×порог
+            label: название для логов
+
+        Returns:
+            (x, y) координаты центра или None
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        if thresholds is None:
+            thresholds = [0.75, 0.65, 0.55]
+
+        for threshold in thresholds:
+            for key in template_keys:
+                template_path = self.TEMPLATES.get(key)
+                if not template_path or not os.path.exists(template_path):
+                    continue
+
+                for attempt in range(max_attempts):
+                    result = find_image(
+                        emulator, template_path,
+                        threshold=threshold,
+                    )
+                    if result:
+                        center_x, center_y = result
+                        logger.debug(
+                            f"[{emulator_name}] ✅ {label} ({key}) "
+                            f"найдена: ({center_x}, {center_y}), "
+                            f"порог {threshold}"
+                        )
+                        return (center_x, center_y)
+
+                    time.sleep(0.3)
+
+            logger.debug(
+                f"[{emulator_name}] ⚠️ {label} не найдена "
+                f"с порогом {threshold}"
+            )
+
+        return None
+
+    def _find_speedup_icon(
+        self,
+        emulator: Dict,
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Найти иконку "Ускорить" — два шаблона + OCR fallback.
+
+        Returns:
+            (x, y) координаты центра или None
+        """
+        emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        logger.debug(f"[{emulator_name}] 🔍 Поиск иконки 'Ускорить'...")
+
+        # Попытка 1: Template matching (стандартная + уменьшённая)
+        result = self._find_icon_variants(
+            emulator,
+            template_keys=['speedup_icon', 'speedup_icon_small'],
+            label="Ускорить",
+        )
+        if result:
+            return result
+
+        # Попытка 2: OCR fallback
+        logger.warning(
+            f"[{emulator_name}] ⚠️ Template matching не сработал, "
+            f"пробую OCR fallback..."
+        )
+        ocr_result = self._find_speedup_by_ocr(emulator)
+        if ocr_result:
+            logger.debug(
+                f"[{emulator_name}] ✅ 'Ускорить' через OCR "
+                f"({ocr_result[0]}, {ocr_result[1]})"
+            )
+            return ocr_result
+
+        logger.warning(f"[{emulator_name}] ❌ Иконка 'Ускорить' не найдена")
+        return None
