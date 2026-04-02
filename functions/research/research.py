@@ -14,6 +14,7 @@
 """
 
 import time
+import math
 from datetime import datetime
 from typing import Optional
 
@@ -857,7 +858,7 @@ class ResearchFunction(BaseFunction):
                 self._close_evo_windows(4)
                 break
 
-            evo_timer_min = max(1, evo_timer_sec // 60)
+            evo_timer_min = max(1, math.ceil(evo_timer_sec / 60))
             remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
             batch_target = min(remaining_ds_min, evo_timer_min)
 

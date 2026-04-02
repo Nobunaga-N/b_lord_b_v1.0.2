@@ -47,6 +47,7 @@ session_state['prime_times']:
 """
 
 import time
+import math
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 
@@ -632,7 +633,7 @@ class PrimeTimesFunction(BaseFunction):
 
             # ── Рассчитать план НА ЭТО ЗДАНИЕ (не на весь ДС) ──
             remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
-            building_timer_min = max(1, building_info['timer_sec'] // 60)
+            building_timer_min = max(1, math.ceil(building_info['timer_sec'] / 60))
             batch_target = min(remaining_ds_min, building_timer_min)
 
             logger.info(
@@ -920,7 +921,7 @@ class PrimeTimesFunction(BaseFunction):
                 self._reset_nav_state()
                 break
 
-            batch_timer_min = max(1, batch_timer_sec // 60)
+            batch_timer_min = max(1, math.ceil(batch_timer_sec / 60))
             remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
             batch_target = min(remaining_ds_min, batch_timer_min)
 
@@ -1137,7 +1138,7 @@ class PrimeTimesFunction(BaseFunction):
                 self._close_evolution(4)
                 break
 
-            evo_timer_min = max(1, evo_timer_sec // 60)
+            evo_timer_min = max(1, math.ceil(evo_timer_sec / 60))
             remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
             batch_target = min(remaining_ds_min, evo_timer_min)
 

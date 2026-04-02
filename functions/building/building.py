@@ -9,6 +9,7 @@
 """
 
 import time
+import math
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from functions.base_function import BaseFunction
@@ -927,7 +928,7 @@ class BuildingFunction(BaseFunction):
 
             # ── Рассчитать план НА ЭТО ЗДАНИЕ (не на весь ДС) ──
             remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
-            building_timer_min = max(1, building_info['timer_sec'] // 60)
+            building_timer_min = max(1, math.ceil(building_info['timer_sec'] / 60))
             batch_target = min(remaining_ds_min, building_timer_min)
 
             logger.info(

@@ -23,6 +23,7 @@
 """
 
 import time
+import math
 from datetime import datetime
 from typing import Optional
 
@@ -738,7 +739,7 @@ class TrainingFunction(BaseFunction):
                     time.sleep(0.5)
                     break
 
-                batch_timer_min = max(1, batch_timer_sec // 60)
+                batch_timer_min = max(1, math.ceil(batch_timer_sec / 60))
                 remaining_ds_min = int(
                     ds['target_minutes'] - ds['spent_minutes']
                 )

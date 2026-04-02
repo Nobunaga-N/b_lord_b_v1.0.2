@@ -74,6 +74,13 @@ DIAMOND_MAX_REMAINING_SEC = 22 * 60  # макс остаток для алмаз
 DIAMOND_MAX_COST = 70                # макс стоимость в алмазах
 DIAMOND_SMALL_DENOMS = {'1m', '5m'}  # номиналы которые могли бы заменить алмазы
 
+# Максимум 1m ускорений за одну пачку (batch).
+# 1m полезны для точного добивания — экономим, не тратим пачками.
+#   1-3 шт → ок
+#   4 шт нужно → предпочитаем 1×5m, если нет 5m → 4×1m допустимо
+#   5+ шт нужно → алмазный финиш
+MAX_1M_PER_BATCH = 3
+
 # Правила universal для каждого drain_type
 # True = universal разрешён, False = запрещён
 UNIVERSAL_RULES = {
@@ -219,6 +226,11 @@ def calculate_plan(
     """
     Рассчитать оптимальный план расхода ускорений.
 
+    Три фазы распределения:
+      Фаза 1: крупные номиналы (8h, 1d, 5d) — если таймер впитает
+      Фаза 2: основной диапазон (3h → 5m) — жадный floor-алгоритм
+      Фаза 3: добивание остатка (1m ≤ 3шт, 5m fallback, алмазы)
+
     Args:
         inventory: {speedup_type: {denomination: quantity}} из БД
         target_minutes: сколько минут ускорений нужно потратить
@@ -227,11 +239,7 @@ def calculate_plan(
         has_buildings: есть ли здания для улучшения
         target_shell: целевая ракушка (1 или 2)
         timers: {slot_name: seconds} — текущие таймеры
-                (building_1, building_2, ..., evolution,
-                 training_carnivore, training_omnivore)
-        skip_threshold: Пропустить проверку порога 30ч.
-                        True при расчёте плана на одну пачку
-                        (порог уже проверен при инициализации ДС)
+        skip_threshold: True при расчёте плана на одну пачку
 
     Returns:
         SpeedupPlan с заполненными items
@@ -252,6 +260,7 @@ def calculate_plan(
         return plan
 
     # ── Собираем доступные ускорения ──
+    # Типовые первыми, universal вторыми (приоритет по порядку вставки)
     available = _collect_available(
         inventory, drain_type, has_buildings
     )
@@ -279,12 +288,20 @@ def calculate_plan(
     remaining_sec = target_sec
     max_total_sec = target_sec + MAX_OVERSPEND_SEC
 
-    # Получаем макс таймер для ограничения номиналов
+    # Макс таймер для ограничения крупных номиналов
     max_timer = _get_max_timer(timers, drain_type) if timers else None
 
-    # Фаза 1: крупные номиналы (8h, 1d, 5d) — если таймер позволяет
+    # ═══════════════════════════════════════════════════════
+    # Фаза 1: крупные номиналы (8h, 1d, 5d)
+    # Используются ТОЛЬКО если таймер здания/тренировки/эволюции
+    # достаточно большой для "впитывания" без критического перерасхода.
+    # В порог 30ч НЕ входят.
+    # ═══════════════════════════════════════════════════════
     if max_timer is not None and max_timer > 0:
         for denom in LARGE_DENOMS:
+            if remaining_sec <= 0:
+                break
+
             denom_sec = DENOM_SECONDS[denom]
 
             # Крупный номинал — только если таймер достаточно большой
@@ -292,6 +309,9 @@ def calculate_plan(
                 continue
 
             for stype, sdenoms in available.items():
+                if remaining_sec <= 0:
+                    break
+
                 qty = sdenoms.get(denom, 0)
                 if qty <= 0:
                     continue
@@ -299,7 +319,8 @@ def calculate_plan(
                 max_by_remaining = max(1, remaining_sec // denom_sec)
                 max_by_limit = max(
                     0,
-                    (max_total_sec - (target_sec - remaining_sec)) // denom_sec
+                    (max_total_sec - (target_sec - remaining_sec))
+                    // denom_sec
                 )
                 use_qty = min(qty, max_by_remaining, max_by_limit)
 
@@ -316,24 +337,23 @@ def calculate_plan(
                 remaining_sec -= item_sec
                 sdenoms[denom] -= use_qty
 
-                if remaining_sec <= 0:
-                    break
-
-            if remaining_sec <= 0:
-                break
-
     # ═══════════════════════════════════════════════════════
-    # Фаза 2: основной диапазон (3h → 1m)
-    # ✅ FIX v1.1: Ограничение per-batch перерасхода (10 мин)
+    # Фаза 2: основной диапазон (3h → 5m), БЕЗ 1m
+    #
+    # ✅ FIX v1.2: floor вместо ceil для жадного алгоритма.
+    #    ceil давал перерасход (23м → 2×15m = 30м).
+    #    floor даёт точное покрытие (23м → 15m + 5m + 3×1m).
+    #    1m обрабатывается отдельно в Фазе 3 (лимит 3 шт).
     # ═══════════════════════════════════════════════════════
-    for denom in DRAIN_ORDER:
+    DRAIN_ORDER_NO_1M = ['3h', '2h', '1h', '15m', '10m', '5m']
+
+    for denom in DRAIN_ORDER_NO_1M:
         if remaining_sec <= 0:
             break
 
         denom_sec = DENOM_SECONDS[denom]
 
-        # ✅ FIX v1.1: Если один номинал создаёт перерасход > 10 мин
-        # и есть мелкие номиналы — пропускаем (мелкие заполнят точнее)
+        # Пропускаем если перерасход > 10 мин и есть мелкие номиналы
         if denom_sec > remaining_sec + MAX_BATCH_OVERSPEND_SEC:
             if _has_smaller_denoms(available, denom):
                 logger.debug(
@@ -351,11 +371,10 @@ def calculate_plan(
             if qty <= 0:
                 continue
 
-            # Сколько нужно?
-            needed = math.ceil(remaining_sec / denom_sec)
-            use_qty = min(qty, needed)
+            # ✅ floor — макс целых номиналов без перерасхода
+            use_qty = min(qty, remaining_sec // denom_sec)
 
-            # Проверяем перерасход (общий лимит 4ч)
+            # Общий перерасход (лимит 4ч)
             spent_so_far = target_sec - remaining_sec
             would_spend = spent_so_far + use_qty * denom_sec
             if would_spend > max_total_sec and use_qty > 1:
@@ -363,12 +382,6 @@ def calculate_plan(
                     0,
                     (max_total_sec - spent_so_far) // denom_sec
                 )
-
-            # ✅ FIX v1.1: Для единичного номинала — per-batch проверка
-            if (use_qty == 1
-                    and denom_sec > remaining_sec + MAX_BATCH_OVERSPEND_SEC
-                    and _has_smaller_denoms(available, denom)):
-                continue
 
             if use_qty <= 0:
                 continue
@@ -383,18 +396,123 @@ def calculate_plan(
             remaining_sec -= item_sec
             sdenoms[denom] -= use_qty
 
-    # ── Проверяем алмазный финиш ──
+    # ═══════════════════════════════════════════════════════
+    # Фаза 3: добивание остатка (1m + 5m fallback + алмазы)
+    #
+    # Правила для 1m (экономим — ценны для точного добивания):
+    #   1-3 шт → ок
+    #   4 шт нужно → предпочитаем 1×5m, если нет 5m → 4×1m
+    #   5+ шт нужно → комбинация 5m + 1m, иначе алмазы
+    # ═══════════════════════════════════════════════════════
     if remaining_sec > 0:
-        has_small = _has_small_denoms(available)
+        # Считаем доступные 1m и 5m по всем типам
+        avail_1m = sum(
+            sdenoms.get('1m', 0)
+            for sdenoms in available.values()
+        )
+        avail_5m = sum(
+            sdenoms.get('5m', 0)
+            for sdenoms in available.values()
+        )
 
-        if not has_small and remaining_sec <= DIAMOND_MAX_REMAINING_SEC:
+        needed_1m = math.ceil(remaining_sec / 60)
+
+        logger.debug(
+            f"🔧 Фаза 3: remaining={remaining_sec}с "
+            f"(~{needed_1m}×1m), avail_1m={avail_1m}, "
+            f"avail_5m={avail_5m}"
+        )
+
+        if needed_1m <= MAX_1M_PER_BATCH:
+            # ─── Случай A: 1-3×1m → просто используем ───
+            use_1m = min(needed_1m, avail_1m)
+            if use_1m > 0:
+                _add_1m_to_plan(plan, available, use_1m)
+                remaining_sec -= use_1m * 60
+
+            # Если 1m не хватило → алмазы на остаток
+            if remaining_sec > 0 \
+                    and remaining_sec <= DIAMOND_MAX_REMAINING_SEC:
+                plan.use_diamonds = True
+                logger.debug(
+                    f"💎 Фаза 3: алмазы на остаток "
+                    f"{remaining_sec}с (мало 1m)"
+                )
+
+        elif needed_1m == MAX_1M_PER_BATCH + 1:
+            # ─── Случай B: 4×1m → предпочитаем 1×5m ───
+            if avail_5m > 0:
+                _add_denom_to_plan(plan, available, '5m', 1)
+                remaining_sec -= 300
+                logger.debug(
+                    f"✅ Фаза 3: 1×5m вместо 4×1m "
+                    f"(remaining={remaining_sec}с)"
+                )
+            elif avail_1m >= 4:
+                # Нет 5m → допускаем 4×1m
+                _add_1m_to_plan(plan, available, 4)
+                remaining_sec -= 4 * 60
+                logger.debug("✅ Фаза 3: 4×1m (нет 5m)")
+            else:
+                # Мало и 5m и 1m → сколько есть + алмазы
+                use_1m = min(MAX_1M_PER_BATCH, avail_1m)
+                if use_1m > 0:
+                    _add_1m_to_plan(plan, available, use_1m)
+                    remaining_sec -= use_1m * 60
+                if remaining_sec > 0 \
+                        and remaining_sec <= DIAMOND_MAX_REMAINING_SEC:
+                    plan.use_diamonds = True
+
+        else:
+            # ─── Случай C: 5+×1m → 5m + 1m или алмазы ───
+            if avail_5m > 0:
+                # Покрываем основную часть через 5m
+                use_5m = min(avail_5m, remaining_sec // 300)
+                if use_5m > 0:
+                    _add_denom_to_plan(plan, available, '5m', use_5m)
+                    remaining_sec -= use_5m * 300
+
+                # Хвост — 1m (до 3 штук)
+                if remaining_sec > 0:
+                    tail_1m = min(
+                        math.ceil(remaining_sec / 60),
+                        MAX_1M_PER_BATCH,
+                        avail_1m,
+                    )
+                    if tail_1m > 0:
+                        _add_1m_to_plan(plan, available, tail_1m)
+                        remaining_sec -= tail_1m * 60
+
+                # Всё ещё остаток → алмазы
+                if remaining_sec > 0 \
+                        and remaining_sec <= DIAMOND_MAX_REMAINING_SEC:
+                    plan.use_diamonds = True
+            else:
+                # Нет 5m → до 3×1m + алмазы
+                use_1m = min(MAX_1M_PER_BATCH, avail_1m)
+                if use_1m > 0:
+                    _add_1m_to_plan(plan, available, use_1m)
+                    remaining_sec -= use_1m * 60
+                if remaining_sec > 0 \
+                        and remaining_sec <= DIAMOND_MAX_REMAINING_SEC:
+                    plan.use_diamonds = True
+                    logger.debug(
+                        f"💎 Фаза 3: алмазы на остаток "
+                        f"{remaining_sec}с (нет 5m, 1m ограничены)"
+                    )
+
+    # ── Финальная страховка: алмазный финиш ──
+    if remaining_sec > 0 and not plan.use_diamonds:
+        has_small = _has_small_denoms(available)
+        if not has_small \
+                and remaining_sec <= DIAMOND_MAX_REMAINING_SEC:
             plan.use_diamonds = True
             logger.debug(
-                f"💎 Алмазный финиш: остаток {remaining_sec // 60} мин"
+                f"💎 Алмазный финиш: остаток "
+                f"{remaining_sec // 60} мин"
             )
 
     _log_plan(plan, remaining_sec)
-
     return plan
 
 
@@ -449,13 +567,23 @@ def _collect_available(
     """
     Собрать доступные ускорения для drain_type.
     Возвращает КОПИЮ (мутировать безопасно).
+
+    ВАЖНО: порядок вставки = приоритет траты.
+    Типовые ускорения (building/training/evolution) вставляются ПЕРВЫМИ,
+    universal — ВТОРЫМИ. При итерации `for stype in available` типовые
+    обрабатываются раньше, что обеспечивает:
+      building/15m тратится ДО universal/15m.
+
+    Python 3.7+ гарантирует сохранение порядка вставки в dict.
     """
     result = {}
 
+    # ── 1. Типовые ПЕРВЫМИ (приоритет) ──
     main_denoms = inventory.get(drain_type, {})
     if main_denoms:
         result[drain_type] = dict(main_denoms)
 
+    # ── 2. Universal ВТОРЫМИ ──
     uni_rule = UNIVERSAL_RULES.get(drain_type, False)
     add_universal = False
 
@@ -528,6 +656,69 @@ def _has_smaller_denoms(
                 return True
     return False
 
+
+def _add_1m_to_plan(
+    plan,  # SpeedupPlan
+    available: Dict[str, Dict[str, int]],
+    count: int,
+):
+    """
+    Добавить до `count` штук 1m в план.
+
+    Итерирует available.items() → типовые 1m первыми,
+    universal 1m вторыми (приоритет по порядку вставки).
+    """
+    left = count
+    for stype, sdenoms in available.items():
+        if left <= 0:
+            break
+        qty = sdenoms.get('1m', 0)
+        if qty <= 0:
+            continue
+
+        use = min(qty, left)
+        item_sec = use * 60
+        plan.items.append(SpeedupPlanItem(
+            speedup_type=stype,
+            denomination='1m',
+            quantity=use,
+            total_seconds=item_sec,
+        ))
+        sdenoms['1m'] -= use
+        left -= use
+
+
+def _add_denom_to_plan(
+    plan,  # SpeedupPlan
+    available: Dict[str, Dict[str, int]],
+    denom: str,
+    count: int,
+):
+    """
+    Добавить до `count` штук указанного номинала в план.
+
+    Итерирует available.items() → типовые первыми,
+    universal вторыми.
+    """
+    denom_sec = DENOM_SECONDS[denom]
+    left = count
+    for stype, sdenoms in available.items():
+        if left <= 0:
+            break
+        qty = sdenoms.get(denom, 0)
+        if qty <= 0:
+            continue
+
+        use = min(qty, left)
+        item_sec = use * denom_sec
+        plan.items.append(SpeedupPlanItem(
+            speedup_type=stype,
+            denomination=denom,
+            quantity=use,
+            total_seconds=item_sec,
+        ))
+        sdenoms[denom] -= use
+        left -= use
 
 def _log_plan(plan: SpeedupPlan, remaining_sec: int):
     """Логирование плана."""
