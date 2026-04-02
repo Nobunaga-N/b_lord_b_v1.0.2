@@ -734,29 +734,23 @@ class BuildingFunction(BaseFunction):
         """
         Инициализировать session_state['prime_times'] для точки A.
 
-        Парсит очки ДС, выбирает drain_type, считает target_minutes.
-
-        Returns:
-            dict (session_state['prime_times']) или None при ошибке
+        FIX: Если ds_progress уже есть — используем сохранённый
+        target_minutes вместо пересчёта из текущих очков.
         """
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
-
         event_key = event['event_key']
         event_type = event['type']
         ppm = event['points_per_min']
 
-        # Инвентарь
         bp_storage = BackpackStorage()
         inventory = bp_storage.get_inventory(emu_id)
         if not inventory:
             logger.debug(f"[{emu_name}] Prime: нет данных ускорений")
             return None
 
-        # Есть ли здания для строительства
         has_buildings = self.db.has_buildings_to_upgrade(emu_id)
 
-        # Выбор drain_type
         drain_type, total_hours = choose_drain_type(
             inventory, event_type, has_buildings
         )
@@ -765,45 +759,61 @@ class BuildingFunction(BaseFunction):
             self._set_prime_skip(event_key, 'not_enough_speedups', prime_st)
             return self.session_state.get('prime_times')
 
-        # Парсим очки ДС
-        ds_points = parse_ds_points(self.emulator)
-        if ds_points is None:
-            logger.warning(f"[{emu_name}] Prime: не удалось спарсить очки ДС")
-            from utils.function_freeze_manager import function_freeze_manager
-            function_freeze_manager.freeze(
-                emu_id, 'prime_times', hours=1,
-                reason="Ошибка парсинга очков ДС",
-            )
-            return None
+        # ── FIX: Проверяем ds_progress ДО парсинга очков ──
+        progress = prime_st.get_progress(emu_id, event_key)
 
-        # Target minutes
-        target_shell = 2
-        target_min = calculate_target_minutes(
-            ds_points['current'], ds_points['shell_2'], ppm
-        )
+        if progress and progress['status'] == 'in_progress':
+            # ═══ ВОССТАНОВЛЕНИЕ ═══
+            target_min = int(progress['target_minutes'])
+            spent = float(progress['spent_minutes'])
+            target_shell = int(progress.get('target_shell', 2))
 
-        if target_min > MAX_TARGET_HOURS * 60:
-            target_min_1 = calculate_target_minutes(
-                ds_points['current'], ds_points['shell_1'], ppm
+            logger.info(
+                f"[{emu_name}] 🔄 Восстановлено из ds_progress: "
+                f"{spent:.0f}/{target_min} мин (shell {target_shell})"
             )
-            if target_min_1 <= MAX_TARGET_HOURS * 60:
-                target_min = target_min_1
-                target_shell = 1
-            else:
-                self._set_prime_skip(event_key, '>65h', prime_st)
+
+            ds_points = parse_ds_points(self.emulator)
+            if ds_points is None:
+                ds_points = {'current': 0, 'shell_1': 0, 'shell_2': 0}
+        else:
+            # ═══ ПЕРВЫЙ ЗАПУСК ═══
+            ds_points = parse_ds_points(self.emulator)
+            if ds_points is None:
+                logger.warning(
+                    f"[{emu_name}] Prime: не удалось спарсить очки ДС"
+                )
+                from utils.function_freeze_manager import (
+                    function_freeze_manager,
+                )
+                function_freeze_manager.freeze(
+                    emu_id, 'prime_times', hours=1,
+                    reason="Ошибка парсинга очков ДС",
+                )
+                return None
+
+            target_shell = 2
+            target_min = calculate_target_minutes(
+                ds_points['current'], ds_points['shell_2'], ppm
+            )
+
+            if target_min > MAX_TARGET_HOURS * 60:
+                target_min_1 = calculate_target_minutes(
+                    ds_points['current'], ds_points['shell_1'], ppm
+                )
+                if target_min_1 <= MAX_TARGET_HOURS * 60:
+                    target_min = target_min_1
+                    target_shell = 1
+                else:
+                    self._set_prime_skip(event_key, '>65h', prime_st)
+                    return self.session_state.get('prime_times')
+
+            if target_min <= 0:
+                self._set_prime_completed(event_key, prime_st)
                 return self.session_state.get('prime_times')
 
-        if target_min <= 0:
-            self._set_prime_completed(event_key, prime_st)
-            return self.session_state.get('prime_times')
+            spent = 0.0
 
-        # Восстановление из ds_progress
-        progress = prime_st.get_progress(emu_id, event_key)
-        spent = 0.0
-        if progress and progress['status'] == 'in_progress':
-            spent = float(progress['spent_minutes'])
-
-        # Формируем session_state
         ds = {
             'event_type': event_type,
             'points_per_min': ppm,

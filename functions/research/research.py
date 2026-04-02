@@ -618,7 +618,11 @@ class ResearchFunction(BaseFunction):
     def _init_prime_session(
             self, event: dict, prime_st: PrimeStorage
     ) -> dict | None:
-        """Инициализировать session_state['prime_times'] для эволюции."""
+        """Инициализировать session_state['prime_times'] для эволюции.
+
+        FIX: Если ds_progress уже есть — используем сохранённый
+        target_minutes вместо пересчёта из текущих очков.
+        """
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
         event_key = event['event_key']
@@ -635,36 +639,58 @@ class ResearchFunction(BaseFunction):
             self._set_prime_skip(event_key, 'not_enough_speedups', prime_st)
             return self.session_state.get('prime_times')
 
-        ds_points = parse_ds_points(self.emulator)
-        if ds_points is None:
-            from utils.function_freeze_manager import function_freeze_manager
-            function_freeze_manager.freeze(
-                emu_id, 'prime_times', hours=1,
-                reason="Ошибка парсинга очков ДС",
-            )
-            return None
+        # ── FIX: Проверяем ds_progress ДО парсинга очков ──
+        progress = prime_st.get_progress(emu_id, event_key)
 
-        target_shell = 2
-        target_min = calculate_target_minutes(
-            ds_points['current'], ds_points['shell_2'], ppm
-        )
-        if target_min > MAX_TARGET_HOURS * 60:
-            target_min_1 = calculate_target_minutes(
-                ds_points['current'], ds_points['shell_1'], ppm
+        if progress and progress['status'] == 'in_progress':
+            # ═══ ВОССТАНОВЛЕНИЕ ═══
+            target_min = int(progress['target_minutes'])
+            spent = float(progress['spent_minutes'])
+            target_shell = int(progress.get('target_shell', 2))
+
+            logger.info(
+                f"[{emu_name}] 🔄 Восстановлено из ds_progress: "
+                f"{spent:.0f}/{target_min} мин (shell {target_shell})"
             )
-            if target_min_1 <= MAX_TARGET_HOURS * 60:
-                target_min = target_min_1
-                target_shell = 1
-            else:
-                self._set_prime_skip(event_key, '>65h', prime_st)
+
+            ds_points = parse_ds_points(self.emulator)
+            if ds_points is None:
+                ds_points = {'current': 0, 'shell_1': 0, 'shell_2': 0}
+        else:
+            # ═══ ПЕРВЫЙ ЗАПУСК ═══
+            ds_points = parse_ds_points(self.emulator)
+            if ds_points is None:
+                from utils.function_freeze_manager import (
+                    function_freeze_manager,
+                )
+                function_freeze_manager.freeze(
+                    emu_id, 'prime_times', hours=1,
+                    reason="Ошибка парсинга очков ДС",
+                )
+                return None
+
+            target_shell = 2
+            target_min = calculate_target_minutes(
+                ds_points['current'], ds_points['shell_2'], ppm
+            )
+            if target_min > MAX_TARGET_HOURS * 60:
+                target_min_1 = calculate_target_minutes(
+                    ds_points['current'], ds_points['shell_1'], ppm
+                )
+                if target_min_1 <= MAX_TARGET_HOURS * 60:
+                    target_min = target_min_1
+                    target_shell = 1
+                else:
+                    self._set_prime_skip(
+                        event_key, '>65h', prime_st
+                    )
+                    return self.session_state.get('prime_times')
+
+            if target_min <= 0:
+                self._set_prime_completed(event_key, prime_st)
                 return self.session_state.get('prime_times')
 
-        if target_min <= 0:
-            self._set_prime_completed(event_key, prime_st)
-            return self.session_state.get('prime_times')
-
-        progress = prime_st.get_progress(emu_id, event_key)
-        spent = float(progress['spent_minutes']) if progress and progress['status'] == 'in_progress' else 0.0
+            spent = 0.0
 
         ds = {
             'event_type': event['type'],

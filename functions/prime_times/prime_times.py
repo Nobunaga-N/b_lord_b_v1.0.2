@@ -394,8 +394,12 @@ class PrimeTimesFunction(BaseFunction):
         1. Проверяем рюкзак
         2. Выбираем drain_type
         3. Парсим очки ДС
-        4. Считаем target_minutes
-        5. Восстанавливаем из ds_progress если есть
+        4. Считаем target_minutes (или восстанавливаем из ds_progress)
+        5. Формируем session_state
+
+        FIX: Если ds_progress уже есть — используем сохранённый
+        target_minutes, а не пересчитываем из текущих очков.
+        Иначе current_points уже включает spent_minutes → двойной учёт.
 
         Returns:
             Dict (session_state['prime_times']) или None при ошибке
@@ -431,65 +435,89 @@ class PrimeTimesFunction(BaseFunction):
 
         if drain_type is None:
             logger.info(
-                f"[{emu_name}] ⏭️ Не хватает ускорений (< {THRESHOLD_HOURS}ч)"
+                f"[{emu_name}] ⏭️ Не хватает ускорений "
+                f"(< {THRESHOLD_HOURS}ч)"
             )
             self._set_skip(event_key, 'not_enough_speedups')
             return self.session_state['prime_times']
 
-        # ── 4. Парсим очки ДС ──
-        ds_points = parse_ds_points(self.emulator)
-
-        if ds_points is None:
-            logger.warning(
-                f"[{emu_name}] ⚠️ Не удалось спарсить очки ДС, "
-                f"замораживаем на {FREEZE_HOURS_NAV_ERROR}ч"
-            )
-            function_freeze_manager.freeze(
-                emu_id, self.FUNCTION_NAME,
-                hours=FREEZE_HOURS_NAV_ERROR,
-                reason="Ошибка парсинга очков ДС",
-            )
-            return None
-
-        # ── 5. Рассчитать target_minutes ──
-        target_shell = 2
-        target_min = calculate_target_minutes(
-            ds_points['current'], ds_points['shell_2'], ppm
-        )
-
-        # Лимит 65ч
-        if target_min > MAX_TARGET_HOURS * 60:
-            # Попробуем 1-ю ракушку
-            target_min_1 = calculate_target_minutes(
-                ds_points['current'], ds_points['shell_1'], ppm
-            )
-            if target_min_1 <= MAX_TARGET_HOURS * 60:
-                target_min = target_min_1
-                target_shell = 1
-                logger.info(
-                    f"[{emu_name}] 2-я ракушка > {MAX_TARGET_HOURS}ч, "
-                    f"целимся в 1-ю ({target_min} мин)"
-                )
-            else:
-                self._set_skip(event_key, '>65h')
-                return self.session_state['prime_times']
-
-        if target_min <= 0:
-            logger.info(f"[{emu_name}] ДС {event_key}: очки уже набраны")
-            self._set_completed(event_key)
-            return self.session_state['prime_times']
-
-        # ── 6. Восстановление из ds_progress ──
+        # ── 4. Проверяем ds_progress (ДО парсинга очков!) ──
         progress = self.prime_storage.get_progress(emu_id, event_key)
-        spent = 0.0
+
         if progress and progress['status'] == 'in_progress':
+            # ═══ ВОССТАНОВЛЕНИЕ: target уже рассчитан при первом запуске ═══
+            target_min = int(progress['target_minutes'])
             spent = float(progress['spent_minutes'])
+            target_shell = int(progress.get('target_shell', 2))
+
             logger.info(
                 f"[{emu_name}] 🔄 Восстановлено из ds_progress: "
-                f"{spent:.0f}/{target_min} мин"
+                f"{spent:.0f}/{target_min} мин (shell {target_shell})"
             )
 
-        # ── 7. Формируем session_state ──
+            # Парсим очки для session_state (информационно),
+            # но НЕ пересчитываем target
+            ds_points = parse_ds_points(self.emulator)
+            if ds_points is None:
+                # Не критично при восстановлении — данные есть в БД
+                logger.warning(
+                    f"[{emu_name}] ⚠️ Не удалось спарсить очки ДС "
+                    f"при восстановлении, используем saved progress"
+                )
+                ds_points = {
+                    'current': 0,
+                    'shell_1': 0,
+                    'shell_2': 0,
+                }
+        else:
+            # ═══ ПЕРВЫЙ ЗАПУСК: парсим очки и считаем target ═══
+            ds_points = parse_ds_points(self.emulator)
+
+            if ds_points is None:
+                logger.warning(
+                    f"[{emu_name}] ⚠️ Не удалось спарсить очки ДС, "
+                    f"замораживаем на {FREEZE_HOURS_NAV_ERROR}ч"
+                )
+                function_freeze_manager.freeze(
+                    emu_id, self.FUNCTION_NAME,
+                    hours=FREEZE_HOURS_NAV_ERROR,
+                    reason="Ошибка парсинга очков ДС",
+                )
+                return None
+
+            # ── 5. Рассчитать target_minutes ──
+            target_shell = 2
+            target_min = calculate_target_minutes(
+                ds_points['current'], ds_points['shell_2'], ppm
+            )
+
+            # Лимит 65ч
+            if target_min > MAX_TARGET_HOURS * 60:
+                target_min_1 = calculate_target_minutes(
+                    ds_points['current'], ds_points['shell_1'], ppm
+                )
+                if target_min_1 <= MAX_TARGET_HOURS * 60:
+                    target_min = target_min_1
+                    target_shell = 1
+                    logger.info(
+                        f"[{emu_name}] 2-я ракушка > "
+                        f"{MAX_TARGET_HOURS}ч, "
+                        f"целимся в 1-ю ({target_min} мин)"
+                    )
+                else:
+                    self._set_skip(event_key, '>65h')
+                    return self.session_state['prime_times']
+
+            if target_min <= 0:
+                logger.info(
+                    f"[{emu_name}] ДС {event_key}: очки уже набраны"
+                )
+                self._set_completed(event_key)
+                return self.session_state['prime_times']
+
+            spent = 0.0
+
+        # ── 6. Формируем session_state ──
         ds = {
             'event_type': event_type,
             'points_per_min': ppm,
@@ -509,7 +537,6 @@ class PrimeTimesFunction(BaseFunction):
 
         self.session_state['prime_times'] = ds
 
-        # Сохраняем в БД
         self.prime_storage.save_progress(
             emu_id, event_key, target_min,
             int(spent), target_shell, 'in_progress',
