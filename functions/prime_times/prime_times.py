@@ -700,12 +700,18 @@ class PrimeTimesFunction(BaseFunction):
                     with self.building_db.db_lock:
                         cursor = self.building_db.conn.cursor()
                         cursor.execute("""
-                                                UPDATE builders
-                                                SET is_busy = 0, building_id = NULL,
-                                                    finish_time = NULL
-                                                WHERE emulator_id = ? AND building_id = ?
-                                            """, (emu_id, building_id))
+                                                    UPDATE builders
+                                                    SET is_busy = 0, building_id = NULL,
+                                                        finish_time = NULL
+                                                    WHERE emulator_id = ? AND building_id = ?
+                                                """, (emu_id, building_id))
                         self.building_db.conn.commit()
+
+                # ✅ FIX #11: Пересчитать индексы после drain-завершения
+                if building_index is not None:
+                    self.building_db.recalculate_building_indices(
+                        emu_id, building_name
+                    )
 
                 time.sleep(DELAY_BETWEEN_DRAINS)
                 continue

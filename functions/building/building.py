@@ -1093,16 +1093,22 @@ class BuildingFunction(BaseFunction):
             with self.db.db_lock:
                 cursor = self.db.conn.cursor()
                 cursor.execute("""
-                        UPDATE builders
-                        SET is_busy = 0, building_id = NULL, finish_time = NULL
-                        WHERE emulator_id = ? AND building_id = ?
-                    """, (emu_id, building_id))
+                                    UPDATE builders
+                                    SET is_busy = 0, building_id = NULL, finish_time = NULL
+                                    WHERE emulator_id = ? AND building_id = ?
+                                """, (emu_id, building_id))
                 self.db.conn.commit()
                 if cursor.rowcount > 0:
                     logger.info(
                         f"[{self.emulator_name}] 🔓 Строитель освобождён "
                         f"(building_id={building_id})"
                     )
+
+            # ✅ FIX #11: Пересчитать индексы после изменения уровня.
+            # Игра переупорядочивает панель сразу при смене уровня,
+            # без этого следующая навигация пойдёт по стейловым индексам.
+            if building_index is not None:
+                self.db.recalculate_building_indices(emu_id, building_name)
 
             logger.success(
                 f"[{self.emulator_name}] 🏗️ Prime: {building_name} "
