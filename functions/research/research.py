@@ -707,17 +707,23 @@ class ResearchFunction(BaseFunction):
         4. Если эволюция завершилась → ESC → запустить следующую → continue
         5. Если набрали очки → парсить таймер → ESC × 3 → break
 
+        ✅ FIX #5: Обновляет БД после завершения эволюции
+        ✅ FIX #6: Запускает новую эволюцию если слот свободен
+        ✅ FIX #10: Передаёт timers в calculate_plan
+
         ВАЖНО: universal НИКОГДА не тратится на эволюцию
         (обеспечивается speedup_calculator через UNIVERSAL_RULES).
         """
-        import os
         from functions.prime_times.speedup_applier import _parse_remaining_timer
         from utils.ocr_engine import OCREngine
-        ocr = OCREngine()
+        from utils.adb_controller import tap
+
+        import os
 
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
         bp_storage = BackpackStorage()
+        ocr = OCREngine()
 
         BASE_DIR = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -727,18 +733,21 @@ class ResearchFunction(BaseFunction):
         )
 
         while ds['spent_minutes'] < ds['target_minutes']:
+            # Проверка времени ДС
             if not is_safe_to_start(min_minutes=5):
                 if ds['spent_minutes'] <= 0:
-                    break
+                    logger.info(f"[{emu_name}] Prime: мало времени до конца ДС")
+                break
 
-            # Проверяем/запускаем эволюцию
-            self.db.check_and_complete_research(emu_id)
-
+            # ═══════════════════════════════════════════
+            # ✅ FIX #6: Проверяем/запускаем эволюцию
+            # ═══════════════════════════════════════════
             if not self.db.is_slot_busy(emu_id):
-                # Нужно запустить новую
                 next_tech = self.db.get_next_tech_to_research(emu_id)
                 if next_tech is None:
-                    logger.info(f"[{emu_name}] Prime: нет технологий для эволюции")
+                    logger.info(
+                        f"[{emu_name}] Prime: нет технологий для исследования"
+                    )
                     break
 
                 tech_name = next_tech['tech_name']
@@ -746,6 +755,12 @@ class ResearchFunction(BaseFunction):
                 swipe_config = self.db.get_swipe_config(section_name)
                 swipe_group = next_tech.get('swipe_group', 0)
 
+                logger.info(
+                    f"[{emu_name}] Prime: запускаем эволюцию "
+                    f"{tech_name} ({section_name})"
+                )
+
+                # research_tech: открывает эволюцию, ставит, ESC×3
                 status, timer_sec = self.upgrade.research_tech(
                     self.emulator,
                     tech_name=tech_name,
@@ -755,77 +770,89 @@ class ResearchFunction(BaseFunction):
                 )
 
                 if status != 'started':
-                    logger.warning(f"[{emu_name}] Prime: не удалось запустить эволюцию: {status}")
+                    logger.warning(
+                        f"[{emu_name}] Prime: не удалось запустить "
+                        f"эволюцию {tech_name} (status={status})"
+                    )
                     break
 
                 if timer_sec:
-                    self.db.start_research(emu_id, tech_name, section_name, timer_sec)
+                    self.db.start_research(
+                        emu_id, tech_name, section_name, timer_sec
+                    )
+                # Бот в поместье после research_tech (ESC×3 внутри)
 
-            # Бот в поместье. Открываем эволюцию → ищем активную технологию
+            # ═══════════════════════════════════════════
+            # Открываем эволюцию и ищем активную технологию
+            # (используем существующие методы EvolutionUpgrade)
+            # ═══════════════════════════════════════════
             if not self.upgrade.open_evolution_window(self.emulator):
-                logger.error(f"[{emu_name}] Prime: не удалось открыть окно эволюции")
+                logger.error(f"[{emu_name}] ❌ Не удалось открыть окно эволюции")
                 break
 
-            # Найти активную технологию в БД
+            # Получаем активную технологию из БД
             active_tech = self._get_active_tech(emu_id)
             if active_tech is None:
-                logger.error(f"[{emu_name}] Prime: нет активной эволюции в БД")
+                logger.error(f"[{emu_name}] ❌ Нет активной эволюции в БД")
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
                 break
 
             section_name = active_tech['section_name']
             tech_name = active_tech['tech_name']
+            swipe_group = active_tech.get('swipe_group', 0)
 
             # Навигация к разделу
             if not self.upgrade.navigate_to_section(self.emulator, section_name):
-                logger.error(f"[{emu_name}] Prime: навигация к {section_name} провалилась")
+                logger.error(
+                    f"[{emu_name}] ❌ Навигация к разделу {section_name}"
+                )
                 self._close_evo_windows(3)
                 break
 
-            # Свайпы + поиск технологии
+            # Свайпы если нужно
             swipe_config = self.db.get_swipe_config(section_name)
-            swipe_group = active_tech.get('swipe_group', 0)
-            self.upgrade.perform_swipes(self.emulator, swipe_config, swipe_group)
+            self.upgrade.perform_swipes(
+                self.emulator, swipe_config, swipe_group
+            )
 
-            tech_coords = self.upgrade.find_tech_on_screen(self.emulator, tech_name)
-            if tech_coords is None:
-                logger.error(f"[{emu_name}] Prime: технология {tech_name} не найдена")
+            # Находим технологию на экране
+            tech_coords = self.upgrade.find_tech_on_screen(
+                self.emulator, tech_name
+            )
+            if not tech_coords:
+                logger.warning(
+                    f"[{emu_name}] ⚠️ Технология {tech_name} не найдена"
+                )
                 self._close_evo_windows(3)
                 break
 
-            from utils.adb_controller import tap
+            # Кликаем по технологии
             tap(self.emulator, x=tech_coords[0], y=tech_coords[1])
             time.sleep(2.0)
 
-            # Кнопка "Ускорение"
-            speedup_found = False
-            if os.path.exists(speedup_btn_path):
-                for attempt in range(3):
-                    result = find_image(
-                        self.emulator, speedup_btn_path, threshold=0.85
-                    )
-                    if result:
-                        tap(self.emulator, x=result[0], y=result[1])
-                        time.sleep(1.0)
-                        speedup_found = True
-                        break
-                    time.sleep(0.5)
-
-            if not speedup_found:
-                logger.error(f"[{emu_name}] Prime: кнопка 'Ускорение' не найдена")
+            # Кнопка "Ускорение" → окно ускорений
+            speedup_btn = find_image(
+                self.emulator, speedup_btn_path, threshold=0.8
+            )
+            if not speedup_btn:
+                logger.warning(
+                    f"[{emu_name}] Prime: кнопка 'Ускорение' не найдена"
+                )
                 self._close_evo_windows(4)
                 break
 
-            # ── Парсим таймер ТЕКУЩЕЙ эволюции из окна ускорений ──
+            tap(self.emulator, x=speedup_btn[0], y=speedup_btn[1])
+            time.sleep(1.5)
+
+            # Парсим таймер
             evo_timer_sec = _parse_remaining_timer(
                 self.emulator, ocr, 'evolution'
             )
 
             if not evo_timer_sec or evo_timer_sec <= 0:
                 logger.warning(
-                    f"[{emu_name}] Prime: не удалось спарсить "
-                    f"таймер эволюции"
+                    f"[{emu_name}] Prime: не удалось спарсить таймер эволюции"
                 )
                 self._close_evo_windows(4)
                 break
@@ -843,18 +870,24 @@ class ResearchFunction(BaseFunction):
 
             inventory = bp_storage.get_inventory(emu_id)
 
+            # ✅ FIX #10: Передаём timers
+            timers = {'evolution': evo_timer_sec}
+
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=batch_target,  # ← таймер эволюции
+                target_minutes=batch_target,
                 event_type=ds['event_type'],
                 drain_type='evolution',
                 has_buildings=True,
                 target_shell=ds['target_shell'],
-                skip_threshold=True,  # ← порог проверен при инит
+                skip_threshold=True,
+                timers=timers,  # ← FIX #10
             )
 
             if plan.is_skip:
-                logger.info(f"[{emu_name}] Prime: план пустой — {plan.skip_reason}")
+                logger.info(
+                    f"[{emu_name}] Prime: план пустой — {plan.skip_reason}"
+                )
                 self._close_evo_windows(4)
                 break
 
@@ -873,17 +906,22 @@ class ResearchFunction(BaseFunction):
             )
 
             if result.building_completed:
-                # Эволюция завершилась → закрылись 2 окна → видно крестик
+                # Эволюция завершилась
+                # (building_completed — это generic поле DrainResult,
+                #  означает "процесс завершён", не "здание построено")
                 logger.info(f"[{emu_name}] Prime: эволюция завершилась!")
+
+                # ✅ FIX #5: Обновить БД (уровень + освободить слот)
+                # finish_time ещё в будущем, но ускорение завершило
+                self.db._complete_research(emu_id)
+
                 press_key(self.emulator, "ESC")  # крестик
                 time.sleep(0.5)
-                self._close_evo_windows(2)  # закрыть окно эволюции
+                self._close_evo_windows(2)
                 time.sleep(1.0)
-                continue  # Следующая итерация: запустит новую эволюцию
+                continue  # → следующая итерация (FIX #6 запустит новую)
 
-            # Не завершилась → парсим таймер → закрываем
-            # Таймер эволюции в окне ускорений: (214:74, 317:74, 317:104, 214:104)
-            # Обновление БД таймера — опционально (для точности)
+            # Не завершилась → закрываем
             self._close_evo_windows(4)
             break
 

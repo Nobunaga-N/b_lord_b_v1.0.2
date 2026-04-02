@@ -596,13 +596,36 @@ class PrimeTimesFunction(BaseFunction):
 
             # Открыть окно ускорений
             if not self.building_upgrade._open_speedup_window(self.emulator):
-                logger.error(
-                    f"[{emu_name}] ❌ Не удалось открыть окно ускорений"
+                # ✅ FIX #8: continue вместо break
+                logger.warning(
+                    f"[{emu_name}] ❌ Иконка ускорения не найдена, "
+                    f"здание возможно уже завершено"
                 )
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
                 self._reset_nav_state()
-                break
+                # Помечаем как завершённое + освобождаем строителя
+                building = self.building_db.get_building(
+                    emu_id, building_name, building_index
+                )
+                if building:
+                    building_id = building['id']
+                    new_level = (building.get('upgrading_to_level')
+                                 or building['current_level'] + 1)
+                    self.building_db.update_building_level(
+                        emu_id, building_name, building_index, new_level
+                    )
+                    # ✅ FIX #2: Освобождаем строителя
+                    with self.building_db.db_lock:
+                        cursor = self.building_db.conn.cursor()
+                        cursor.execute("""
+                                        UPDATE builders
+                                        SET is_busy = 0, building_id = NULL,
+                                            finish_time = NULL
+                                        WHERE emulator_id = ? AND building_id = ?
+                                    """, (emu_id, building_id))
+                        self.building_db.conn.commit()
+                continue  # ← вместо break
 
             # ── Рассчитать план НА ЭТО ЗДАНИЕ (не на весь ДС) ──
             remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
@@ -619,14 +642,18 @@ class PrimeTimesFunction(BaseFunction):
             inventory = self.backpack_storage.get_inventory(emu_id)
             has_buildings = self._check_has_buildings(emu_id)
 
+            # ✅ FIX #3: Передаём timers
+            timers = {'building_1': building_info['timer_sec']}
+
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=batch_target,  # ← таймер здания
+                target_minutes=batch_target,
                 event_type=ds['event_type'],
                 drain_type='building',
                 has_buildings=has_buildings,
                 target_shell=ds['target_shell'],
-                skip_threshold=True,  # ← порог проверен при инит
+                skip_threshold=True,
+                timers=timers,  # ← FIX #3
             )
 
             if plan.is_skip:
@@ -648,8 +675,29 @@ class PrimeTimesFunction(BaseFunction):
 
             if result.building_completed:
                 logger.info(
-                    f"[{emu_name}] 🏗️ Здание достроилось, ищем следующее..."
+                    f"[{emu_name}] 🏗️ Здание достроилось, обновляем БД..."
                 )
+                # ✅ FIX #2: Обновить здание + освободить строителя
+                building = self.building_db.get_building(
+                    emu_id, building_name, building_index
+                )
+                if building:
+                    building_id = building['id']
+                    new_level = (building.get('upgrading_to_level')
+                                 or building['current_level'] + 1)
+                    self.building_db.update_building_level(
+                        emu_id, building_name, building_index, new_level
+                    )
+                    with self.building_db.db_lock:
+                        cursor = self.building_db.conn.cursor()
+                        cursor.execute("""
+                                        UPDATE builders
+                                        SET is_busy = 0, building_id = NULL,
+                                            finish_time = NULL
+                                        WHERE emulator_id = ? AND building_id = ?
+                                    """, (emu_id, building_id))
+                        self.building_db.conn.commit()
+
                 time.sleep(DELAY_BETWEEN_DRAINS)
                 continue
 
@@ -669,55 +717,50 @@ class PrimeTimesFunction(BaseFunction):
         Используется когда нет зданий с активным таймером.
         Аналог building.py._start_next_building(), но через
         ленивые свойства prime_times.
+        ✅ FIX #4: Не ставить здания пока Лорд улучшается.
 
         Returns:
             True если здание поставлено на улучшение
         """
+        lord = self.building_db.get_building(emu_id, "Лорд", None)
+        if lord and lord['status'] == 'upgrading':
+            logger.info(
+                f"[{self.emulator_name}] Prime: Лорд улучшается, "
+                f"строители простаивают"
+            )
+            return False
+
         free_builder = self.building_db.get_free_builder(emu_id)
         if free_builder is None:
-            logger.debug(
-                f"[{self.emulator_name}] Нет свободных строителей"
-            )
             return False
 
         next_building = self.building_db.get_next_building_to_upgrade(
             self.emulator, auto_scan=False
         )
         if not next_building:
-            logger.debug(
-                f"[{self.emulator_name}] Нет зданий для улучшения"
-            )
             return False
 
         b_name = next_building['name']
         b_index = next_building.get('index')
         action = next_building.get('action', 'upgrade')
 
-        if action == 'build':
-            # Постройка нового здания — слишком сложно для fallback
-            logger.debug(
-                f"[{self.emulator_name}] Следующее здание требует постройки, "
-                f"пропускаем"
-            )
+        # Лорд не ставится через prime drain
+        if next_building.get('is_lord'):
             return False
 
-        display = b_name + (f" #{b_index}" if b_index else "")
+        if action == 'build':
+            return False
 
-        # Навигация
-        nav_ok = self.panel.navigate_to_building(
+        success = self.panel.navigate_to_building(
             self.emulator, b_name, building_index=b_index,
             expected_level=next_building['current_level'],
         )
-        if not nav_ok:
-            logger.error(
-                f"[{self.emulator_name}] Навигация к {display} не удалась"
-            )
+        if not success:
             self._reset_nav_state()
             return False
 
         detected_level = self.panel.last_detected_level
 
-        # Улучшение
         upgrade_ok, timer_sec = self.building_upgrade.upgrade_building(
             self.emulator, building_name=b_name, building_index=b_index
         )
@@ -731,25 +774,16 @@ class PrimeTimesFunction(BaseFunction):
                 timer_finish, free_builder,
                 actual_level=detected_level,
             )
+            display = b_name + (f" #{b_index}" if b_index else "")
             logger.success(
-                f"[{self.emulator_name}] 🏗️ {display} поставлено на "
-                f"улучшение ({timer_sec // 60} мин)"
+                f"[{self.emulator_name}] Prime: {display} "
+                f"поставлено на улучшение"
             )
             return True
 
         elif upgrade_ok and (timer_sec == 0 or timer_sec is None):
-            # Мгновенное улучшение — не даёт нам таймер для drain
-            new_level = (
-                    (detected_level or next_building['current_level']) + 1
-            )
-            self.building_db.update_building_level(
-                emu_id, b_name, b_index, new_level
-            )
-            logger.info(
-                f"[{self.emulator_name}] {display} улучшено мгновенно → "
-                f"Lv.{new_level}"
-            )
-            # Рекурсивно пробуем следующее здание
+            new_level = (detected_level or next_building['current_level']) + 1
+            self.building_db.update_building_level(emu_id, b_name, b_index, new_level)
             return self._start_building_for_drain(emu_id)
 
         return False
@@ -897,14 +931,18 @@ class PrimeTimesFunction(BaseFunction):
             inventory = self.backpack_storage.get_inventory(emu_id)
             has_buildings = self._check_has_buildings(emu_id)
 
+            # ✅ FIX #9: Передаём timers
+            timers = {'training_carnivore': batch_timer_sec}
+
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=batch_target,  # ← таймер пачки
+                target_minutes=batch_target,
                 event_type=ds['event_type'],
                 drain_type='training',
                 has_buildings=has_buildings,
                 target_shell=ds['target_shell'],
-                skip_threshold=True,  # ← порог проверен при инит
+                skip_threshold=True,
+                timers=timers,  # ← FIX #9
             )
 
             if plan.is_skip:
@@ -1110,14 +1148,18 @@ class PrimeTimesFunction(BaseFunction):
             # Рассчитать план (universal НИКОГДА для эволюции)
             inventory = self.backpack_storage.get_inventory(emu_id)
 
+            #Передаём timers
+            timers = {'evolution': evo_timer_sec}
+
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=batch_target,  # ← таймер эволюции
+                target_minutes=batch_target,
                 event_type=ds['event_type'],
                 drain_type='evolution',
                 has_buildings=True,
                 target_shell=ds['target_shell'],
-                skip_threshold=True,  # ← порог проверен при инит
+                skip_threshold=True,
+                timers=timers,  # ← FIX #10
             )
 
             if plan.is_skip:
@@ -1133,12 +1175,14 @@ class PrimeTimesFunction(BaseFunction):
             self._update_progress(ds, result.minutes_spent, event)
 
             if result.building_completed:
-                # Эволюция завершилась → закрылось 2 окна
-                # Видно крестик → ESC → меню разделов
                 logger.info(f"[{emu_name}] 🧬 Эволюция завершилась!")
+
+                # ✅ FIX #5: Обновить БД (уровень технологии + освободить слот)
+                # finish_time ещё в будущем, но ускорение завершило эволюцию
+                self.evolution_db._complete_research(emu_id)
+
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
-                # Закрываем окно эволюции полностью
                 self._close_evolution(2)
                 time.sleep(DELAY_BETWEEN_DRAINS)
                 continue
@@ -1162,30 +1206,27 @@ class PrimeTimesFunction(BaseFunction):
     def _find_building_with_timer(self, emu_id: int) -> Optional[Dict]:
         """
         Найти здание с максимальным активным таймером.
+        ✅ FIX #4: Исключает Лорда
 
         Возвращает {'name': str, 'index': int|None, 'timer_sec': int}
         или None если нет зданий с таймерами.
         """
+        now = datetime.now()
+        best = None
+        best_remaining = 0
+
         try:
-            times = self.building_db.get_all_builder_finish_times(emu_id)
-            if not times:
-                return None
-
-            # Ищем здание с максимальным таймером
-            now = datetime.now()
-            best = None
-            best_remaining = 0
-
             with self.building_db.db_lock:
                 cursor = self.building_db.conn.cursor()
                 cursor.execute("""
-                    SELECT b.building_name, b.building_index,
-                           br.finish_time
-                    FROM builders br
-                    JOIN buildings b ON br.building_id = b.id
-                    WHERE br.emulator_id = ? AND br.is_busy = 1
-                          AND br.finish_time IS NOT NULL
-                """, (emu_id,))
+                        SELECT b.building_name, b.building_index,
+                               br.finish_time
+                        FROM builders br
+                        JOIN buildings b ON br.building_id = b.id
+                        WHERE br.emulator_id = ? AND br.is_busy = 1
+                              AND br.finish_time IS NOT NULL
+                              AND b.building_name != 'Лорд'
+                    """, (emu_id,))
 
                 for row in cursor.fetchall():
                     ft = row['finish_time']
@@ -1199,11 +1240,10 @@ class PrimeTimesFunction(BaseFunction):
                             'index': row['building_index'],
                             'timer_sec': int(remaining),
                         }
-
-            return best
         except Exception as e:
-            logger.error(f"Ошибка при поиске здания с таймером: {e}")
-            return None
+            logger.error(f"Ошибка _find_building_with_timer: {e}")
+
+        return best
 
     def _get_active_evolution(self, emu_id: int) -> Optional[Dict]:
         """Получить активную (исследуемую) технологию из БД."""

@@ -655,11 +655,7 @@ class BuildingFunction(BaseFunction):
         Вызывается ПОСЛЕ основного цикла строительства (все строители заняты).
         Бот находится в поместье.
 
-        Точка входа A — бот уже работает со строительством,
-        навигация минимальна (только к зданию с таймером).
-
-        Ничего не возвращает, не влияет на return execute().
-        Все ошибки обрабатываются внутри (логируются, не пробрасываются).
+        ✅ FIX #4: Пропускает если Лорд улучшается.
         """
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
@@ -668,6 +664,15 @@ class BuildingFunction(BaseFunction):
             # ── 1. Проверяем включён ли prime_times ──
             active_funcs = self.session_state.get('_active_functions', [])
             if 'prime_times' not in active_funcs:
+                return
+
+            # ── ✅ FIX #4: Если Лорд улучшается — не запускать prime ──
+            lord = self.db.get_building(emu_id, "Лорд", None)
+            if lord and lord['status'] == 'upgrading':
+                logger.debug(
+                    f"[{emu_name}] Prime: Лорд улучшается, "
+                    f"пропускаем building drain"
+                )
                 return
 
             # ── 2. Активный ДС? ──
@@ -689,7 +694,6 @@ class BuildingFunction(BaseFunction):
                 return
 
             # ── 4. Безопасно ли начинать? ──
-            # Если уже начали (spent > 0) — продолжаем в любом случае
             progress = prime_st.get_progress(emu_id, event_key)
             spent = float(progress['spent_minutes']) if progress else 0.0
 
@@ -707,7 +711,6 @@ class BuildingFunction(BaseFunction):
                 return
 
             if ds['drain_type'] != 'building':
-                # Не building → оставляем для fallback (prime_times.py)
                 return
 
             # ── 7. Цикл drain ──
@@ -723,7 +726,6 @@ class BuildingFunction(BaseFunction):
             logger.error(
                 f"[{emu_name}] ❌ Ошибка в _handle_prime_time: {e}"
             )
-            # Не пробрасываем — prime time не должен ломать building
 
     def _init_prime_session(
             self, event: dict, prime_st: PrimeStorage
@@ -844,6 +846,9 @@ class BuildingFunction(BaseFunction):
         5. Обновить прогресс
         6. Если здание достроилось → ставим следующее → continue
         7. Если набрали очки → break
+        ✅ FIX #3: Передаёт timers в calculate_plan
+        ✅ FIX #8: continue вместо break при отсутствии speedup_icon
+        ✅ FIX #2: Полное освобождение строителя при завершении
         """
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
@@ -860,14 +865,13 @@ class BuildingFunction(BaseFunction):
             # Найти здание с максимальным таймером
             building_info = self._find_best_building_for_drain(emu_id)
 
-            # ── FIX: Нет зданий с таймером → попробовать поставить новое ──
+            # Нет зданий с таймером → попробовать поставить новое
             if building_info is None:
                 logger.info(
                     f"[{emu_name}] Prime: нет зданий с таймерами, "
                     f"пробуем поставить новое..."
                 )
                 if self._start_next_building(emu_id):
-                    # Здание поставлено — ищем его таймер
                     time.sleep(1.0)
                     building_info = self._find_best_building_for_drain(emu_id)
 
@@ -905,13 +909,18 @@ class BuildingFunction(BaseFunction):
 
             # Открыть окно ускорений
             if not self.upgrade._open_speedup_window(self.emulator):
-                logger.error(
-                    f"[{emu_name}] Prime: не удалось открыть окно ускорений"
+                # ✅ FIX #8: continue вместо break
+                logger.warning(
+                    f"[{emu_name}] Prime: иконка ускорения не найдена у "
+                    f"{display}, здание возможно уже завершено"
                 )
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
                 self._reset_panel_state()
-                break
+                # Помечаем как завершённое (если нечего ускорять — значит готово)
+                self._complete_building_after_drain(emu_id, b_name, b_index)
+                time.sleep(0.5)
+                continue  # ← пробуем следующее здание
 
             # ── Рассчитать план НА ЭТО ЗДАНИЕ (не на весь ДС) ──
             remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
@@ -928,14 +937,18 @@ class BuildingFunction(BaseFunction):
             inventory = bp_storage.get_inventory(emu_id)
             has_buildings = self.db.has_buildings_to_upgrade(emu_id)
 
+            # ✅ FIX #3: Передаём timers
+            timers = {'building_1': building_info['timer_sec']}
+
             plan = calculate_plan(
                 inventory=inventory,
-                target_minutes=batch_target,  # ← таймер здания
+                target_minutes=batch_target,
                 event_type=ds['event_type'],
                 drain_type='building',
                 has_buildings=has_buildings,
                 target_shell=ds['target_shell'],
-                skip_threshold=True,  # ← порог проверен при инит
+                skip_threshold=True,
+                timers=timers,  # ← FIX #3
             )
 
             if plan.is_skip:
@@ -966,7 +979,7 @@ class BuildingFunction(BaseFunction):
             self._reset_panel_state()
 
             if result.building_completed:
-                # Здание достроилось → обновляем БД
+                # ✅ FIX #2: Полное обновление (здание + строитель)
                 self._complete_building_after_drain(emu_id, b_name, b_index)
 
                 # Ставим следующее здание на улучшение (если есть)
@@ -978,7 +991,7 @@ class BuildingFunction(BaseFunction):
                     break
 
                 time.sleep(1.0)
-                continue  # Следующая итерация drain
+                continue
 
             # Не достроилось → закрываем окно ускорений
             press_key(self.emulator, "ESC")
@@ -998,6 +1011,9 @@ class BuildingFunction(BaseFunction):
         """
         Найти здание с максимальным оставшимся таймером.
 
+        ✅ FIX #4: Исключает Лорда (требует спец. обработку:
+        перезапуск игры после завершения).
+
         Returns:
             {'name': str, 'index': int|None, 'timer_sec': int}
             или None
@@ -1010,13 +1026,14 @@ class BuildingFunction(BaseFunction):
             with self.db.db_lock:
                 cursor = self.db.conn.cursor()
                 cursor.execute("""
-                    SELECT b.building_name, b.building_index,
-                           br.finish_time
-                    FROM builders br
-                    JOIN buildings b ON br.building_id = b.id
-                    WHERE br.emulator_id = ? AND br.is_busy = 1
-                          AND br.finish_time IS NOT NULL
-                """, (emu_id,))
+                        SELECT b.building_name, b.building_index,
+                               br.finish_time
+                        FROM builders br
+                        JOIN buildings b ON br.building_id = b.id
+                        WHERE br.emulator_id = ? AND br.is_busy = 1
+                              AND br.finish_time IS NOT NULL
+                              AND b.building_name != 'Лорд'
+                    """, (emu_id,))
 
                 for row in cursor.fetchall():
                     ft = row['finish_time']
@@ -1044,17 +1061,35 @@ class BuildingFunction(BaseFunction):
         Здание достроилось через ускорения:
         - level += 1
         - status = idle
-        - освобождаем строителя
+        - ✅ FIX: освобождаем строителя (builders.is_busy = 0)
         """
         try:
             building = self.db.get_building(emu_id, building_name, building_index)
             if building is None:
                 return
 
+            building_id = building['id']
             new_level = building.get('upgrading_to_level') or (building['current_level'] + 1)
+
+            # 1. Обновляем здание (status=idle, timer=NULL)
             self.db.update_building_level(
                 emu_id, building_name, building_index, new_level
             )
+
+            # 2. ✅ FIX #2: Освобождаем строителя по building_id
+            with self.db.db_lock:
+                cursor = self.db.conn.cursor()
+                cursor.execute("""
+                        UPDATE builders
+                        SET is_busy = 0, building_id = NULL, finish_time = NULL
+                        WHERE emulator_id = ? AND building_id = ?
+                    """, (emu_id, building_id))
+                self.db.conn.commit()
+                if cursor.rowcount > 0:
+                    logger.info(
+                        f"[{self.emulator_name}] 🔓 Строитель освобождён "
+                        f"(building_id={building_id})"
+                    )
 
             logger.success(
                 f"[{self.emulator_name}] 🏗️ Prime: {building_name} "
@@ -1162,7 +1197,7 @@ class BuildingFunction(BaseFunction):
         prime_st.mark_skipped(emu_id, event_key, reason)
 
     def _lord_instant_finish(self, emulator_id: int, old_level: int,
-                             expected_new: int) -> str:
+                            expected_new: int) -> str:
         """
         Обработка мгновенного улучшения Лорда.
 
@@ -1170,12 +1205,29 @@ class BuildingFunction(BaseFunction):
         2. Закрыть игру (force-stop)
         3. Перезапустить игру
         4. Верифицировать уровень в панели навигации
+        ✅ FIX #7: Освобождает строителя после завершения.
         """
         logger.success(f"[{self.emulator_name}] 👑🎉 Лорд мгновенно! "
                        f"Lv.{old_level} → Lv.{expected_new}")
 
         # Предварительно обновляем БД
         self.db.update_building_level(emulator_id, "Лорд", None, expected_new)
+
+        # ✅ FIX #7: Освобождаем строителя Лорда
+        lord = self.db.get_building(emulator_id, "Лорд", None)
+        if lord:
+            with self.db.db_lock:
+                cursor = self.db.conn.cursor()
+                cursor.execute("""
+                        UPDATE builders
+                        SET is_busy = 0, building_id = NULL, finish_time = NULL
+                        WHERE emulator_id = ? AND building_id = ?
+                    """, (emulator_id, lord['id']))
+                self.db.conn.commit()
+                if cursor.rowcount > 0:
+                    logger.info(
+                        f"[{self.emulator_name}] 🔓 Строитель Лорда освобождён"
+                    )
 
         # Перезапуск игры (всплывающие окна не закрываются ESC)
         logger.info(f"[{self.emulator_name}] 🔄 Перезапуск игры...")
@@ -1207,12 +1259,8 @@ class BuildingFunction(BaseFunction):
             else:
                 logger.success(f"[{self.emulator_name}] ✅ Верификация OK: "
                                f"Лорд Lv.{expected_new}")
-        else:
-            logger.warning(f"[{self.emulator_name}] ⚠️ Верификация не удалась. "
-                           f"БД: Lv.{expected_new}")
 
-        press_key(self.emulator, "ESC")
-        time.sleep(0.5)
+        self._reset_panel_state()
         return 'upgraded'
 
     def _restart_game_only(self) -> bool:

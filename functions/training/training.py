@@ -762,15 +762,19 @@ class TrainingFunction(BaseFunction):
                 except Exception:
                     pass
 
-                plan = calculate_plan(
-                    inventory=inventory,
-                    target_minutes=batch_target,
-                    event_type=ds['event_type'],
-                    drain_type='training',
-                    has_buildings=has_buildings,
-                    target_shell=ds['target_shell'],
-                    skip_threshold=True,  # Порог 30ч проверен при инит ДС
-                )
+                    # Передаём timers для ограничения номиналов
+                    timers = {'training_carnivore': batch_timer_sec}
+
+                    plan = calculate_plan(
+                        inventory=inventory,
+                        target_minutes=batch_target,
+                        event_type=ds['event_type'],
+                        drain_type='training',
+                        has_buildings=has_buildings,
+                        target_shell=ds['target_shell'],
+                        skip_threshold=True,
+                        timers=timers,  # ← FIX #9
+                    )
 
                 if plan.is_skip:
                     logger.info(
