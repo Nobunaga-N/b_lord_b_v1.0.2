@@ -110,6 +110,12 @@ DELAY_AFTER_RESCAN = 0.5
 DIAMOND_MAX_REMAINING_SEC = 22 * 60  # 22 мин
 DIAMOND_MAX_COST = 70
 
+#Порог "последней строки" — если button_y > этого значения
+LAST_ROW_Y_THRESHOLD = 830
+
+# X координата для клика по тексту ускорения (левее кнопки
+# "Использовать"), чтобы триггерить скролл без использования
+COORD_SCROLL_TAP_X = 221
 
 # ═══════════════════════════════════════════════════
 # МАППИНГ: OCR-текст → (speedup_type, denomination)
@@ -537,10 +543,13 @@ def _apply_clicks(
     - Проверяет: закончился ли номинал (quantity=0 → выход, нужен rescan)
     - Проверяет: завершилось ли улучшение (confirm / контекстный маркер)
 
-    ВАЖНО: проверка завершения выполняется ПОСЛЕ КАЖДОГО клика.
-    Даже с per-batch планированием, таймер мог уменьшиться
-    между парсингом и drain (навигация, задержки). Без проверки
-    бот продолжает кликать в пустоту после закрытия окна.
+    Обработка последней строки:
+    - Если slot.button_y > LAST_ROW_Y_THRESHOLD → клик по "Использовать"
+      вызовет авто-скролл, сдвигая список вверх на 1 строку.
+    - Вместо этого кликаем по тексту ускорения (x=221), что триггерит
+      скролл без использования, затем пересканируем.
+    - Если после скролла Y не изменился → это последний элемент в списке,
+      скролл невозможен → безопасно кликать "Использовать" как обычно.
 
     Returns:
         (used_count, completed): сколько использовали, завершилось ли
@@ -549,8 +558,9 @@ def _apply_clicks(
 
     used = 0
     denom_sec = DENOM_SECONDS.get(denomination, 0)
-
     db_qty = storage.get_quantity(emu_id, speedup_type, denomination)
+
+    current_slot = slot
 
     for i in range(max_clicks):
         if db_qty <= 0:
@@ -560,8 +570,61 @@ def _apply_clicks(
             )
             break
 
-        # Клик "Использовать"
-        tap(emulator, slot.button_x, slot.button_y)
+        # ══════════════════════════════════════════════
+        # FIX: Обработка последней строки
+        # ══════════════════════════════════════════════
+        if current_slot.button_y > LAST_ROW_Y_THRESHOLD:
+            old_y = current_slot.button_y
+
+            logger.debug(
+                f"[{emu_name}] ⚠️ Последняя строка (y={old_y}), "
+                f"клик по тексту для скролла"
+            )
+
+            # Клик по тексту ускорения (не по кнопке!) → триггерит скролл
+            tap(emulator, COORD_SCROLL_TAP_X, current_slot.button_y)
+            time.sleep(DELAY_AFTER_USE)
+
+            # Пересканируем позиции
+            slots = _scan_visible_speedups(emulator, ocr)
+            refreshed = _find_target_slot(
+                slots, speedup_type, denomination
+            )
+
+            if refreshed is None:
+                # Номинал пропал после скролла — может ушёл за
+                # верхний край. Выходим, внешний цикл drain_speedups
+                # сделает полный re-find.
+                logger.warning(
+                    f"[{emu_name}] ⚠️ {speedup_type}/{denomination} "
+                    f"не найден после скролла последней строки"
+                )
+                break
+
+            if refreshed.button_y == old_y:
+                # Y не изменился → это последний элемент в списке,
+                # ниже ничего нет, скролл не произошёл.
+                # Безопасно кликать "Использовать" — авто-скролла
+                # не будет, т.к. сдвигать нечего.
+                logger.debug(
+                    f"[{emu_name}] ✅ Последний элемент в списке "
+                    f"(y не изменился), кликаем напрямую"
+                )
+                current_slot = refreshed
+                # Проваливаемся в обычный клик ниже
+            else:
+                # Скролл произошёл, строка сдвинулась вверх
+                logger.debug(
+                    f"[{emu_name}] 📜 Скролл: y {old_y} → "
+                    f"{refreshed.button_y}, обновляем координаты"
+                )
+                current_slot = refreshed
+                # Проваливаемся в обычный клик ниже
+
+        # ══════════════════════════════════════════════
+        # Стандартный клик "Использовать"
+        # ══════════════════════════════════════════════
+        tap(emulator, current_slot.button_x, current_slot.button_y)
         used += 1
 
         # Обновляем БД
@@ -570,12 +633,16 @@ def _apply_clicks(
         )
         db_qty = new_qty
 
+        logger.debug(
+            f"[{emu_name}] ⬇️ {speedup_type}/{denomination}: "
+            f"{new_qty + 1} → {new_qty}"
+        )
+
         # Определяем контекст клика
         is_last_of_this_denom = (new_qty <= 0)
         is_last_click = (i == max_clicks - 1)
 
         # ── Пауза после клика ──
-        # Последний клик (по номиналу или по плану) → дольше ждём
         if is_last_of_this_denom or is_last_click:
             time.sleep(DELAY_AFTER_LAST_USE)
         else:
@@ -593,6 +660,27 @@ def _apply_clicks(
                 f"строки сдвинулись — нужен rescan"
             )
             break
+
+        # ══════════════════════════════════════════════
+        # После использования: пересканируем координаты,
+        # т.к. клик мог вызвать микро-сдвиг или изменение
+        # позиций (особенно если кол-во на кнопке обновилось)
+        # ══════════════════════════════════════════════
+        slots = _scan_visible_speedups(emulator, ocr)
+        refreshed = _find_target_slot(
+            slots, speedup_type, denomination
+        )
+
+        if refreshed is None:
+            # Номинал пропал — возможно закончился в игре
+            # (рассинхрон с БД) или сдвинулся
+            logger.debug(
+                f"[{emu_name}] 🔄 Номинал не найден после клика, "
+                f"нужен rescan"
+            )
+            break
+
+        current_slot = refreshed
 
     return used, False
 
