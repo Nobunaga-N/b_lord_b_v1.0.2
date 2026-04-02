@@ -734,16 +734,25 @@ class TrainingFunction(BaseFunction):
             # ════════════════════════════════════════
             while ds['spent_minutes'] < ds['target_minutes']:
                 # Проверка времени ДС
+                # Если spent > 0 — бот уже в процессе, батч = секунды,
+                # безопасно продолжать до конца ДС (ТЗ §15.4)
                 if not is_safe_to_start(min_minutes=5):
                     if ds['spent_minutes'] <= 0:
                         logger.info(
-                            f"[{emu_name}] Prime: мало времени до конца ДС"
+                            f"[{emu_name}] Prime: мало времени "
+                            f"до конца ДС, не начинаем"
                         )
-                    press_key(self.emulator, "ESC")
-                    time.sleep(0.5)
-                    press_key(self.emulator, "ESC")
-                    time.sleep(0.5)
-                    break
+                        press_key(self.emulator, "ESC")
+                        time.sleep(0.5)
+                        press_key(self.emulator, "ESC")
+                        time.sleep(0.5)
+                        break
+                    # spent > 0: продолжаем, один батч занимает секунды
+                    logger.debug(
+                        f"[{emu_name}] Prime: <5 мин до конца ДС, "
+                        f"но spent={ds['spent_minutes']:.0f}>0, "
+                        f"добиваем"
+                    )
 
                 # ── Парсим таймер ТЕКУЩЕЙ пачки из окна ускорений ──
                 batch_timer_sec = _parse_remaining_timer(
