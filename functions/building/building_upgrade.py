@@ -73,8 +73,13 @@ class BuildingUpgrade:
 
         logger.info("✅ BuildingUpgrade инициализирован")
 
-    def upgrade_building(self, emulator: Dict, building_name: str,
-                        building_index: Optional[int] = None) -> Tuple[bool, Optional[int]]:
+    def upgrade_building(
+        self,
+        emulator: Dict,
+        building_name: str,
+        building_index: Optional[int] = None,
+        keep_speedup_open: bool = False,
+    ) -> Tuple[bool, Optional[int]]:
         """
         ГЛАВНЫЙ МЕТОД - Улучшить здание
 
@@ -84,6 +89,9 @@ class BuildingUpgrade:
             emulator: объект эмулятора
             building_name: название здания
             building_index: индекс (для множественных зданий)
+            keep_speedup_open: если True — окно ускорений остаётся открытым
+                               после парсинга таймера (для prime time drain,
+                               чтобы не навигировать повторно к тому же зданию)
 
         Returns:
             (успех, таймер_в_секундах)
@@ -92,6 +100,7 @@ class BuildingUpgrade:
             - (False, None) - нехватка ресурсов, нужна заморозка
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
         building_display = f"{building_name}"
         if building_index is not None:
             building_display += f" #{building_index}"
@@ -110,28 +119,40 @@ class BuildingUpgrade:
         upgrade_result = self._handle_upgrade_window(emulator)
 
         if upgrade_result == "no_resources":
-            # Нехватка ресурсов - нужна заморозка
-            logger.warning(f"[{emulator_name}] ❌ Недостаточно ресурсов для {building_display}")
+            logger.warning(
+                f"[{emulator_name}] ❌ Недостаточно ресурсов "
+                f"для {building_display}"
+            )
             return False, None
 
         elif upgrade_result == "started":
-            # Улучшение началось
-            logger.success(f"[{emulator_name}] ✅ Улучшение началось: {building_display}")
+            logger.success(
+                f"[{emulator_name}] ✅ Улучшение началось: {building_display}"
+            )
 
             # ШАГ 4: Парсинг таймера
-            timer_seconds = self._parse_upgrade_timer(emulator)
+            # ✅ FIX: передаём keep_speedup_open
+            timer_seconds = self._parse_upgrade_timer(
+                emulator, keep_speedup_open=keep_speedup_open
+            )
 
             if timer_seconds is None:
-                # Таймер не найден - возможно быстрое завершение
-                logger.info(f"[{emulator_name}] 🚀 Возможно быстрое завершение (помощь альянса)")
+                logger.info(
+                    f"[{emulator_name}] 🚀 Возможно быстрое завершение "
+                    f"(помощь альянса)"
+                )
                 return True, 0
 
-            logger.info(f"[{emulator_name}] ⏱️ Таймер улучшения: {self._format_time(timer_seconds)}")
+            logger.info(
+                f"[{emulator_name}] ⏱️ Таймер улучшения: "
+                f"{self._format_time(timer_seconds)}"
+            )
             return True, timer_seconds
 
         else:
-            # Неизвестная ошибка
-            logger.error(f"[{emulator_name}] ❌ Неизвестная ошибка при улучшении")
+            logger.error(
+                f"[{emulator_name}] ❌ Неизвестная ошибка при улучшении"
+            )
             return False, None
 
     def _click_building(self, emulator: Dict) -> bool:
@@ -391,81 +412,106 @@ class BuildingUpgrade:
         logger.debug(f"[{emulator_name}] ✅ Ресурсы восполнены, стройка началась")
         return "started"
 
-    def _parse_upgrade_timer(self, emulator: Dict) -> Optional[int]:
+    def _parse_upgrade_timer(
+        self,
+        emulator: Dict,
+        keep_speedup_open: bool = False,
+    ) -> Optional[int]:
         """
         Спарсить таймер улучшения через иконку "Ускорить"
 
-        УЛУЧШЕНО: Множественные пороги + OCR fallback
-
         Процесс:
         1. Найти и кликнуть иконку "Ускорить" (template matching с разными порогами)
-        2. Если не нашли - fallback на OCR поиск текста "Ускорить"
+        2. Если не нашли — fallback на OCR поиск текста "Ускорить"
         3. Спарсить таймер в области TIMER_AREA
         4. Конвертировать в секунды
-        5. Закрыть окно через ESC
+        5. Закрыть окно через ESC (если keep_speedup_open=False)
+
+        Args:
+            emulator: объект эмулятора
+            keep_speedup_open: если True — НЕ закрывать окно ускорений.
+                               Используется для prime time drain, чтобы
+                               сразу после парсинга начать тратить ускорения.
 
         Returns:
-            секунды или None (если таймер не найден - быстрое завершение)
+            секунды или None (если таймер не найден — быстрое завершение)
         """
         emulator_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
         logger.debug(f"[{emulator_name}] Парсинг таймера через 'Ускорить'...")
 
-        # ============== ПОПЫТКА 1: TEMPLATE MATCHING С РАЗНЫМИ ПОРОГАМИ ==============
-        # Пробуем разные пороги от высокого к низкому
+        # ═══ ПОПЫТКА 1: TEMPLATE MATCHING С РАЗНЫМИ ПОРОГАМИ ═══
         thresholds = [0.75, 0.65, 0.55]
 
         for threshold in thresholds:
-            logger.debug(f"[{emulator_name}] 🔍 Поиск иконки 'Ускорить' (порог {threshold})...")
+            logger.debug(
+                f"[{emulator_name}] 🔍 Поиск иконки 'Ускорить' "
+                f"(порог {threshold})..."
+            )
 
-            for attempt in range(3):  # 3 попытки на каждый порог
-                result = find_image(emulator, self.TEMPLATES['speedup_icon'],
-                                    threshold=threshold)
+            for attempt in range(3):
+                result = find_image(
+                    emulator, self.TEMPLATES['speedup_icon'],
+                    threshold=threshold,
+                )
 
                 if result:
                     center_x, center_y = result
-
                     logger.success(
-                        f"[{emulator_name}] ✅ Найдена иконка 'Ускорить' на ({center_x}, {center_y}) с порогом {threshold}")
+                        f"[{emulator_name}] ✅ Найдена иконка 'Ускорить' "
+                        f"на ({center_x}, {center_y}) с порогом {threshold}"
+                    )
                     tap(emulator, x=center_x, y=center_y)
                     time.sleep(1.5)
 
                     # Парсим таймер
                     timer_seconds = self._extract_timer_from_window(emulator)
 
-                    # Закрываем окно
-                    press_key(emulator, "ESC")
-                    time.sleep(0.5)
+                    # ✅ FIX: закрываем только если НЕ keep_speedup_open
+                    if not keep_speedup_open:
+                        press_key(emulator, "ESC")
+                        time.sleep(0.5)
 
                     return timer_seconds
 
                 time.sleep(0.3)
 
-            logger.debug(f"[{emulator_name}] ⚠️ Иконка не найдена с порогом {threshold}")
+            logger.debug(
+                f"[{emulator_name}] ⚠️ Иконка не найдена "
+                f"с порогом {threshold}"
+            )
 
-        # ============== ПОПЫТКА 2: OCR FALLBACK ==============
-        logger.warning(f"[{emulator_name}] ⚠️ Template matching не сработал, пробую OCR fallback...")
+        # ═══ ПОПЫТКА 2: OCR FALLBACK ═══
+        logger.warning(
+            f"[{emulator_name}] ⚠️ Template matching не сработал, "
+            f"пробую OCR fallback..."
+        )
 
         speedup_coords = self._find_speedup_by_ocr(emulator)
 
         if speedup_coords:
             center_x, center_y = speedup_coords
-
-            logger.success(f"[{emulator_name}] ✅ Найден текст 'Ускорить' через OCR на ({center_x}, {center_y})")
+            logger.success(
+                f"[{emulator_name}] ✅ Найден текст 'Ускорить' "
+                f"через OCR на ({center_x}, {center_y})"
+            )
             tap(emulator, x=center_x, y=center_y)
             time.sleep(1.5)
 
-            # Парсим таймер
             timer_seconds = self._extract_timer_from_window(emulator)
 
-            # Закрываем окно
-            press_key(emulator, "ESC")
-            time.sleep(0.5)
+            # ✅ FIX: закрываем только если НЕ keep_speedup_open
+            if not keep_speedup_open:
+                press_key(emulator, "ESC")
+                time.sleep(0.5)
 
             return timer_seconds
 
-        # ============== НИЧЕГО НЕ НАШЛИ - БЫСТРОЕ ЗАВЕРШЕНИЕ ==============
-        logger.info(f"[{emulator_name}] 🚀 Иконка 'Ускорить' не найдена за все попытки - возможно быстрое завершение")
+        # ═══ НИЧЕГО НЕ НАШЛИ — БЫСТРОЕ ЗАВЕРШЕНИЕ ═══
+        logger.info(
+            f"[{emulator_name}] 🚀 Иконка 'Ускорить' не найдена "
+            f"за все попытки — возможно быстрое завершение"
+        )
         return None
 
     def _find_speedup_by_ocr(self, emulator: Dict) -> Optional[Tuple[int, int]]:

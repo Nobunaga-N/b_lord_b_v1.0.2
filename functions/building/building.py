@@ -835,107 +835,106 @@ class BuildingFunction(BaseFunction):
 
     def _drain_building_in_prime(
         self, ds: dict, event: dict, prime_st: PrimeStorage
-):
+    ):
         """
         Цикл drain строительных ускорений для ДС.
 
-        Бот в поместье. Для каждой итерации:
-        1. Найти здание с максимальным таймером
-        2. Если нет — поставить новое здание на улучшение
-        3. NavigationPanel → здание → "Ускорить" → окно ускорений
-        4. drain_speedups()
-        5. Обновить прогресс
-        6. Если здание достроилось → ставим следующее → continue
-        7. Если набрали очки → break
-        ✅ FIX #3: Передаёт timers в calculate_plan
-        ✅ FIX #8: continue вместо break при отсутствии speedup_icon
-        ✅ FIX #2: Полное освобождение строителя при завершении
-        ✅ FIX #9: expected_level при навигации (переупорядочивание панели)
+        ✅ FIX #12: Когда _start_next_building() ставит здание
+           и оставляет окно ускорений открытым, drain loop пропускает
+           повторную навигацию.
         """
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
-
         bp_storage = BackpackStorage()
 
         while ds['spent_minutes'] < ds['target_minutes']:
-            # Проверяем время
             if not is_safe_to_start(min_minutes=5):
                 if ds['spent_minutes'] <= 0:
-                    logger.info(f"[{emu_name}] Prime: мало времени до конца ДС")
-                    break
-
-            # ✅ FIX #10: Обновить состояние строителей перед поиском здания.
-            # Пока prime работал, другие здания могли достроиться (таймер истёк).
-            # get_free_builder() проверяет истекшие таймеры, обновляет уровни
-            # зданий и пересчитывает индексы — без этого панель навигации
-            # в игре уже переупорядочилась, а БД ещё нет.
-            self.db.get_free_builder(emu_id)
-
-            # Найти здание с максимальным таймером
-            building_info = self._find_best_building_for_drain(emu_id)
-
-            # Нет зданий с таймером → попробовать поставить новое
-            if building_info is None:
-                logger.info(
-                    f"[{emu_name}] Prime: нет зданий с таймерами, "
-                    f"пробуем поставить новое..."
-                )
-                if self._start_next_building(emu_id):
-                    time.sleep(1.0)
-                    building_info = self._find_best_building_for_drain(emu_id)
-
-                if building_info is None:
-                    logger.warning(
-                        f"[{emu_name}] Prime: не удалось поставить здание, "
-                        f"выходим из drain"
+                    logger.info(
+                        f"[{emu_name}] Prime: мало времени до конца ДС"
                     )
                     break
+
+            # ── Флаг: окно ускорений уже открыто? ──
+            speedup_already_open = False
+
+            building_info = self._find_best_building_for_drain(emu_id)
+
+            if building_info is None:
+                logger.info(
+                    f"[{emu_name}] ⚠️ Нет зданий с активным таймером, "
+                    f"пробуем поставить новое..."
+                )
+                start_result = self._start_next_building(emu_id)
+
+                if start_result is None:
+                    logger.info(
+                        f"[{emu_name}] Prime: нет зданий для "
+                        f"следующего улучшения"
+                    )
+                    break
+
+                # ✅ FIX #12: используем инфу напрямую
+                building_info = start_result
+                speedup_already_open = start_result.get(
+                    'speedup_open', False
+                )
 
             b_name = building_info['name']
             b_index = building_info.get('index')
             b_level = building_info.get('current_level')
             display = b_name + (f" #{b_index}" if b_index else "")
 
-            logger.info(
-                f"[{emu_name}] Prime: drain → {display} Lv.{b_level} "
-                f"(таймер ~{building_info['timer_sec'] // 60} мин)"
-            )
-
-            # ✅ FIX #9: Навигация с expected_level
-            nav_ok = self.panel.navigate_to_building(
-                self.emulator, b_name, building_index=b_index,
-                expected_level=b_level,
-            )
-            if not nav_ok:
-                logger.error(
-                    f"[{emu_name}] Prime: навигация к {display} не удалась"
+            # ── Навигация + открытие окна ускорений ──
+            if not speedup_already_open:
+                logger.info(
+                    f"[{emu_name}] Prime: навигация к {display} Lv."
+                    f"{b_level} "
+                    f"(таймер ~{building_info['timer_sec'] // 60} мин)"
                 )
-                self._reset_panel_state()
-                break
 
-            # Клик по зданию → иконки действий вокруг здания
-            from utils.adb_controller import tap as adb_tap
-            adb_tap(self.emulator, x=268, y=517)
-            time.sleep(1.5)
-
-            # Открыть окно ускорений
-            if not self.upgrade._open_speedup_window(self.emulator):
-                # ✅ FIX #8: continue вместо break
-                logger.warning(
-                    f"[{emu_name}] Prime: иконка ускорения не найдена у "
-                    f"{display}, здание возможно уже завершено"
+                # ✅ FIX #9: Навигация с expected_level
+                nav_ok = self.panel.navigate_to_building(
+                    self.emulator, b_name, building_index=b_index,
+                    expected_level=b_level,
                 )
-                press_key(self.emulator, "ESC")
-                time.sleep(0.5)
-                self._reset_panel_state()
-                # Помечаем как завершённое (если нечего ускорять — значит готово)
-                self._complete_building_after_drain(emu_id, b_name, b_index)
-                time.sleep(0.5)
-                continue  # ← пробуем следующее здание
+                if not nav_ok:
+                    logger.error(
+                        f"[{emu_name}] Prime: навигация к "
+                        f"{display} не удалась"
+                    )
+                    self._reset_panel_state()
+                    break
 
-            # ── Рассчитать план НА ЭТО ЗДАНИЕ (не на весь ДС) ──
-            remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
-            building_timer_min = max(1, math.ceil(building_info['timer_sec'] / 60))
+                # Клик по зданию → иконки действий
+                from utils.adb_controller import tap as adb_tap
+                adb_tap(self.emulator, x=268, y=517)
+                time.sleep(1.5)
+
+                # Открыть окно ускорений
+                if not self.upgrade._open_speedup_window(self.emulator):
+                    # ✅ FIX #8: continue вместо break
+                    logger.warning(
+                        f"[{emu_name}] Prime: иконка ускорения не найдена "
+                        f"у {display}, здание возможно уже завершено"
+                    )
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    self._reset_panel_state()
+                    self._complete_building_after_drain(
+                        emu_id, b_name, b_index
+                    )
+                    time.sleep(0.5)
+                    continue
+
+            # ── Рассчитать план НА ЭТО ЗДАНИЕ ──
+            remaining_ds_min = int(
+                ds['target_minutes'] - ds['spent_minutes']
+            )
+            building_timer_sec = building_info.get('timer_sec', 0)
+            building_timer_min = max(
+                1, math.ceil(building_timer_sec / 60)
+            )
             batch_target = min(remaining_ds_min, building_timer_min)
 
             logger.info(
@@ -949,7 +948,7 @@ class BuildingFunction(BaseFunction):
             has_buildings = self.db.has_buildings_to_upgrade(emu_id)
 
             # ✅ FIX #3: Передаём timers
-            timers = {'building_1': building_info['timer_sec']}
+            timers = {'building_1': building_timer_sec}
 
             plan = calculate_plan(
                 inventory=inventory,
@@ -959,12 +958,13 @@ class BuildingFunction(BaseFunction):
                 has_buildings=has_buildings,
                 target_shell=ds['target_shell'],
                 skip_threshold=True,
-                timers=timers,  # ← FIX #3
+                timers=timers,
             )
 
             if plan.is_skip:
                 logger.info(
-                    f"[{emu_name}] Prime: план пустой — {plan.skip_reason}"
+                    f"[{emu_name}] Prime: план пустой — "
+                    f"{plan.skip_reason}"
                 )
                 press_key(self.emulator, "ESC")
                 time.sleep(0.5)
@@ -979,32 +979,28 @@ class BuildingFunction(BaseFunction):
             # Обновляем прогресс
             ds['spent_minutes'] += result.minutes_spent
             prime_st.add_spent_minutes(
-                emu_id, event['event_key'], int(result.minutes_spent)
+                emu_id, event['event_key'],
+                int(result.minutes_spent),
             )
 
             logger.info(
                 f"[{emu_name}] Prime: +{result.minutes_spent:.0f} мин, "
-                f"итого {ds['spent_minutes']:.0f}/{ds['target_minutes']}"
+                f"итого {ds['spent_minutes']:.0f}/"
+                f"{ds['target_minutes']}"
             )
 
             self._reset_panel_state()
 
             if result.building_completed:
-                # ✅ FIX #2: Полное обновление (здание + строитель)
-                self._complete_building_after_drain(emu_id, b_name, b_index)
-
-                # Ставим следующее здание на улучшение (если есть)
-                if not self._start_next_building(emu_id):
-                    logger.info(
-                        f"[{emu_name}] Prime: нет зданий для "
-                        f"следующего улучшения"
-                    )
-                    break
+                # ✅ FIX #2: Полное обновление
+                self._complete_building_after_drain(
+                    emu_id, b_name, b_index
+                )
 
                 time.sleep(1.0)
-                continue
+                continue  # → следующая итерация найдёт/поставит
 
-            # Не достроилось → закрываем окно ускорений
+            # Не достроилось
             press_key(self.emulator, "ESC")
             time.sleep(0.5)
             break
@@ -1117,34 +1113,37 @@ class BuildingFunction(BaseFunction):
         except Exception as e:
             logger.error(f"Ошибка _complete_building_after_drain: {e}")
 
-    def _start_next_building(self, emu_id: int) -> bool:
+    def _start_next_building(self, emu_id: int) -> Optional[dict]:
         """
         Поставить следующее здание на улучшение (для продолжения drain).
 
         Используется внутри prime time drain когда текущее здание
         достроилось и нужно поставить новое чтобы продолжить слив ускорений.
 
+        ✅ FIX #12: keep_speedup_open=True — окно ускорений остаётся
+           открытым, drain loop пропускает повторную навигацию.
+
         Returns:
-            True если здание поставлено (навигация + upgrade_building)
+            dict с полями:
+                name, index, current_level, timer_sec, speedup_open
+            или None при ошибке / нет зданий
         """
         free_builder = self.db.get_free_builder(emu_id)
         if free_builder is None:
-            return False
+            return None
 
         next_building = self.db.get_next_building_to_upgrade(
             self.emulator, auto_scan=False
         )
         if not next_building:
-            return False
+            return None
 
         b_name = next_building['name']
         b_index = next_building.get('index')
         action = next_building.get('action', 'upgrade')
 
         if action == 'build':
-            # Постройка — слишком сложно для inline prime,
-            # оставляем для основного цикла
-            return False
+            return None
 
         # Навигация
         success = self.panel.navigate_to_building(
@@ -1153,13 +1152,14 @@ class BuildingFunction(BaseFunction):
         )
         if not success:
             self._reset_panel_state()
-            return False
+            return None
 
         detected_level = self.panel.last_detected_level
 
-        # Улучшение
+        # ✅ FIX #12: keep_speedup_open=True
         upgrade_ok, timer_sec = self.upgrade.upgrade_building(
-            self.emulator, building_name=b_name, building_index=b_index
+            self.emulator, building_name=b_name, building_index=b_index,
+            keep_speedup_open=True,
         )
 
         self._reset_panel_state()
@@ -1174,17 +1174,28 @@ class BuildingFunction(BaseFunction):
             display = b_name + (f" #{b_index}" if b_index else "")
             logger.success(
                 f"[{self.emulator_name}] Prime: {display} "
-                f"поставлено на улучшение ({self._format_time(timer_sec)})"
+                f"поставлено на улучшение "
+                f"({self._format_time(timer_sec)})"
             )
-            return True
+            return {
+                'name': b_name,
+                'index': b_index,
+                'current_level': (
+                    detected_level or next_building['current_level']
+                ),
+                'timer_sec': timer_sec,
+                'speedup_open': True,
+            }
 
         elif upgrade_ok and (timer_sec == 0 or timer_sec is None):
-            # Мгновенное улучшение
-            new_level = (detected_level or next_building['current_level']) + 1
+            # Мгновенное улучшение — рекурсивно ставим следующее
+            new_level = (
+                (detected_level or next_building['current_level']) + 1
+            )
             self.db.update_building_level(emu_id, b_name, b_index, new_level)
-            return True
+            return self._start_next_building(emu_id)
 
-        return False
+        return None
 
     def _reset_panel_state(self):
         """Сбросить состояние навигационной панели."""
