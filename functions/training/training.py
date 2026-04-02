@@ -763,19 +763,19 @@ class TrainingFunction(BaseFunction):
                 except Exception:
                     pass
 
-                    # Передаём timers для ограничения номиналов
-                    timers = {'training_carnivore': batch_timer_sec}
+                # ── FIX: timers и calculate_plan ВЫНЕСЕНЫ из except ──
+                timers = {'training_carnivore': batch_timer_sec}
 
-                    plan = calculate_plan(
-                        inventory=inventory,
-                        target_minutes=batch_target,
-                        event_type=ds['event_type'],
-                        drain_type='training',
-                        has_buildings=has_buildings,
-                        target_shell=ds['target_shell'],
-                        skip_threshold=True,
-                        timers=timers,  # ← FIX #9
-                    )
+                plan = calculate_plan(
+                    inventory=inventory,
+                    target_minutes=batch_target,
+                    event_type=ds['event_type'],
+                    drain_type='training',
+                    has_buildings=has_buildings,
+                    target_shell=ds['target_shell'],
+                    skip_threshold=True,
+                    timers=timers,
+                )
 
                 if plan.is_skip:
                     logger.info(
@@ -801,10 +801,8 @@ class TrainingFunction(BaseFunction):
                     int(result.minutes_spent)
                 )
                 logger.info(
-                    f"[{emu_name}] Prime: "
-                    f"+{result.minutes_spent:.0f} мин, "
-                    f"итого {ds['spent_minutes']:.0f}/"
-                    f"{ds['target_minutes']}"
+                    f"[{emu_name}] 📊 Прогресс ДС: "
+                    f"{ds['spent_minutes']:.0f}/{ds['target_minutes']} мин"
                 )
 
                 if not result.building_completed:
@@ -819,7 +817,7 @@ class TrainingFunction(BaseFunction):
                 # ═══ СЦЕНАРИЙ 3: Тренировка завершилась ═══
                 # Окно ускорений закрылось → бот видит окно зверей
                 logger.info(
-                    f"[{emu_name}] Prime: тренировка завершилась!"
+                    f"[{emu_name}] 🎓 Тренировка завершилась!"
                 )
                 self.db.clear_finished_slots(emu_id)
 
@@ -868,9 +866,12 @@ class TrainingFunction(BaseFunction):
                 time.sleep(1.0)
                 # continue → внутренний цикл: следующая пачка
 
-            # Внутренний цикл завершён
+            # Внутренний цикл завершён — внешний тоже завершаем.
+            # Повторная навигация не нужна: если внутренний цикл
+            # break-нулся, значит либо цель достигнута, либо ошибка,
+            # либо ДС закончился. Во всех случаях продолжать нет смысла.
             self._reset_nav_state()
-            break  # Внешний цикл: одна навигация, всё через внутренний
+            break
 
         # ════════════════════════════════════════════
         # ФИНАЛИЗАЦИЯ
