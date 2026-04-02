@@ -556,6 +556,11 @@ class PrimeTimesFunction(BaseFunction):
                     break
                 # Уже начали — продолжаем
 
+            # ✅ FIX #10: Синхронизация БД с реальностью перед навигацией.
+            # За время drain другие здания могли достроиться естественным
+            # путём — игра переупорядочивает панель, а БД ещё не знает.
+            self.building_db.get_free_builder(emu_id)
+
             # Найти здание с максимальным таймером
             building_info = self._find_building_with_timer(emu_id)
 

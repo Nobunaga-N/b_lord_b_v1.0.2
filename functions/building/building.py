@@ -864,6 +864,13 @@ class BuildingFunction(BaseFunction):
                     logger.info(f"[{emu_name}] Prime: мало времени до конца ДС")
                     break
 
+            # ✅ FIX #10: Обновить состояние строителей перед поиском здания.
+            # Пока prime работал, другие здания могли достроиться (таймер истёк).
+            # get_free_builder() проверяет истекшие таймеры, обновляет уровни
+            # зданий и пересчитывает индексы — без этого панель навигации
+            # в игре уже переупорядочилась, а БД ещё нет.
+            self.db.get_free_builder(emu_id)
+
             # Найти здание с максимальным таймером
             building_info = self._find_best_building_for_drain(emu_id)
 
