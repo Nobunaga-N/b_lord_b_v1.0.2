@@ -153,7 +153,9 @@ def open_log_terminal():
     """
     Открывает Windows Terminal с логами в режиме tail -f
 
-    ОБНОВЛЕНО: Создаёт улучшенную версию tail_logs.ps1 с обработкой ротации
+    Создаёт/обновляет tail_logs.ps1 с обработкой ротации loguru.
+    Скрипт перегенерируется ВСЕГДА (не только при отсутствии),
+    чтобы подтянуть исправления.
 
     Приоритет:
     1. Windows Terminal + PowerShell 7+ (pwsh)
@@ -165,124 +167,79 @@ def open_log_terminal():
     # Путь к PowerShell скрипту
     script_path = os.path.abspath("data/logs/tail_logs.ps1")
 
-    # Создаем PowerShell скрипт если его нет
-    if not os.path.exists(script_path):
-        logger.info("Создание PowerShell скрипта для логов...")
-        os.makedirs(os.path.dirname(script_path), exist_ok=True)
+    # Всегда перегенерируем скрипт (чтобы обновить при фиксах)
+    logger.debug("Генерация tail_logs.ps1...")
+    os.makedirs(os.path.dirname(script_path), exist_ok=True)
 
-        # ✅ УЛУЧШЕННАЯ ВЕРСИЯ с обработкой ротации
-        with open(script_path, 'w', encoding='utf-8') as f:
-            f.write("""# Улучшенный скрипт для отслеживания логов с обработкой ротации
-# Автоматически переподключается к новому файлу при ротации
+    with open(script_path, 'w', encoding='utf-8') as f:
+        f.write(r"""# Beast Lord Bot — tail логов с обработкой ротации loguru
+# Бесконечный retry при ротации, без maxReconnectAttempts
+# Путь к логам определяется автоматически из расположения скрипта
 
-$logPath = "bot.log"
+$logDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$logFile = Join-Path $logDir "bot.log"
 
 Write-Host "==================================" -ForegroundColor Cyan
-Write-Host "Beast Lord Bot - Логи" -ForegroundColor Cyan
+Write-Host "  Beast Lord Bot - Логи" -ForegroundColor Cyan
 Write-Host "==================================" -ForegroundColor Cyan
+Write-Host "Файл: $logFile" -ForegroundColor Gray
+Write-Host "Ctrl+C для остановки" -ForegroundColor Gray
 Write-Host ""
-Write-Host "💡 Скрипт автоматически переподключится при ротации логов" -ForegroundColor Yellow
-Write-Host "⚠️  Нажмите Ctrl+C для остановки" -ForegroundColor Gray
-Write-Host ""
 
-# Функция для безопасного чтения логов с обработкой ошибок
-function Start-LogTail {
-    param([string]$Path)
+$lastLineCount = 0
 
-    $lastPosition = 0
-    $reconnectAttempts = 0
-    $maxReconnectAttempts = 3
-
-    while ($true) {
-        try {
-            # Проверяем существование файла
-            if (-not (Test-Path $Path)) {
-                Write-Host "⏳ Ожидание создания файла логов..." -ForegroundColor Yellow
-                Start-Sleep -Seconds 2
-                continue
-            }
-
-            # Получаем информацию о файле
-            $fileInfo = Get-Item $Path
-            $currentSize = $fileInfo.Length
-
-            # Если файл меньше последней позиции - произошла ротация
-            if ($currentSize -lt $lastPosition) {
-                Write-Host ""
-                Write-Host "🔄 [$(Get-Date -Format 'HH:mm:ss')] Обнаружена ротация логов, переподключение..." -ForegroundColor Magenta
-                Write-Host ""
-                $lastPosition = 0
-                $reconnectAttempts = 0
-            }
-
-            # Читаем новые строки
-            if ($currentSize -gt $lastPosition) {
-                $content = Get-Content -Path $Path -Encoding UTF8 -ErrorAction Stop
-
-                # Выводим только новые строки
-                $newLines = $content | Select-Object -Skip ([Math]::Max(0, $lastPosition))
-                foreach ($line in $newLines) {
-                    Write-Host $line
-                }
-
-                $lastPosition = $content.Count
-                $reconnectAttempts = 0
-            }
-
-            # Небольшая пауза перед следующей проверкой
-            Start-Sleep -Milliseconds 500
-
+while ($true) {
+    try {
+        if (-not (Test-Path $logFile)) {
+            # Файл отсутствует — ротация loguru, ждём появления
+            Start-Sleep -Seconds 1
+            continue
         }
-        catch [System.IO.FileNotFoundException] {
-            # Файл был удален/переименован - ротация
+
+        # Читаем весь файл
+        $lines = Get-Content -Path $logFile -Encoding UTF8 -ErrorAction Stop
+        $totalLines = $lines.Count
+
+        if ($totalLines -lt $lastLineCount) {
+            # Файл стал короче → ротация, новый файл
             Write-Host ""
-            Write-Host "🔄 [$(Get-Date -Format 'HH:mm:ss')] Файл логов переименован (ротация), переподключение..." -ForegroundColor Magenta
+            Write-Host "🔄 [$(Get-Date -Format 'HH:mm:ss')] Ротация логов" -ForegroundColor Magenta
             Write-Host ""
-
-            $lastPosition = 0
-            $reconnectAttempts++
-
-            if ($reconnectAttempts -gt $maxReconnectAttempts) {
-                Write-Host "❌ Превышено количество попыток переподключения" -ForegroundColor Red
-                break
-            }
-
-            Start-Sleep -Seconds 2
+            $lastLineCount = 0
         }
-        catch {
-            Write-Host "⚠️  Ошибка чтения логов: $($_.Exception.Message)" -ForegroundColor Red
-            $reconnectAttempts++
 
-            if ($reconnectAttempts -gt $maxReconnectAttempts) {
-                Write-Host "❌ Превышено количество попыток переподключения" -ForegroundColor Red
-                break
+        if ($totalLines -gt $lastLineCount) {
+            # Выводим только новые строки
+            $lines | Select-Object -Skip $lastLineCount | ForEach-Object {
+                Write-Host $_
             }
-
-            Start-Sleep -Seconds 2
+            $lastLineCount = $totalLines
         }
+
+        Start-Sleep -Milliseconds 500
     }
-}
-
-# Запускаем слежение
-try {
-    Start-LogTail -Path $logPath
-}
-catch {
-    Write-Host "❌ Критическая ошибка: $($_.Exception.Message)" -ForegroundColor Red
-    Read-Host "Нажмите Enter для выхода"
-    exit 1
+    catch [System.IO.IOException] {
+        # Файл заблокирован loguru во время ротации
+        Start-Sleep -Seconds 1
+    }
+    catch {
+        # Любая другая ошибка — тихо ждём
+        Start-Sleep -Seconds 1
+    }
 }
 """)
 
     # ===== ПОПЫТКА 1: Windows Terminal + PowerShell 7+ =====
     try:
-        # Проверяем наличие Windows Terminal
-        wt_path = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe")
+        wt_path = os.path.expandvars(
+            r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe"
+        )
 
         if os.path.exists(wt_path):
-            # Пробуем с pwsh
-            command = f'start wt.exe -d data/logs pwsh -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
-
+            command = (
+                f'start wt.exe -d data/logs pwsh -NoExit '
+                f'-ExecutionPolicy Bypass -File "{script_path}"'
+            )
             subprocess.Popen(command, shell=True)
             logger.success("Windows Terminal + PowerShell 7+ открыт")
             return True
@@ -294,14 +251,20 @@ catch {
 
     # ===== ПОПЫТКА 2: Windows Terminal + PowerShell 5 =====
     try:
-        wt_path = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe")
+        wt_path = os.path.expandvars(
+            r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe"
+        )
 
         if os.path.exists(wt_path):
-            command = f'start wt.exe -d data/logs powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
-
+            command = (
+                f'start wt.exe -d data/logs powershell -NoExit '
+                f'-ExecutionPolicy Bypass -File "{script_path}"'
+            )
             subprocess.Popen(command, shell=True)
             logger.success("Windows Terminal + PowerShell 5 открыт")
-            logger.warning("Установите PowerShell 7+ для лучшей производительности")
+            logger.warning(
+                "Установите PowerShell 7+ для лучшей производительности"
+            )
             return True
 
     except Exception as e:
@@ -309,8 +272,10 @@ catch {
 
     # ===== ПОПЫТКА 3: PowerShell 7+ отдельное окно =====
     try:
-        command = f'start pwsh -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
-
+        command = (
+            f'start pwsh -NoExit -ExecutionPolicy Bypass '
+            f'-File "{script_path}"'
+        )
         subprocess.Popen(command, shell=True)
         logger.success("PowerShell 7+ открыт (отдельное окно)")
         return True
@@ -322,16 +287,23 @@ catch {
 
     # ===== ПОПЫТКА 4: PowerShell 5 отдельное окно (fallback) =====
     try:
-        command = f'start powershell -NoExit -ExecutionPolicy Bypass -File "{script_path}"'
-
+        command = (
+            f'start powershell -NoExit -ExecutionPolicy Bypass '
+            f'-File "{script_path}"'
+        )
         subprocess.Popen(command, shell=True)
         logger.success("PowerShell 5 открыт (отдельное окно)")
         logger.warning(
-            "Используется PowerShell 5 (установите PowerShell 7+ и Windows Terminal для лучшей производительности)")
+            "Используется PowerShell 5 "
+            "(установите PowerShell 7+ и Windows Terminal)"
+        )
         return True
 
     except Exception as e:
-        logger.error(f"Не удалось открыть терминал с логами (все попытки провалились): {e}")
+        logger.error(
+            f"Не удалось открыть терминал с логами "
+            f"(все попытки провалились): {e}"
+        )
         return False
 
 
