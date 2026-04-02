@@ -535,6 +535,7 @@ class PrimeTimesFunction(BaseFunction):
         5. Обновить прогресс
         6. Если здание достроилось → следующее здание → continue
         7. Если набрали очки → break
+        ✅ FIX #9: expected_level при навигации (переупорядочивание панели)
 
         Returns:
             True = обработано
@@ -577,10 +578,12 @@ class PrimeTimesFunction(BaseFunction):
 
             building_name = building_info['name']
             building_index = building_info.get('index')
+            building_level = building_info.get('current_level')
 
-            # Навигация к зданию
+            # ✅ FIX #9: Навигация с expected_level
             nav_ok = self.panel.navigate_to_building(
-                self.emulator, building_name, building_index
+                self.emulator, building_name, building_index,
+                expected_level=building_level,
             )
             if not nav_ok:
                 logger.error(
@@ -619,11 +622,11 @@ class PrimeTimesFunction(BaseFunction):
                     with self.building_db.db_lock:
                         cursor = self.building_db.conn.cursor()
                         cursor.execute("""
-                                        UPDATE builders
-                                        SET is_busy = 0, building_id = NULL,
-                                            finish_time = NULL
-                                        WHERE emulator_id = ? AND building_id = ?
-                                    """, (emu_id, building_id))
+                                                UPDATE builders
+                                                SET is_busy = 0, building_id = NULL,
+                                                    finish_time = NULL
+                                                WHERE emulator_id = ? AND building_id = ?
+                                            """, (emu_id, building_id))
                         self.building_db.conn.commit()
                 continue  # ← вместо break
 
@@ -691,11 +694,11 @@ class PrimeTimesFunction(BaseFunction):
                     with self.building_db.db_lock:
                         cursor = self.building_db.conn.cursor()
                         cursor.execute("""
-                                        UPDATE builders
-                                        SET is_busy = 0, building_id = NULL,
-                                            finish_time = NULL
-                                        WHERE emulator_id = ? AND building_id = ?
-                                    """, (emu_id, building_id))
+                                                UPDATE builders
+                                                SET is_busy = 0, building_id = NULL,
+                                                    finish_time = NULL
+                                                WHERE emulator_id = ? AND building_id = ?
+                                            """, (emu_id, building_id))
                         self.building_db.conn.commit()
 
                 time.sleep(DELAY_BETWEEN_DRAINS)
@@ -1207,6 +1210,7 @@ class PrimeTimesFunction(BaseFunction):
         """
         Найти здание с максимальным активным таймером.
         ✅ FIX #4: Исключает Лорда
+        ✅ FIX #9: Возвращает current_level для navigate_to_building
 
         Возвращает {'name': str, 'index': int|None, 'timer_sec': int}
         или None если нет зданий с таймерами.
@@ -1219,14 +1223,14 @@ class PrimeTimesFunction(BaseFunction):
             with self.building_db.db_lock:
                 cursor = self.building_db.conn.cursor()
                 cursor.execute("""
-                        SELECT b.building_name, b.building_index,
-                               br.finish_time
-                        FROM builders br
-                        JOIN buildings b ON br.building_id = b.id
-                        WHERE br.emulator_id = ? AND br.is_busy = 1
-                              AND br.finish_time IS NOT NULL
-                              AND b.building_name != 'Лорд'
-                    """, (emu_id,))
+                                SELECT b.building_name, b.building_index,
+                                       b.current_level, br.finish_time
+                                FROM builders br
+                                JOIN buildings b ON br.building_id = b.id
+                                WHERE br.emulator_id = ? AND br.is_busy = 1
+                                      AND br.finish_time IS NOT NULL
+                                      AND b.building_name != 'Лорд'
+                            """, (emu_id,))
 
                 for row in cursor.fetchall():
                     ft = row['finish_time']
@@ -1239,6 +1243,7 @@ class PrimeTimesFunction(BaseFunction):
                             'name': row['building_name'],
                             'index': row['building_index'],
                             'timer_sec': int(remaining),
+                            'current_level': row['current_level'],
                         }
         except Exception as e:
             logger.error(f"Ошибка _find_building_with_timer: {e}")

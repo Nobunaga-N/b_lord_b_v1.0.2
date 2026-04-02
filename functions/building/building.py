@@ -849,6 +849,7 @@ class BuildingFunction(BaseFunction):
         ✅ FIX #3: Передаёт timers в calculate_plan
         ✅ FIX #8: continue вместо break при отсутствии speedup_icon
         ✅ FIX #2: Полное освобождение строителя при завершении
+        ✅ FIX #9: expected_level при навигации (переупорядочивание панели)
         """
         emu_id = self.emulator.get('id')
         emu_name = self.emulator_name
@@ -884,16 +885,18 @@ class BuildingFunction(BaseFunction):
 
             b_name = building_info['name']
             b_index = building_info.get('index')
+            b_level = building_info.get('current_level')
             display = b_name + (f" #{b_index}" if b_index else "")
 
             logger.info(
-                f"[{emu_name}] Prime: drain → {display} "
+                f"[{emu_name}] Prime: drain → {display} Lv.{b_level} "
                 f"(таймер ~{building_info['timer_sec'] // 60} мин)"
             )
 
-            # Навигация
+            # ✅ FIX #9: Навигация с expected_level
             nav_ok = self.panel.navigate_to_building(
-                self.emulator, b_name, building_index=b_index
+                self.emulator, b_name, building_index=b_index,
+                expected_level=b_level,
             )
             if not nav_ok:
                 logger.error(
@@ -1013,6 +1016,7 @@ class BuildingFunction(BaseFunction):
 
         ✅ FIX #4: Исключает Лорда (требует спец. обработку:
         перезапуск игры после завершения).
+        ✅ FIX #9: Возвращает current_level для navigate_to_building
 
         Returns:
             {'name': str, 'index': int|None, 'timer_sec': int}
@@ -1026,14 +1030,14 @@ class BuildingFunction(BaseFunction):
             with self.db.db_lock:
                 cursor = self.db.conn.cursor()
                 cursor.execute("""
-                        SELECT b.building_name, b.building_index,
-                               br.finish_time
-                        FROM builders br
-                        JOIN buildings b ON br.building_id = b.id
-                        WHERE br.emulator_id = ? AND br.is_busy = 1
-                              AND br.finish_time IS NOT NULL
-                              AND b.building_name != 'Лорд'
-                    """, (emu_id,))
+                                SELECT b.building_name, b.building_index,
+                                       b.current_level, br.finish_time
+                                FROM builders br
+                                JOIN buildings b ON br.building_id = b.id
+                                WHERE br.emulator_id = ? AND br.is_busy = 1
+                                      AND br.finish_time IS NOT NULL
+                                      AND b.building_name != 'Лорд'
+                            """, (emu_id,))
 
                 for row in cursor.fetchall():
                     ft = row['finish_time']
@@ -1046,6 +1050,7 @@ class BuildingFunction(BaseFunction):
                             'name': row['building_name'],
                             'index': row['building_index'],
                             'timer_sec': int(remaining),
+                            'current_level': row['current_level'],
                         }
         except Exception as e:
             logger.error(f"Ошибка _find_best_building_for_drain: {e}")
