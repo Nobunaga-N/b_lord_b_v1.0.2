@@ -99,6 +99,18 @@ class EmulatorSettingsWindow(ctk.CTkToplevel):
         )
         btn_tiles.pack(pady=5)
 
+        btn_prime = ctk.CTkButton(
+            self,
+            text="⏱ Прайм-таймы",
+            width=200,
+            height=40,
+            font=ctk.CTkFont(size=14),
+            fg_color="#D4870E",
+            hover_color="#B5730C",
+            command=self._open_prime_times_settings
+        )
+        btn_prime.pack(pady=5)
+
         # Закрыть
         btn_close = ctk.CTkButton(
             self,
@@ -125,3 +137,8 @@ class EmulatorSettingsWindow(ctk.CTkToplevel):
         """Открывает окно настройки плиток"""
         from gui.tiles_settings_window import TilesSettingsWindow
         TilesSettingsWindow(self, self.emulator_id, self.emulator_name)
+
+    def _open_prime_times_settings(self):
+        """Открывает окно настройки прайм-таймов"""
+        from gui.prime_times_settings_window import PrimeTimesSettingsWindow
+        PrimeTimesSettingsWindow(self, self.emulator_id, self.emulator_name)

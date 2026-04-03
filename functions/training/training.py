@@ -49,6 +49,7 @@ from functions.prime_times.prime_storage import PrimeStorage
 from functions.backpack_speedups.backpack_storage import BackpackStorage
 from utils.adb_controller import press_key
 from utils.image_recognition import find_image
+from gui.prime_times_settings_window import load_allowed_drain_types
 
 
 class TrainingFunction(BaseFunction):
@@ -511,8 +512,10 @@ class TrainingFunction(BaseFunction):
         except Exception:
             pass
 
+        allowed = load_allowed_drain_types(emu_id)
         drain_type, _ = choose_drain_type(
-            inventory, event['type'], has_buildings
+            inventory, event['type'], has_buildings,
+            allowed_drain_types=allowed,
         )
         if drain_type is None:
             self._set_prime_skip(event_key, 'not_enough_speedups', prime_st)

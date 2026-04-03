@@ -32,6 +32,7 @@ from functions.prime_times.speedup_calculator import (
 from functions.prime_times.speedup_applier import drain_speedups
 from functions.prime_times.prime_storage import PrimeStorage
 from functions.backpack_speedups.backpack_storage import BackpackStorage
+from gui.prime_times_settings_window import load_allowed_drain_types
 
 
 class BuildingFunction(BaseFunction):
@@ -751,8 +752,10 @@ class BuildingFunction(BaseFunction):
 
         has_buildings = self.db.has_buildings_to_upgrade(emu_id)
 
+        allowed = load_allowed_drain_types(emu_id)
         drain_type, total_hours = choose_drain_type(
-            inventory, event_type, has_buildings
+            inventory, event_type, has_buildings,
+            allowed_drain_types=allowed,
         )
         if drain_type is None:
             logger.debug(f"[{emu_name}] Prime: не хватает ускорений")

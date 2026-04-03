@@ -36,6 +36,7 @@ from functions.prime_times.speedup_applier import drain_speedups
 from functions.prime_times.prime_storage import PrimeStorage
 from functions.backpack_speedups.backpack_storage import BackpackStorage
 from utils.image_recognition import find_image
+from gui.prime_times_settings_window import load_allowed_drain_types
 
 
 class ResearchFunction(BaseFunction):
@@ -634,7 +635,11 @@ class ResearchFunction(BaseFunction):
             return None
 
         # has_buildings не влияет на evolution (universal = NEVER)
-        drain_type, _ = choose_drain_type(inventory, event['type'], True)
+        allowed = load_allowed_drain_types(emu_id)
+        drain_type, _ = choose_drain_type(
+            inventory, event['type'], True,
+            allowed_drain_types=allowed,
+        )
         if drain_type is None:
             self._set_prime_skip(event_key, 'not_enough_speedups', prime_st)
             return self.session_state.get('prime_times')

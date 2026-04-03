@@ -153,7 +153,8 @@ def calculate_target_minutes(
 def choose_drain_type(
     inventory: Dict[str, Dict[str, int]],
     event_type: str,
-    has_buildings: bool = True
+    has_buildings: bool = True,
+    allowed_drain_types: Optional[List[str]] = None,
 ) -> Tuple[Optional[str], float]:
     """
     Выбрать лучший drain_type для комбинированного ДС.
@@ -181,6 +182,20 @@ def choose_drain_type(
         if stype == 'universal':
             continue
         possible_drains.add(stype)
+
+    # ── ФИЛЬТР ПО GUI-НАСТРОЙКАМ ──
+    if allowed_drain_types is not None:
+        before = possible_drains.copy()
+        possible_drains &= set(allowed_drain_types)
+        filtered = before - possible_drains
+        if filtered:
+            logger.debug(
+                f"🔧 choose_drain_type: отфильтрованы типы "
+                f"по GUI: {filtered}"
+            )
+
+    if not possible_drains:
+        return None, 0
 
     for dtype in possible_drains:
         type_hours = _calc_threshold_hours(

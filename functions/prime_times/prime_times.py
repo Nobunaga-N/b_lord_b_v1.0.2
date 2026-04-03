@@ -68,6 +68,8 @@ from utils.function_freeze_manager import function_freeze_manager
 from utils.adb_controller import press_key
 from utils.logger import logger
 
+from gui.prime_times_settings_window import load_allowed_drain_types
+
 
 # ═══════════════════════════════════════════════════
 # КОНСТАНТЫ
@@ -255,8 +257,11 @@ class PrimeTimesFunction(BaseFunction):
         except Exception:
             pass
 
+        from gui.prime_times_settings_window import load_allowed_drain_types
+        allowed = load_allowed_drain_types(emulator_id)
         drain_type, total_hours = choose_drain_type(
-            inventory, event_type, has_buildings
+            inventory, event_type, has_buildings,
+            allowed_drain_types=allowed,
         )
 
         if drain_type is None:
@@ -429,8 +434,10 @@ class PrimeTimesFunction(BaseFunction):
         has_buildings = self._check_has_buildings(emu_id)
 
         # ── 3. Выбор drain_type ──
+        allowed = load_allowed_drain_types(emu_id)
         drain_type, total_hours = choose_drain_type(
-            inventory, event_type, has_buildings
+            inventory, event_type, has_buildings,
+            allowed_drain_types=allowed,
         )
 
         if drain_type is None:
