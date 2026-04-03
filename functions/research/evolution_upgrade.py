@@ -56,12 +56,27 @@ class EvolutionUpgrade:
         "Эволюция Всеядных": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'evolyuciya_vseyadnykh.png'),
     }
 
-    # Разделы с одинаковыми иконками — навигация через OCR вместо шаблонов
-    OCR_NAVIGATION_SECTIONS = {
-        "Походный Отряд I",
-        "Особый Отряд",
-        "Поход Войска II",
-        "Походный Отряд III",
+    # --- НАВИГАЦИЯ ПО РАЗДЕЛАМ: OCR MATCHING ---
+
+    # Разделы с неоднозначными римскими цифрами.
+    # OCR не различает I / III надёжно → различаем по Y-позиции на экране.
+    # Порядок разделов на экране фиксирован:
+    #   Походный Отряд I  — всегда ВЫШЕ (меньший Y)
+    #   Походный Отряд III — всегда НИЖЕ (больший Y)
+    # base — очищенное базовое имя без цифры.
+    # position — 0 = первый сверху, 1 = второй.
+    ROMAN_POSITION_SECTIONS = {
+        "Походный Отряд I": {"base": "походныйотряд", "position": 0},
+        "Походный Отряд III": {"base": "походныйотряд", "position": 1},
+    }
+
+    # Разделы где OCR может не склеить полное название.
+    # «Эволюция» перекрывается иконкой/эффектами → остаётся только вторая часть.
+    # Ключевое слово уникально на экране — ложных срабатываний не будет.
+    PARTIAL_MATCH_KEYWORDS = {
+        "Эволюция Всеядных": "всеядных",
+        "Эволюция Травоядных": "травоядных",
+        "Эволюция Плотоядных": "плотоядных",
     }
 
     # Пороги для template matching
@@ -147,13 +162,31 @@ class EvolutionUpgrade:
         return False
 
     def _verify_sections_visible(self, emulator: Dict) -> bool:
-        """Проверить что видны разделы эволюции (хотя бы один шаблон)"""
-        for section_name, path in self.SECTION_TEMPLATES.items():
-            if not os.path.exists(path):
-                continue
-            result = find_image(emulator, path, threshold=self.THRESHOLD_SECTION)
-            if result:
+        """
+        Проверить что на экране видны разделы эволюции (OCR).
+
+        Ищет любое из известных ключевых слов разделов.
+        Достаточно найти хотя бы одно — значит окно открыто.
+        """
+        screenshot = get_screenshot(emulator)
+        if screenshot is None:
+            return False
+
+        elements = self.ocr.recognize_text(screenshot, min_confidence=0.3)
+
+        # Уникальные слова из названий разделов.
+        # Каждое встречается ТОЛЬКО в окне разделов эволюции,
+        # не в окне технологий и не в поместье.
+        known_keywords = [
+            "базовый", "средний", "лечение", "обучение",
+            "производство", "плотоядных", "травоядных", "всеядных",
+        ]
+
+        for elem in elements:
+            text_lower = elem['text'].strip().lower()
+            if any(kw in text_lower for kw in known_keywords):
                 return True
+
         return False
 
     def _reset_to_main_screen(self, emulator: Dict):
@@ -179,73 +212,35 @@ class EvolutionUpgrade:
 
     def navigate_to_section(self, emulator: Dict, section_name: str) -> bool:
         """
-        Перейти в нужный раздел эволюции
+        Перейти в нужный раздел эволюции.
 
-        Для разделов с одинаковыми иконками (OCR_NAVIGATION_SECTIONS)
-        используется OCR-поиск текста. Для остальных — template matching.
+        Все разделы ищутся через OCR (CV убран — ломается на
+        светящихся разделах при активном исследовании).
+        Клик по тексту названия раздела открывает его.
 
         Args:
-            section_name: название раздела
+            section_name: название раздела (как в БД)
 
         Returns:
             bool: True если раздел открыт
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-
-        # Разделы с одинаковыми иконками → OCR-навигация
-        if section_name in self.OCR_NAVIGATION_SECTIONS:
-            logger.debug(f"[{emu_name}] OCR-навигация для раздела: {section_name}")
-            return self._navigate_by_ocr(emulator, section_name)
-
-        # Стандартная навигация через template matching
-        template_path = self.SECTION_TEMPLATES.get(section_name)
-        if not template_path or not os.path.exists(template_path):
-            logger.error(f"[{emu_name}] ❌ Шаблон раздела не найден: {section_name}")
-            return False
-
-        logger.debug(f"[{emu_name}] Переход в раздел: {section_name}")
-
-        for attempt in range(3):
-            result = find_image(emulator, template_path,
-                               threshold=self.THRESHOLD_SECTION)
-            if result:
-                center_x, center_y = result
-                tap(emulator, x=center_x, y=center_y)
-                time.sleep(2)
-                logger.success(f"[{emu_name}] ✅ Раздел открыт: {section_name}")
-                return True
-
-            time.sleep(0.5)
-
-        logger.error(f"[{emu_name}] ❌ Раздел не найден: {section_name}")
-        return False
-
-    # ==================== НОВЫЙ МЕТОД: OCR-навигация по разделам ====================
-
-    # Вспомогательный паттерн для очистки текста (убирает не-буквы/не-цифры)
-    _CLEAN_TEXT_PATTERN = re.compile(r'[^\w\s]', re.UNICODE)
+        logger.debug(f"[{emu_name}] Переход в раздел (OCR): {section_name}")
+        return self._navigate_by_ocr(emulator, section_name)
 
     def _navigate_by_ocr(self, emulator: Dict, section_name: str) -> bool:
         """
-        Найти и кликнуть по разделу через OCR-распознавание текста
-
-        Для разделов с одинаковыми иконками (Походный Отряд I/III,
-        Особый Отряд, Поход Войска II) — ищем текст названия на экране.
+        Найти и кликнуть по разделу через OCR-распознавание текста.
 
         Алгоритм:
-        1. Скриншот экрана разделов
-        2. OCR → получаем все текстовые элементы
-        3. Склеиваем двухстрочные названия
-        4. Ищем совпадение с section_name
-        5. Кликаем чуть ВЫШЕ найденного текста (по иконке)
+        1. Скриншот → OCR → merge многострочных
+        2. _find_section_element() — умный поиск (3 стратегии)
+        3. Клик по тексту названия раздела
 
         Returns:
             bool: True если раздел найден и открыт
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
-
-        # Подготовка: нормализуем target
-        target_clean = self._clean_for_comparison(section_name)
 
         for attempt in range(3):
             screenshot = get_screenshot(emulator)
@@ -257,59 +252,138 @@ class EvolutionUpgrade:
                 time.sleep(0.5)
                 continue
 
-            # Склеиваем многострочные названия
             merged = self._merge_multiline_elements(elements)
 
-            best_match = None
-            best_ratio = 0.0
+            target_elem = self._find_section_element(merged, section_name)
 
-            for elem in merged:
-                text_raw = self.ocr.normalize_cyrillic_text(elem['text'].strip())
-                text_clean = self._clean_for_comparison(text_raw)
+            if target_elem:
+                click_x = target_elem['x']
+                click_y = target_elem['y']
 
-                # Точное совпадение (после очистки)
-                if target_clean == text_clean:
-                    best_match = elem
-                    best_ratio = 1.0
-                    break
-
-                # Содержание
-                if target_clean in text_clean or text_clean in target_clean:
-                    ratio = min(len(target_clean), len(text_clean)) / \
-                            max(len(target_clean), len(text_clean)) if text_clean else 0
-                    if ratio > best_ratio and ratio > 0.6:
-                        best_match = elem
-                        best_ratio = ratio
-                        continue
-
-                # Нечёткое совпадение
-                if len(target_clean) > 4 and len(text_clean) > 4:
-                    common = sum(1 for a, b in zip(target_clean, text_clean) if a == b)
-                    ratio = common / max(len(target_clean), len(text_clean))
-                    if ratio > best_ratio and ratio > 0.7:
-                        best_match = elem
-                        best_ratio = ratio
-
-            if best_match:
-                click_x = best_match['x']
-                click_y = best_match['y'] - 60  # Выше текста → по иконке
-
-                if click_y < 50:
-                    click_y = best_match['y']
-
-                logger.debug(f"[{emu_name}] OCR нашёл '{section_name}' → "
-                             f"OCR: '{best_match['text']}' (ratio={best_ratio:.2f}) "
-                             f"Клик: ({click_x}, {click_y})")
+                logger.debug(
+                    f"[{emu_name}] OCR нашёл '{section_name}' → "
+                    f"OCR: '{target_elem['text']}' "
+                    f"Клик: ({click_x}, {click_y})"
+                )
 
                 tap(emulator, x=click_x, y=click_y)
                 time.sleep(2)
-                logger.success(f"[{emu_name}] ✅ Раздел открыт (OCR): {section_name}")
+                logger.success(f"[{emu_name}] ✅ Раздел открыт: {section_name}")
                 return True
 
             time.sleep(0.5)
 
         logger.error(f"[{emu_name}] ❌ Раздел не найден через OCR: {section_name}")
         return False
+
+    def _find_section_element(self, merged_elements: list,
+                              section_name: str) -> Optional[Dict]:
+        """
+        Найти OCR-элемент раздела в merged-списке.
+
+        Три стратегии (проверяются по приоритету):
+
+        1. Позиционная (ROMAN_POSITION_SECTIONS)
+           Для «Походный Отряд I / III» — OCR не различает
+           римские цифры надёжно. Ищем ВСЕ элементы с базовым
+           именем «походныйотряд», сортируем по Y, берём по позиции.
+
+        2. По ключевому слову (PARTIAL_MATCH_KEYWORDS)
+           Для «Эволюция Всеядных» и т.п. — OCR может не склеить
+           полное название. Ищем уникальное слово в тексте.
+
+        3. Стандартная (exact / containment / fuzzy)
+           Все остальные разделы.
+
+        Args:
+            merged_elements: результат _merge_multiline_elements()
+            section_name: название раздела из БД
+
+        Returns:
+            dict-элемент с координатами или None
+        """
+        # ── Стратегия 1: Позиционная (римские цифры) ──
+        if section_name in self.ROMAN_POSITION_SECTIONS:
+            return self._find_by_position(merged_elements, section_name)
+
+        # ── Стратегия 2: По ключевому слову ──
+        if section_name in self.PARTIAL_MATCH_KEYWORDS:
+            keyword = self.PARTIAL_MATCH_KEYWORDS[section_name].lower()
+            for elem in merged_elements:
+                if keyword in elem['text'].strip().lower():
+                    return elem
+            # Не нашли по ключевому слову — пробуем стандартный matching
+            # (на случай если merge сработал и полное имя доступно)
+
+        # ── Стратегия 3: Стандартный matching ──
+        return self._find_by_text_match(merged_elements, section_name)
+
+    def _find_by_position(self, merged_elements: list,
+                          section_name: str) -> Optional[Dict]:
+        """
+        Найти раздел с римской цифрой по Y-позиции.
+
+        Все элементы содержащие базовое имя сортируются по Y.
+        position=0 → первый (верхний), position=1 → второй.
+
+        Если на экране только один элемент и нужен position=1 → None
+        (раздел ещё не открыт в игре).
+        """
+        config = self.ROMAN_POSITION_SECTIONS[section_name]
+        base = config['base']
+        position = config['position']
+
+        candidates = []
+        for elem in merged_elements:
+            text_clean = self._clean_for_comparison(elem['text'].strip())
+            # Базовое имя должно быть началом или полным совпадением
+            # «походныйотряд» → matches «походныйотряд» и «походныйотрядi»
+            if text_clean.startswith(base):
+                candidates.append(elem)
+
+        candidates.sort(key=lambda e: e['y'])
+
+        if position < len(candidates):
+            return candidates[position]
+
+        return None
+
+    def _find_by_text_match(self, merged_elements: list,
+                            section_name: str) -> Optional[Dict]:
+        """
+        Стандартный поиск: exact → containment → fuzzy.
+        """
+        target_clean = self._clean_for_comparison(section_name)
+        best_match = None
+        best_ratio = 0.0
+
+        for elem in merged_elements:
+            text_raw = self.ocr.normalize_cyrillic_text(elem['text'].strip())
+            text_clean = self._clean_for_comparison(text_raw)
+
+            # Точное совпадение
+            if target_clean == text_clean:
+                return elem
+
+            # Содержание (одна строка внутри другой)
+            if target_clean in text_clean or text_clean in target_clean:
+                ratio = min(len(target_clean), len(text_clean)) / \
+                        max(len(target_clean), len(text_clean)) if text_clean else 0
+                if ratio > best_ratio and ratio > 0.5:
+                    best_match = elem
+                    best_ratio = ratio
+                    continue
+
+            # Нечёткое совпадение
+            if len(target_clean) > 4 and len(text_clean) > 4:
+                common = sum(1 for a, b in zip(target_clean, text_clean)
+                             if a == b)
+                ratio = common / max(len(target_clean), len(text_clean))
+                if ratio > best_ratio and ratio > 0.7:
+                    best_match = elem
+                    best_ratio = ratio
+
+        return best_match
 
     @staticmethod
     def _clean_for_comparison(text: str) -> str:
