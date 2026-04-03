@@ -7,6 +7,7 @@
 """
 
 import os
+import cv2
 import re
 import time
 from typing import Dict, List, Optional, Tuple
@@ -86,6 +87,18 @@ class EvolutionUpgrade:
 
     # Область парсинга таймера исследования (x1, y1, x2, y2)
     TIMER_AREA = (204, 467, 312, 517)
+
+    NOISE_PATTERNS = [
+        re.compile(r'^развитие'),  # "Развитие Территории" (заголовок)
+        re.compile(r'^базовыйбой$'),
+        re.compile(r'^среднийбой$'),
+        re.compile(r'^особыйотряд$'),
+        re.compile(r'^походный'),
+        re.compile(r'^походвойска'),
+        re.compile(r'^развитиерайона$'),
+        re.compile(r'^эволюция.{0,3}(плотоядных|травоядных|всеядных)'),
+        re.compile(r'эволюцияделает'),  # подпись внизу экрана
+    ]
 
     # Максимум попыток найти иконку Эволюции
     MAX_ICON_ATTEMPTS = 3
@@ -563,8 +576,12 @@ class EvolutionUpgrade:
         Привязывает уровень к названию по Y и X координатам.
         Поддерживает двухстрочные названия через склейку.
 
+        Fallback: если название распознано, а уровень — нет,
+        пробуем увеличенный кроп (5x) области ВЫШЕ названия.
+
         Returns:
-            Список dict: [{'name': str, 'current_level': int, 'max_level': int, 'y': int}]
+            Список dict: [{'name': str, 'current_level': int,
+                           'max_level': int, 'y': int}]
             Для MAX: current_level = -1 (сигнал что технология прокачана)
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
@@ -603,7 +620,10 @@ class EvolutionUpgrade:
             if match:
                 current = int(match.group(1))
                 max_lvl = int(match.group(2))
-                levels.append({'current': current, 'max': max_lvl, 'y': y, 'x': x})
+                levels.append({
+                    'current': current, 'max': max_lvl,
+                    'y': y, 'x': x,
+                })
                 continue
 
             # Всё остальное — потенциальное название технологии
@@ -611,10 +631,12 @@ class EvolutionUpgrade:
             if len(cleaned) >= 3 and not cleaned.isdigit():
                 names.append({'text': cleaned, 'y': y, 'x': x})
 
-        logger.debug(f"[{emu_name}] OCR: найдено {len(levels)} уровней, {len(names)} названий")
+        logger.debug(
+            f"[{emu_name}] OCR: найдено {len(levels)} уровней, "
+            f"{len(names)} названий"
+        )
 
-        # Привязка: название находится НИЖЕ уровня
-        # Учитываем и Y-расстояние, и X-расстояние для точной привязки
+        # ── Основная привязка: уровень → название (НИЖЕ по Y) ──
         results = []
         used_names = set()
 
@@ -626,13 +648,12 @@ class EvolutionUpgrade:
                 if i in used_names:
                     continue
 
-                # Название должно быть НИЖЕ уровня (Y больше) и не слишком далеко
+                # Название должно быть НИЖЕ уровня и не слишком далеко
                 y_diff = name['y'] - lvl['y']
                 if 5 < y_diff < 80:
-                    # X-расстояние: название должно быть примерно под уровнем
                     x_diff = abs(name['x'] - lvl['x'])
                     if x_diff > 120:
-                        continue  # Слишком далеко по горизонтали — другая технология
+                        continue  # Слишком далеко — другая технология
 
                     # Комбинированная дистанция (Y основной, X вспомогательный)
                     combined_dist = y_diff + x_diff * 0.3
@@ -647,15 +668,118 @@ class EvolutionUpgrade:
                     'name': text,
                     'current_level': lvl['current'],
                     'max_level': lvl['max'],
-                    'y': lvl['y']
+                    'y': lvl['y'],
                 })
 
+        # ── Fallback: непривязанные названия → 5x кроп ──
+        for i, name in enumerate(names):
+            if i in used_names:
+                continue
+            if self._is_noise_name(name['text']):
+                continue
+
+            level_info = self._fallback_level_from_crop(
+                screenshot, name['x'], name['y'], emu_name,
+            )
+
+            if level_info:
+                results.append({
+                    'name': name['text'],
+                    'current_level': level_info['current'],
+                    'max_level': level_info['max'],
+                    'y': name['y'],
+                })
+                logger.debug(
+                    f"[{emu_name}]   🔄 {name['text']}: "
+                    f"{level_info['current']}/{level_info['max']} (fallback)"
+                )
+            else:
+                logger.warning(
+                    f"[{emu_name}] ⚠️ Не удалось определить уровень: "
+                    f"'{name['text']}' (x={name['x']}, y={name['y']})"
+                )
+
+        # ── Итог ──
         logger.info(f"[{emu_name}] 📊 Распознано технологий: {len(results)}")
         for r in results:
-            lvl_str = "MAX" if r['current_level'] == -1 else f"{r['current_level']}/{r['max_level']}"
+            lvl_str = ("MAX" if r['current_level'] == -1
+                       else f"{r['current_level']}/{r['max_level']}")
             logger.debug(f"[{emu_name}]   📍 {r['name']}: {lvl_str}")
 
         return results
+
+    def _fallback_level_from_crop(self, screenshot, name_x: int,
+                                  name_y: int,
+                                  emu_name: str) -> Optional[Dict]:
+        """
+        Fallback: распознать уровень технологии через увеличенный кроп.
+
+        Применяется когда основной OCR не нашёл уровень (X/Y или MAX)
+        над названием технологии. Вырезает область ВЫШЕ названия,
+        увеличивает 5x и повторяет OCR.
+
+        Args:
+            screenshot: скриншот экрана (numpy array, BGR)
+            name_x: X-координата центра названия
+            name_y: Y-координата центра названия
+            emu_name: имя эмулятора для логов
+
+        Returns:
+            dict {'current': int, 'max': int} или None
+            Для MAX: current=-1, max=-1
+        """
+        h, w = screenshot.shape[:2]
+
+        # Область выше названия где должен быть уровень
+        x1 = max(0, name_x - 70)
+        y1 = max(0, name_y - 90)
+        x2 = min(w, name_x + 70)
+        y2 = max(0, name_y - 20)
+
+        if y2 <= y1 or x2 <= x1:
+            return None
+
+        crop = screenshot[y1:y2, x1:x2]
+        ch, cw = crop.shape[:2]
+
+        if ch < 5 or cw < 5:
+            return None
+
+        # Увеличиваем 5x для PaddleOCR
+        enlarged = cv2.resize(crop, (cw * 5, ch * 5),
+                              interpolation=cv2.INTER_CUBIC)
+
+        results = self.ocr.recognize_text(enlarged, min_confidence=0.3)
+
+        for elem in results:
+            text = elem.get('text', '').strip()
+
+            if self.MAX_PATTERN.search(text):
+                logger.debug(
+                    f"[{emu_name}] 🔄 Fallback: уровень MAX "
+                    f"(регион ({x1},{y1})-({x2},{y2}), 5x)"
+                )
+                return {'current': -1, 'max': -1}
+
+            match = self.LEVEL_PATTERN.search(text)
+            if match:
+                current = int(match.group(1))
+                max_lvl = int(match.group(2))
+                logger.debug(
+                    f"[{emu_name}] 🔄 Fallback: уровень {current}/{max_lvl} "
+                    f"(регион ({x1},{y1})-({x2},{y2}), 5x)"
+                )
+                return {'current': current, 'max': max_lvl}
+
+        return None
+
+    def _is_noise_name(self, text: str) -> bool:
+        """
+        Проверить, является ли текст мусорным (заголовок раздела,
+        подпись внизу экрана и т.п.) — не технология.
+        """
+        cleaned = re.sub(r'[^\w]', '', text, flags=re.UNICODE).lower()
+        return any(p.search(cleaned) for p in self.NOISE_PATTERNS)
 
     # ===== ПОИСК ТЕХНОЛОГИИ ПО ИМЕНИ =====
 
