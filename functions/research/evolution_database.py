@@ -348,25 +348,140 @@ class EvolutionDatabase:
 
             return 10
 
+    def _has_building_data(self, emulator_id: int) -> bool:
+        """Есть ли ХОТЬ ОДНА запись в таблице buildings для эмулятора"""
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute("""
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='buildings'
+                """)
+                if not cursor.fetchone():
+                    return False
+
+                cursor.execute(
+                    "SELECT COUNT(*) FROM buildings WHERE emulator_id = ?",
+                    (emulator_id,)
+                )
+                return cursor.fetchone()[0] > 0
+            except Exception:
+                return False
+
+    def _is_building_built(self, emulator_id: int, building_name: str) -> bool:
+        """
+        Проверить что здание построено (current_level > 0 в таблице buildings).
+
+        Для зданий с action='build' в building_order:
+        - Если запись есть и current_level > 0 → построено
+        - Если запись есть и current_level == 0 → ещё не построено
+        - Если записи нет → таблица buildings не инициализирована
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute("""
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='buildings'
+                """)
+                if not cursor.fetchone():
+                    return False
+
+                cursor.execute("""
+                    SELECT current_level FROM buildings
+                    WHERE emulator_id = ? AND building_name = ?
+                    LIMIT 1
+                """, (emulator_id, building_name))
+
+                row = cursor.fetchone()
+                if row is None:
+                    return False
+                return row[0] > 0
+            except Exception:
+                return False
+
+    def is_section_available(self, emulator_id: int, section_name: str) -> bool:
+        """
+        Проверить доступен ли раздел эволюции.
+
+        Для разделов без требований → всегда True.
+        Для разделов с требованиями (SECTION_REQUIREMENTS) →
+        проверяет уровень Лорда И наличие здания.
+
+        Returns:
+            True если раздел доступен для исследования
+        """
+        if section_name not in self.SECTION_REQUIREMENTS:
+            return True
+
+        req = self.SECTION_REQUIREMENTS[section_name]
+
+        # Проверка уровня Лорда
+        lord_level = self.get_lord_level(emulator_id)
+        if lord_level < req['lord_level']:
+            return False
+
+        # Проверка здания
+        if not self._is_building_built(emulator_id, req['building']):
+            return False
+
+        return True
+
+    def is_section_scanned(self, emulator_id: int, section_name: str) -> bool:
+        """
+        Проверить отсканирован ли раздел (хотя бы одна технология с scanned=1).
+
+        Используется для lazy-инициализации разделов которые стали
+        доступны после первичного скана (например когда построили
+        Центр Сбора II и открылся «Поход Войска II»).
+        """
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM evolutions
+                WHERE emulator_id = ? AND section_name = ? AND scanned = 1
+            """, (emulator_id, section_name))
+            return cursor.fetchone()[0] > 0
+
+    def get_sections_to_scan(self, emulator_id: int) -> list:
+        """
+        Получить список разделов для сканирования.
+
+        Возвращает ВСЕ уникальные разделы из плана,
+        для которых выполнены условия доступности.
+        Заменяет старый get_initial_scan_sections().
+        """
+        all_sections = self.get_unique_sections(emulator_id)
+        available = []
+        for section in all_sections:
+            if self.is_section_available(emulator_id, section):
+                available.append(section)
+            else:
+                req = self.SECTION_REQUIREMENTS.get(section, {})
+                logger.debug(
+                    f"⏭️ Раздел '{section}' пропущен: "
+                    f"требуется Лорд ≥{req.get('lord_level', '?')} + "
+                    f"{req.get('building', '?')}"
+                )
+        return available
+
     #==================== НОВЫЕ МЕТОДЫ для инициализации ====================
 
-    # Разделы которые сканируются при первичной инициализации
-    INITIAL_SCAN_SECTIONS = [
-        "Развитие Территории",
-        "Базовый Бой",
-        "Средний Бой",
-        "Особый Отряд",
-        "Походный Отряд I",
-        "Развитие Района",
-        "Эволюция Плотоядных",
-        "Эволюция Всеядных",
-    ]
-
-    # Разделы которые сканируются позже (когда нужно качать технологии из них)
-    DEFERRED_SECTIONS = [
-        "Поход Войска II",
-        "Походный Отряд III",
-    ]
+    # Условия открытия разделов эволюции.
+    # Раздел становится доступен когда:
+    #   1. Уровень Лорда >= lord_level
+    #   2. Здание building построено (current_level > 0 в таблице buildings)
+    # Разделы НЕ в этом словаре — всегда доступны.
+    SECTION_REQUIREMENTS = {
+        "Поход Войска II": {
+            "lord_level": 13,
+            "building": "Центр Сбора II",
+        },
+        "Походный Отряд III": {
+            "lord_level": 18,
+            "building": "Центр Сбора III",
+        },
+    }
 
     def mark_db_initialized(self, emulator_id: int):
         """Отметить что записи в БД созданы (ШАГ 1 инициализации)"""
@@ -427,48 +542,19 @@ class EvolutionDatabase:
             self.conn.commit()
             logger.warning(f"🔄 Инициализация эволюции сброшена для эмулятора {emulator_id}")
 
-    def get_initial_scan_sections(self, emulator_id: int) -> list:
-        """
-        Получить разделы для ПЕРВИЧНОГО сканирования
-        (без отложенных разделов)
-        """
-        all_sections = self.get_unique_sections(emulator_id)
-        return [s for s in all_sections if s not in self.DEFERRED_SECTIONS]
-
-    def needs_deferred_scan(self, emulator_id: int, section_name: str) -> bool:
-        """
-        Проверить нужно ли отсканировать отложенный раздел
-
-        Возвращает True если:
-        - Раздел в списке отложенных
-        - Все технологии в разделе имеют current_level == 0 (ещё не сканировались)
-        """
-        if section_name not in self.DEFERRED_SECTIONS:
-            return False
-
-        with self.db_lock:
-            cursor = self.conn.cursor()
-            # Проверяем есть ли хоть одна отсканированная технология в разделе
-            cursor.execute("""
-                SELECT COUNT(*) FROM evolutions 
-                WHERE emulator_id = ? AND section_name = ?
-                  AND (current_level > 0 OR status = 'completed')
-            """, (emulator_id, section_name))
-            scanned_count = cursor.fetchone()[0]
-            return scanned_count == 0
-
     # ===== ОПРЕДЕЛЕНИЕ СЛЕДУЮЩЕЙ ТЕХНОЛОГИИ =====
 
     def get_next_tech_to_research(self, emulator_id: int) -> Optional[Dict]:
         """
-        Определить следующую технологию для исследования
+        Определить следующую технологию для исследования.
 
-        Логика:
-        1. Получить текущий уровень Лорда
-        2. Пройти по всем технологиям В ПОРЯДКЕ order_index
-        3. Пропустить технологии с lord_level > текущий уровень Лорда
-        4. Пропустить технологии со status='completed' или status='researching'
-        5. Найти первую технологию где current_level < target_level
+        Логика (по order_index — порядок плана):
+        1. lord_level технологии <= текущий уровень Лорда
+        2. Статус не 'completed' и не 'researching'
+        3. current_level < target_level
+        4. НОВОЕ: раздел доступен (is_section_available)
+        5. Если раздел доступен но не отсканирован — возвращаем
+           технологию (execute() досканирует раздел перед исследованием)
 
         Returns:
             dict с полями технологии или None если нечего качать
@@ -478,24 +564,29 @@ class EvolutionDatabase:
 
             cursor = self.conn.cursor()
             cursor.execute("""
-                SELECT * FROM evolutions 
-                WHERE emulator_id = ? 
+                SELECT * FROM evolutions
+                WHERE emulator_id = ?
                   AND lord_level <= ?
-                  AND status != 'researching'
-                  AND current_level < target_level
+                  AND status NOT IN ('completed', 'researching')
                 ORDER BY order_index ASC
-                LIMIT 1
             """, (emulator_id, lord_level))
 
-            row = cursor.fetchone()
-            if row:
+            for row in cursor.fetchall():
                 tech = dict(row)
-                logger.debug(f"🎯 Следующая технология: {tech['tech_name']} "
-                           f"({tech['section_name']}) "
-                           f"Lv.{tech['current_level']}/{tech['target_level']}")
+
+                # current_level >= target_level → уже прокачано
+                if tech['current_level'] >= tech['target_level']:
+                    continue
+
+                section = tech['section_name']
+
+                # НОВОЕ: проверка доступности раздела
+                if section in self.SECTION_REQUIREMENTS:
+                    if not self.is_section_available(emulator_id, section):
+                        continue  # пропускаем, берём следующую по плану
+
                 return tech
 
-            logger.debug(f"✅ Все доступные технологии прокачаны (Лорд Lv.{lord_level})")
             return None
 
     def has_techs_to_research(self, emulator_id: int) -> bool:

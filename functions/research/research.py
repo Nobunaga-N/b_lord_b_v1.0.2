@@ -22,7 +22,8 @@ from functions.base_function import BaseFunction
 from functions.research.evolution_database import EvolutionDatabase
 from functions.research.evolution_upgrade import EvolutionUpgrade
 from utils.logger import logger
-from utils.adb_controller import press_key
+from utils.adb_controller import press_key, tap
+from utils.ocr_engine import OCREngine
 from datetime import datetime  # может уже быть, не дублировать
 from functions.prime_times.ds_schedule import (
     get_current_event, is_safe_to_start,
@@ -215,13 +216,28 @@ class ResearchFunction(BaseFunction):
         section_name = next_tech['section_name']
         swipe_group = next_tech['swipe_group']
 
-        # ПРОВЕРКА: Нужно ли досканировать отложенный раздел?
-        if self.db.needs_deferred_scan(emulator_id, section_name):
-            logger.info(f"[{self.emulator_name}] 📡 Досканирование отложенного "
-                        f"раздела: {section_name}")
+        # Проверка: раздел доступен?
+        section_name = next_tech['section_name']
+        if section_name in EvolutionDatabase.SECTION_REQUIREMENTS:
+            if not self.db.is_section_available(emulator_id, section_name):
+                # Условия не выполнены — пропускаем
+                # (get_next_tech_to_research уже должен был отфильтровать,
+                #  но на случай гонки — дополнительная проверка)
+                logger.debug(
+                    f"[{self.emulator_name}] ⏭️ Раздел {section_name} недоступен"
+                )
+                return True
+
+        # Раздел доступен но не отсканирован → lazy-досканирование
+        if not self.db.is_section_scanned(emulator_id, section_name):
+            logger.info(
+                f"[{self.emulator_name}] 📡 Досканирование раздела: {section_name}"
+            )
             if not self._scan_deferred_section(emulator_id, section_name):
-                logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось отсканировать "
-                               f"{section_name} — пропускаем")
+                logger.warning(
+                    f"[{self.emulator_name}] ⚠️ Не удалось отсканировать "
+                    f"{section_name} — пропускаем"
+                )
 
         logger.info(f"[{self.emulator_name}] 🧬 Следующая технология: "
                     f"{tech_name} ({section_name}) "
@@ -331,11 +347,16 @@ class ResearchFunction(BaseFunction):
 
     def _ensure_initialized(self) -> bool:
         """
-        Убедиться что эволюция инициализирована для этого эмулятора
+        Убедиться что эволюция инициализирована для этого эмулятора.
+
+        Шаг 0: Убедиться что уровень Лорда известен
+        Шаг 1: Проверить здания для опциональных разделов
+        Шаг 2: Создать записи в БД (evolution_order.yaml)
+        Шаг 3: Первичное сканирование уровней (все доступные разделы)
 
         Обрабатывает 3 состояния:
-        1. Нет записей → полная инициализация (БД + сканирование)
-        2. Записи есть, сканирование не завершено → повторное сканирование
+        1. Нет записей → полная инициализация
+        2. Записи есть, скан не завершён → сброс и заново
         3. Всё ОК → return True
         """
         emulator_id = self.emulator.get('id', 0)
@@ -345,44 +366,340 @@ class ResearchFunction(BaseFunction):
            self.db.is_scan_complete(emulator_id):
             return True
 
-        # Состояние 2: Записи есть, но сканирование не завершено
+        # Состояние 2: Незавершённая инициализация → сброс
         if self.db.has_evolutions(emulator_id):
-            logger.warning(f"[{self.emulator_name}] ⚠️ Обнаружена незавершённая "
-                          f"инициализация — сбрасываю и начинаю заново")
+            logger.warning(
+                f"[{self.emulator_name}] ⚠️ Незавершённая инициализация — "
+                f"сбрасываю и начинаю заново"
+            )
             self.db.reset_initialization(emulator_id)
 
         # Состояние 1: Полная инициализация с нуля
-        logger.info(f"[{self.emulator_name}] 🆕 Первый запуск эволюции — инициализация...")
+        logger.info(
+            f"[{self.emulator_name}] 🆕 Первый запуск эволюции — инициализация..."
+        )
 
-        # ШАГ 1: Создать записи в БД
+        # ШАГ 0: Уровень Лорда
+        if not self._ensure_lord_level_known():
+            logger.error(f"[{self.emulator_name}] ❌ Не удалось определить уровень Лорда")
+            return False
+
+        lord_level = self.db.get_lord_level(emulator_id)
+        logger.info(f"[{self.emulator_name}] 👑 Лорд Lv.{lord_level}")
+
+        # ШАГ 1: Проверить здания для опциональных разделов
+        if lord_level >= 13:
+            self._check_section_buildings(lord_level)
+
+        # ШАГ 2: Создать записи в БД
         if not self.db.initialize_evolutions_for_emulator(emulator_id):
-            logger.error(f"[{self.emulator_name}] ❌ Не удалось инициализировать эволюцию")
+            logger.error(f"[{self.emulator_name}] ❌ Не удалось создать записи эволюции")
             return False
 
         self.db.mark_db_initialized(emulator_id)
 
-        # ШАГ 2: Первичное сканирование уровней (только основные разделы)
+        # ШАГ 3: Первичное сканирование
         scan_ok = self._perform_initial_scan()
 
         if scan_ok:
             self.db.mark_scan_complete(emulator_id)
             return True
         else:
-            logger.error(f"[{self.emulator_name}] ❌ Первичное сканирование не удалось — "
-                        f"сбрасываю инициализацию")
+            logger.error(
+                f"[{self.emulator_name}] ❌ Первичное сканирование не удалось — "
+                f"сбрасываю инициализацию"
+            )
             self.db.reset_initialization(emulator_id)
             return False
 
-    def _perform_initial_scan(self) -> bool:
+    def _ensure_lord_level_known(self) -> bool:
         """
-        Первичное сканирование уровней технологий
+        Убедиться что уровень Лорда известен.
 
-        Сканирует ТОЛЬКО основные разделы (INITIAL_SCAN_SECTIONS).
-        Отложенные разделы (Поход Войска II, Походный Отряд III)
-        сканируются позже — при первом обращении.
+        Если таблица buildings содержит данные → уровень Лорда уже там.
+        Если buildings пуста (building функция ещё не запускалась) →
+        сканируем Лорда через панель навигации и записываем в buildings.
 
         Returns:
-            bool: True если сканирование прошло успешно
+            True если уровень Лорда определён
+        """
+        emulator_id = self.emulator.get('id', 0)
+
+        # Быстрая проверка: buildings таблица уже заполнена?
+        if self.db._has_building_data(emulator_id):
+            lord_level = self.db.get_lord_level(emulator_id)
+            if lord_level > 0:
+                return True
+
+        # Buildings пуста → сканируем Лорда вручную
+        logger.info(f"[{self.emulator_name}] 📡 Таблица buildings пуста — сканирую Лорда...")
+        lord_level = self._scan_lord_level()
+
+        if lord_level is None:
+            return False
+
+        # Записываем в buildings (минимальная запись)
+        self._save_lord_to_buildings(emulator_id, lord_level)
+        return True
+
+    def _scan_lord_level(self) -> Optional[int]:
+        """
+        Сканировать уровень Лорда через панель навигации.
+
+        Алгоритм:
+        1. Открыть панель навигации
+        2. Клик вкладка «Список зданий»
+        3. Раскрыть раздел «Вожак» (первый в списке)
+        4. OCR → найти «Лорд Lv.X»
+        5. Закрыть панель
+
+        Returns:
+            int: уровень Лорда или None при ошибке
+        """
+        from functions.building.navigation_panel import NavigationPanel
+        from utils.image_recognition import get_screenshot
+
+        emu_name = self.emulator_name
+        nav = NavigationPanel()
+
+        # Открыть панель
+        if not nav.open_navigation_panel(self.emulator):
+            logger.error(f"[{emu_name}] ❌ Не удалось открыть панель навигации")
+            return None
+
+        # Клик «Список зданий»
+        tap(self.emulator, x=291, y=250)
+        time.sleep(0.5)
+
+        # Раскрыть «Другие» — кликаем по первому разделу
+        # (Вожак — всегда первый, стрелка-вправо рядом с ним)
+        nav._open_section_by_name(self.emulator, "Другие")
+        time.sleep(0.5)
+
+        # OCR парсинг экрана
+        screenshot = get_screenshot(self.emulator)
+        lord_level = None
+
+        if screenshot is not None:
+            ocr = OCREngine()
+            buildings = ocr.parse_navigation_panel(screenshot, emulator_id=self.emulator.get('id'))
+
+            for b in buildings:
+                if 'лорд' in b['name'].lower():
+                    lord_level = b.get('level')
+                    logger.info(f"[{emu_name}] 👑 Лорд найден: Lv.{lord_level}")
+                    break
+
+            if lord_level is None:
+                logger.warning(f"[{emu_name}] ⚠️ Лорд не найден в OCR")
+
+        # Закрыть панель
+        press_key(self.emulator, "ESC")
+        time.sleep(0.5)
+
+        return lord_level
+
+    def _save_lord_to_buildings(self, emulator_id: int, lord_level: int):
+        """
+        Сохранить уровень Лорда в таблицу buildings (минимальная запись).
+
+        ВАЖНО: Эта запись НЕ мешает полной инициализации строительства,
+        т.к. building_database.initialize_buildings_for_emulator()
+        проверяет COUNT(*) > 0 и вернёт True (уже инициализировано).
+        Далее _ensure_initialized в building.py проверит builders_count
+        и при необходимости выполнит полную инициализацию.
+
+        Для безопасности — используем INSERT OR IGNORE чтобы не
+        перезаписать данные если building уже инициализирован.
+        """
+        with self.db.db_lock:
+            cursor = self.db.conn.cursor()
+
+            # Создаём таблицу buildings если не существует
+            # (на случай если building модуль ещё не запускался)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS buildings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    emulator_id INTEGER NOT NULL,
+                    building_name TEXT NOT NULL,
+                    building_type TEXT NOT NULL,
+                    building_index INTEGER,
+                    current_level INTEGER NOT NULL DEFAULT 0,
+                    target_level INTEGER NOT NULL,
+                    action TEXT NOT NULL DEFAULT 'upgrade',
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    timer_finish TIMESTAMP,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(emulator_id, building_name, building_index)
+                )
+            """)
+
+            cursor.execute("""
+                INSERT OR IGNORE INTO buildings
+                (emulator_id, building_name, building_type, building_index,
+                 current_level, target_level, action, status)
+                VALUES (?, 'Лорд', 'unique', NULL, ?, ?, 'upgrade', 'idle')
+            """, (emulator_id, lord_level, lord_level))
+
+            self.db.conn.commit()
+            logger.debug(
+                f"[Emulator {emulator_id}] 💾 Лорд Lv.{lord_level} записан в buildings"
+            )
+
+    def _check_section_buildings(self, lord_level: int):
+        """
+        Проверить/отсканировать здания для опциональных разделов.
+
+        Если buildings таблица уже содержит данные о Центрах Сбора →
+        ничего не делаем (данные есть).
+        Если данных нет → сканируем через панель навигации (раздел Битва).
+
+        Центр Сбора II и III находятся в одном разделе, сканируются за раз.
+        """
+        emulator_id = self.emulator.get('id', 0)
+        emu_name = self.emulator_name
+
+        # Какие здания нужно проверить
+        buildings_to_check = []
+        if lord_level >= 13:
+            buildings_to_check.append("Центр Сбора II")
+        if lord_level >= 18:
+            buildings_to_check.append("Центр Сбора III")
+
+        if not buildings_to_check:
+            return
+
+        # Проверяем есть ли данные в buildings
+        all_known = True
+        for bname in buildings_to_check:
+            if not self.db._is_building_built(emulator_id, bname):
+                # Может быть 2 случая: здание не построено ИЛИ данных нет
+                # Проверяем есть ли ЗАПИСЬ (даже с level=0)
+                with self.db.db_lock:
+                    cursor = self.db.conn.cursor()
+                    try:
+                        cursor.execute("""
+                            SELECT id FROM buildings
+                            WHERE emulator_id = ? AND building_name = ?
+                            LIMIT 1
+                        """, (emulator_id, bname))
+                        if cursor.fetchone() is None:
+                            all_known = False
+                            break
+                    except Exception:
+                        all_known = False
+                        break
+
+        if all_known:
+            # Данные уже есть (построено или нет — неважно, решение будет по ним)
+            for bname in buildings_to_check:
+                built = self.db._is_building_built(emulator_id, bname)
+                logger.debug(f"[{emu_name}] 🏗️ {bname}: {'✅ построен' if built else '❌ не построен'}")
+            return
+
+        # Данных нет → сканируем раздел Битва в панели навигации
+        logger.info(f"[{emu_name}] 📡 Сканирование Центров Сбора...")
+        self._scan_battle_section_buildings(buildings_to_check)
+
+    def _scan_battle_section_buildings(self, buildings_to_check: list):
+        """
+        Сканировать раздел «Битва» в панели навигации для поиска
+        Центров Сбора II/III.
+
+        Использует NavigationPanel + OCR (с правильным определением
+        римских цифр через template matching — уже реализовано).
+        """
+        from functions.building.navigation_panel import NavigationPanel
+        from utils.image_recognition import get_screenshot
+
+        emulator_id = self.emulator.get('id', 0)
+        emu_name = self.emulator_name
+        nav = NavigationPanel()
+
+        # Открыть панель навигации
+        if not nav.open_navigation_panel(self.emulator):
+            logger.error(f"[{emu_name}] ❌ Не удалось открыть панель навигации")
+            return
+
+        # Клик «Список зданий»
+        tap(self.emulator, x=291, y=250)
+        time.sleep(0.5)
+
+        # Раскрыть раздел «Битва»
+        nav._open_section_by_name(self.emulator, "Битва")
+        time.sleep(0.5)
+
+        # Свайп вниз — Центры Сбора внизу раздела
+        building_config = nav.get_building_config("Центр Сбора II")
+        if building_config:
+            scroll_config = building_config.get('scroll_in_section', [])
+            nav.execute_swipes(self.emulator, scroll_config)
+            time.sleep(0.5)
+
+        # OCR скриншота
+        screenshot = get_screenshot(self.emulator)
+        if screenshot is None:
+            logger.error(f"[{emu_name}] ❌ Скриншот не получен")
+            press_key(self.emulator, "ESC")
+            return
+
+        ocr = OCREngine()
+        buildings = ocr.parse_navigation_panel(
+            screenshot, emulator_id=emulator_id
+        )
+
+        # Ищем Центры Сбора
+        for target_name in buildings_to_check:
+            target_lower = target_name.lower().replace(' ', '')
+            found = False
+
+            for b in buildings:
+                b_lower = b['name'].lower().replace(' ', '')
+                if target_lower in b_lower or b_lower in target_lower:
+                    level = b.get('level', 0)
+                    found = True
+                    logger.info(
+                        f"[{emu_name}] 🏗️ {target_name}: Lv.{level} "
+                        f"{'(построен)' if level > 0 else '(не построен)'}"
+                    )
+
+                    # Записываем в buildings
+                    self._save_building_record(
+                        emulator_id, target_name, level
+                    )
+                    break
+
+            if not found:
+                logger.info(f"[{emu_name}] 🏗️ {target_name}: не найден на экране (не построен)")
+                self._save_building_record(emulator_id, target_name, 0)
+
+        # Закрыть панель
+        press_key(self.emulator, "ESC")
+        time.sleep(0.5)
+
+    def _save_building_record(self, emulator_id: int, building_name: str,
+                              level: int):
+        """Сохранить запись здания в buildings таблицу"""
+        with self.db.db_lock:
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO buildings
+                (emulator_id, building_name, building_type, building_index,
+                 current_level, target_level, action, status)
+                VALUES (?, ?, 'unique', NULL, ?, 25, ?, 'idle')
+            """, (
+                emulator_id, building_name, level,
+                'upgrade' if level > 0 else 'build'
+            ))
+            self.db.conn.commit()
+
+    def _perform_initial_scan(self) -> bool:
+        """
+        Первичное сканирование уровней технологий.
+
+        Сканирует ВСЕ доступные разделы (для которых выполнены условия).
+        Недоступные разделы пропускаются — они будут отсканированы
+        позже (lazy) когда условия выполнятся.
         """
         emulator_id = self.emulator.get('id', 0)
 
@@ -393,32 +710,39 @@ class ResearchFunction(BaseFunction):
             logger.error(f"[{self.emulator_name}] ❌ Не удалось открыть окно Эволюции")
             return False
 
-        # Только основные разделы (без отложенных)
-        sections = self.db.get_initial_scan_sections(emulator_id)
-        logger.info(f"[{self.emulator_name}] 📋 Разделы для сканирования: "
-                   f"{len(sections)} (отложено: "
-                   f"{len(EvolutionDatabase.DEFERRED_SECTIONS)})")
+        # Все доступные разделы (условия проверены)
+        sections = self.db.get_sections_to_scan(emulator_id)
+        all_sections = self.db.get_unique_sections(emulator_id)
+        skipped = len(all_sections) - len(sections)
+
+        logger.info(
+            f"[{self.emulator_name}] 📋 Разделы для сканирования: "
+            f"{len(sections)} (пропущено: {skipped})"
+        )
 
         success = True
 
         for section_name in sections:
             logger.info(f"[{self.emulator_name}] 📂 Сканирование: {section_name}")
 
-            # Перейти в раздел
+            # Перейти в раздел (OCR-навигация)
             if not self.upgrade.navigate_to_section(self.emulator, section_name):
-                logger.warning(f"[{self.emulator_name}] ⚠️ Не удалось открыть: "
-                              f"{section_name}")
+                logger.warning(
+                    f"[{self.emulator_name}] ⚠️ Не удалось открыть: {section_name}"
+                )
                 press_key(self.emulator, "ESC")
                 time.sleep(1)
                 continue
 
             # Определяем макс. swipe_group для этого раздела
-            techs_in_section = self.db.get_techs_by_section(emulator_id,
-                                                             section_name)
-            max_group = max(t['swipe_group'] for t in techs_in_section) \
+            techs_in_section = self.db.get_techs_by_section(
+                emulator_id, section_name
+            )
+            max_group = (
+                max(t['swipe_group'] for t in techs_in_section)
                 if techs_in_section else 0
+            )
 
-            # Получаем конфиг свайпов
             swipe_config = self.db.get_swipe_config(section_name)
 
             # Сканируем
@@ -427,13 +751,15 @@ class ResearchFunction(BaseFunction):
             )
 
             # Сопоставляем с БД
-            matched = self._match_scanned_to_db(emulator_id, section_name,
-                                                 scanned, techs_in_section)
+            matched = self._match_scanned_to_db(
+                emulator_id, section_name, scanned, techs_in_section
+            )
 
-            logger.info(f"[{self.emulator_name}] 📊 {section_name}: "
-                       f"сопоставлено {matched}/{len(techs_in_section)} технологий")
+            logger.info(
+                f"[{self.emulator_name}] 📊 {section_name}: "
+                f"сопоставлено {matched}/{len(techs_in_section)} технологий"
+            )
 
-            # Обновляем прогресс
             self.db.update_last_scanned_section(emulator_id, section_name)
 
             # Закрываем раздел
@@ -446,14 +772,17 @@ class ResearchFunction(BaseFunction):
 
         # Статистика
         unscanned = self.db.get_unscanned_techs_count(emulator_id)
-        all_sections = self.db.get_unique_sections(emulator_id)
-        all_count = sum(len(self.db.get_techs_by_section(emulator_id, s))
-                        for s in all_sections)
+        all_count = sum(
+            len(self.db.get_techs_by_section(emulator_id, s))
+            for s in all_sections
+        )
         scanned_count = all_count - unscanned
 
-        logger.success(f"[{self.emulator_name}] 📡 Первичное сканирование завершено: "
-                      f"{scanned_count}/{all_count} технологий распознано "
-                      f"(отложенных разделов: {len(EvolutionDatabase.DEFERRED_SECTIONS)})")
+        logger.success(
+            f"[{self.emulator_name}] 📡 Первичное сканирование завершено: "
+            f"{scanned_count}/{all_count} технологий распознано "
+            f"(недоступных разделов: {skipped})"
+        )
 
         return success
 
