@@ -655,7 +655,7 @@ class ResearchFunction(BaseFunction):
 
             for b in buildings:
                 b_lower = b['name'].lower().replace(' ', '')
-                if target_lower in b_lower or b_lower in target_lower:
+                if target_lower == b_lower:
                     level = b.get('level', 0)
                     found = True
                     logger.info(

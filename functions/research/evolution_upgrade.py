@@ -258,7 +258,9 @@ class EvolutionUpgrade:
 
             if target_elem:
                 click_x = target_elem['x']
-                click_y = target_elem['y']
+                # Смещение вверх: названия разделов на границе,
+                # клик по центру текста попадает в раздел ниже
+                click_y = target_elem['y'] - 50
 
                 logger.debug(
                     f"[{emu_name}] OCR нашёл '{section_name}' → "
