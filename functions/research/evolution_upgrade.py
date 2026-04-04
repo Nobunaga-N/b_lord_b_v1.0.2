@@ -45,20 +45,6 @@ class EvolutionUpgrade:
         'window_no_resources': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'window_no_resources.png'),
     }
 
-    # Шаблоны разделов (section_name → путь к шаблону)
-    SECTION_TEMPLATES = {
-        "Развитие Территории": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'razvitie_territorii.png'),
-        "Базовый Бой": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'bazovyj_boj.png'),
-        "Средний Бой": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'srednij_boj.png'),
-        "Особый Отряд": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'osobyj_otryad.png'),
-        "Походный Отряд I": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'pokhodnyj_otryad_1.png'),
-        "Поход Войска II": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'pokhod_vojska_2.png'),
-        "Развитие Района": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'razvitie_rajona.png'),
-        "Эволюция Плотоядных": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'evolyuciya_plotoyadnykh.png'),
-        "Походный Отряд III": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'pokhodnyj_otryad_3.png'),
-        "Эволюция Всеядных": os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'sections', 'evolyuciya_vseyadnykh.png'),
-    }
-
     # --- НАВИГАЦИЯ ПО РАЗДЕЛАМ: OCR MATCHING ---
 
     # Разделы с неоднозначными римскими цифрами.
@@ -119,11 +105,6 @@ class EvolutionUpgrade:
             exists = os.path.exists(path)
             status = "✅" if exists else "⚠️"
             logger.debug(f"{status} Шаблон '{name}': {path}")
-
-        for name, path in self.SECTION_TEMPLATES.items():
-            exists = os.path.exists(path)
-            status = "✅" if exists else "⚠️"
-            logger.debug(f"{status} Раздел '{name}': {path}")
 
         logger.info("✅ EvolutionUpgrade инициализирован")
 
