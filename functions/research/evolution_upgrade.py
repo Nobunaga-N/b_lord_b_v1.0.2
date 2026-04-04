@@ -41,6 +41,8 @@ class EvolutionUpgrade:
         'button_evolution': os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'button_evolution.png'),
         'button_refill': os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'button_refill_resources.png'),
         'button_confirm': os.path.join(BASE_DIR, 'data', 'templates', 'evolution', 'button_confirm.png'),
+        # Переиспользуемый из building/ (как в тренировке)
+        'window_no_resources': os.path.join(BASE_DIR, 'data', 'templates', 'building', 'window_no_resources.png'),
     }
 
     # Шаблоны разделов (section_name → путь к шаблону)
@@ -84,6 +86,7 @@ class EvolutionUpgrade:
     THRESHOLD_ICON = 0.75
     THRESHOLD_BUTTON = 0.85
     THRESHOLD_SECTION = 0.80
+    THRESHOLD_WINDOW = 0.85
 
     # Область парсинга таймера исследования (x1, y1, x2, y2)
     TIMER_AREA = (204, 467, 312, 517)
@@ -996,17 +999,25 @@ class EvolutionUpgrade:
         Обработать окно технологии после клика
 
         Варианты:
-        1. Кнопка "Эволюция" — клик → парсинг таймера
-        2. Кнопка "Восполнить Ресурсы" — клик → "Подтвердить" → парсинг таймера
-           Если "Подтвердить" не найдена → ESC×4 → no_resources
-        3. Нет ни одной кнопки → ESC×3 → no_resources
+        1. Кнопка "Эволюция" — ресурсов хватает → клик → парсинг таймера
+        2. Кнопка "Восполнить Ресурсы" — клик →
+           2а. "Подтвердить" → клик → ресурсы восполнены → парсинг таймера
+           2б. "Подтвердить" → клик → "Недостаточно ресурсов" (часть распакована, остальных нет)
+           2в. Сразу "Недостаточно ресурсов" (нет в рюкзаке)
+           2г. Ни "Подтвердить", ни "Недостаточно ресурсов" → no_resources
+        3. Ни одной кнопки → error
 
         Returns:
             (status, timer_seconds)
+            - ("started", seconds) — исследование начато
+            - ("no_resources", None) — нет ресурсов
+            - ("error", None) — ошибка
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
-        # ВАРИАНТ 1: Кнопка "Эволюция"
+        # ══════════════════════════════════════════════
+        # ВАРИАНТ 1: Кнопка "Эволюция" — ресурсов хватает
+        # ══════════════════════════════════════════════
         result = find_image(emulator, self.TEMPLATES['button_evolution'],
                            threshold=self.THRESHOLD_BUTTON)
         if result:
@@ -1015,11 +1026,12 @@ class EvolutionUpgrade:
             tap(emulator, x=center_x, y=center_y)
             time.sleep(2)
 
-            # Парсинг таймера
             timer = self._parse_research_timer(emulator)
             return ("started", timer)
 
+        # ══════════════════════════════════════════════
         # ВАРИАНТ 2: Кнопка "Восполнить Ресурсы"
+        # ══════════════════════════════════════════════
         result = find_image(emulator, self.TEMPLATES['button_refill'],
                            threshold=self.THRESHOLD_BUTTON)
         if result:
@@ -1028,29 +1040,78 @@ class EvolutionUpgrade:
             tap(emulator, x=center_x, y=center_y)
             time.sleep(2)
 
-            # Ищем "Подтвердить"
-            confirm_result = find_image(emulator, self.TEMPLATES['button_confirm'],
-                                       threshold=self.THRESHOLD_BUTTON)
-            if confirm_result:
-                logger.debug(f"[{emu_name}] Найдена кнопка 'Подтвердить'")
-                cx, cy = confirm_result
-                tap(emulator, x=cx, y=cy)
-                time.sleep(2)
+            return self._handle_refill_window(emulator)
 
-                # Парсинг таймера
-                timer = self._parse_research_timer(emulator)
-                return ("started", timer)
-            else:
-                # "Подтвердить" не найдена — ресурса нет в рюкзаке
-                logger.warning(f"[{emu_name}] ⚠️ Кнопка 'Подтвердить' не найдена — ресурсов нет")
-                # ESC×4 чтобы полностью выйти
-                self._close_evolution(emulator, esc_count=4)
-                return ("no_resources", None)
-
+        # ══════════════════════════════════════════════
         # ВАРИАНТ 3: Ни одной кнопки не найдено
+        # ══════════════════════════════════════════════
         logger.warning(f"[{emu_name}] ⚠️ Не найдено ни 'Эволюция', ни 'Восполнить Ресурсы'")
-        self._close_evolution(emulator, esc_count=3)
-        return ("no_resources", None)
+        return ("error", None)
+
+    def _handle_refill_window(self, emulator: Dict) -> Tuple[str, Optional[int]]:
+        """
+        Обработка окна восполнения ресурсов для эволюции
+
+        Три подсценария после клика "Восполнить Ресурсы":
+        2в. Сразу окно "Недостаточно ресурсов"
+            → в рюкзаке вообще нет нужных ресурсов
+            → ESC×4 → ("no_resources", None)
+        2а. "Подтвердить" → клик → ресурсы восполнены, эволюция стартовала
+            → парсинг таймера → ("started", timer)
+        2б. "Подтвердить" → клик → "Недостаточно ресурсов"
+            → часть распакована, но остальных нет
+            → ESC×4 → ("no_resources", None)
+        2г. Ни "Подтвердить", ни "Недостаточно ресурсов"
+            → ESC×4 → ("no_resources", None)
+
+        Returns:
+            (status, timer_seconds)
+        """
+        emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
+
+        # ── ШАГ 1: Сразу "Недостаточно ресурсов"? (вариант 2в) ──
+        if find_image(emulator, self.TEMPLATES['window_no_resources'],
+                      threshold=self.THRESHOLD_WINDOW):
+            logger.warning(
+                f"[{emu_name}] ⚠️ Сразу 'Недостаточно ресурсов' — "
+                f"в рюкзаке нет нужных ресурсов"
+            )
+            self._close_evolution(emulator, esc_count=4)
+            return ("no_resources", None)
+
+        # ── ШАГ 2: Ищем кнопку "Подтвердить" ──
+        confirm_result = find_image(emulator, self.TEMPLATES['button_confirm'],
+                                    threshold=self.THRESHOLD_BUTTON)
+
+        if not confirm_result:
+            # Ни "Подтвердить", ни "Недостаточно ресурсов" (вариант 2г)
+            # Без ESC — caller (_handle_tech_window → research_tech) закроет сам
+            logger.warning(
+                f"[{emu_name}] ⚠️ Ни 'Подтвердить', ни 'Недостаточно ресурсов' "
+                f"не найдены"
+            )
+            return ("error", None)
+
+        # ── ШАГ 3: Клик "Подтвердить" ──
+        cx, cy = confirm_result
+        logger.debug(f"[{emu_name}] Клик 'Подтвердить' ({cx}, {cy})")
+        tap(emulator, x=cx, y=cy)
+        time.sleep(2)
+
+        # ── ШАГ 4: Повторная проверка — "Недостаточно ресурсов"? (вариант 2б) ──
+        if find_image(emulator, self.TEMPLATES['window_no_resources'],
+                      threshold=self.THRESHOLD_WINDOW):
+            logger.warning(
+                f"[{emu_name}] ⚠️ 'Недостаточно ресурсов' после распаковки — "
+                f"часть распакована, но остальных нет в рюкзаке"
+            )
+            self._close_evolution(emulator, esc_count=4)
+            return ("no_resources", None)
+
+        # ── Вариант 2а: Ресурсы восполнены, эволюция стартовала ──
+        logger.debug(f"[{emu_name}] ✅ Ресурсы восполнены, эволюция стартовала")
+        timer = self._parse_research_timer(emulator)
+        return ("started", timer)
 
     def _parse_research_timer(self, emulator: Dict) -> Optional[int]:
         """
