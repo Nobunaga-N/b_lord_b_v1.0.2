@@ -128,58 +128,93 @@ class EvolutionUpgrade:
 
     def open_evolution_window(self, emulator: Dict) -> bool:
         """
-        Открыть окно Эволюции через иконку на главном экране
+        Открыть окно Эволюции через иконку на главном экране.
 
-        Обрабатывает случай когда вместо разделов открывается
-        "левое окно" — ESC + повторный клик.
+        Обрабатывает ТРИ сценария после клика:
+        1. Окно разделов открылось → OK
+        2. Попап завершения технологии → ESC + повтор
+        3. «Левое» окно (не разделы, не попап) → ESC + повтор
 
         Returns:
-            bool: True если окно разделов открыто
+        bool: True если окно разделов открыто
         """
         emu_name = emulator.get('name', f"id:{emulator.get('id', '?')}")
 
         for attempt in range(self.MAX_ICON_ATTEMPTS):
-            logger.debug(f"[{emu_name}] Открытие окна Эволюции (попытка {attempt + 1})")
+            logger.debug(
+                f"[{emu_name}] Открытие окна Эволюции "
+                f"(попытка {attempt + 1})"
+            )
 
             # Ищем иконку Эволюции
-            result = find_image(emulator, self.TEMPLATES['evolution_icon'],
-                               threshold=self.THRESHOLD_ICON)
+            result = find_image(
+                emulator, self.TEMPLATES['evolution_icon'],
+                threshold=self.THRESHOLD_ICON
+            )
 
             if not result:
                 if attempt == 0:
-                    # Возможно какое-то окно мешает — делаем ресет
-                    logger.warning(f"[{emu_name}] Иконка Эволюции не найдена, пробуем ресет...")
+                    logger.warning(
+                        f"[{emu_name}] Иконка Эволюции не найдена, "
+                        f"пробуем ресет..."
+                    )
                     self._reset_to_main_screen(emulator)
                     time.sleep(1)
                     continue
                 else:
-                    logger.error(f"[{emu_name}] ❌ Иконка Эволюции не найдена")
+                    logger.error(
+                        f"[{emu_name}] ❌ Иконка Эволюции не найдена"
+                    )
                     return False
 
             center_x, center_y = result
             tap(emulator, x=center_x, y=center_y)
             time.sleep(2)
 
-            # Проверяем — открылись ли разделы?
-            # Пробуем найти любой известный раздел
+            # ── Проверка 1: попап завершения технологии ──
+            if self._is_completion_popup(emulator):
+                logger.info(
+                    f"[{emu_name}] 🎓 Попап завершения технологии — "
+                    f"закрываю ESC"
+                )
+                press_key(emulator, "ESC")
+                time.sleep(1)
+                # После ESC бот снова в поместье — иконка видна,
+                # retry откроет разделы
+                continue
+
+            # ── Проверка 2: разделы видны ──
             if self._verify_sections_visible(emulator):
-                logger.success(f"[{emu_name}] ✅ Окно разделов Эволюции открыто")
+                logger.success(
+                    f"[{emu_name}] ✅ Окно разделов Эволюции открыто"
+                )
                 return True
 
-            # Не нашли разделы — возможно "левое окно"
-            logger.warning(f"[{emu_name}] ⚠️ Разделы не видны — закрываем левое окно...")
+            # ── Проверка 3: «левое окно» ──
+            logger.warning(
+                f"[{emu_name}] ⚠️ Разделы не видны — "
+                f"закрываем левое окно..."
+            )
             press_key(emulator, "ESC")
             time.sleep(1)
 
-        logger.error(f"[{emu_name}] ❌ Не удалось открыть окно Эволюции")
+        logger.error(
+            f"[{emu_name}] ❌ Не удалось открыть окно Эволюции"
+        )
         return False
 
-    def _verify_sections_visible(self, emulator: Dict) -> bool:
+    def _is_completion_popup(self, emulator: Dict) -> bool:
         """
-        Проверить что на экране видны разделы эволюции (OCR).
+        Проверить наличие попапа завершения технологии.
 
-        Ищет любое из известных ключевых слов разделов.
-        Достаточно найти хотя бы одно — значит окно открыто.
+        Попап появляется при первом открытии эволюции после
+        завершения исследования. Содержит характерный текст:
+        «Предыдущий уровень» / «Текущий Уровень» и проценты.
+
+        Вызывается ПОСЛЕ клика по иконке эволюции.
+
+        Returns:
+            True если попап обнаружен
         """
         screenshot = get_screenshot(emulator)
         if screenshot is None:
@@ -187,9 +222,44 @@ class EvolutionUpgrade:
 
         elements = self.ocr.recognize_text(screenshot, min_confidence=0.3)
 
-        # Уникальные слова из названий разделов.
-        # Каждое встречается ТОЛЬКО в окне разделов эволюции,
-        # не в окне технологий и не в поместье.
+        popup_markers = ["предыдущий", "текущий уровень"]
+        for elem in elements:
+            text_lower = elem['text'].strip().lower()
+            if any(marker in text_lower for marker in popup_markers):
+                return True
+
+        return False
+
+    def _verify_sections_visible(self, emulator: Dict) -> bool:
+        """
+        Проверить что на экране видны разделы эволюции (OCR).
+
+        Два этапа:
+        1. Негативная проверка — если найдены маркеры попапа
+           завершения технологии → сразу False.
+        2. Позитивная проверка — ищет хотя бы одно ключевое
+           слово из названий разделов.
+        """
+        screenshot = get_screenshot(emulator)
+        if screenshot is None:
+            return False
+
+        elements = self.ocr.recognize_text(screenshot, min_confidence=0.3)
+
+        # ── Негативная проверка: попап завершения технологии ──
+        # Попап содержит "Предыдущий уровень" / "Текущий Уровень"
+        # и имеет мало элементов (~12 vs 40-54 у реальных разделов).
+        popup_markers = ["предыдущий", "текущий уровень"]
+        for elem in elements:
+            text_lower = elem['text'].strip().lower()
+            if any(marker in text_lower for marker in popup_markers):
+                logger.debug(
+                    f"⚠️ Обнаружен попап завершения технологии: "
+                    f"'{elem['text']}'"
+                )
+                return False
+
+        # ── Позитивная проверка: ключевые слова разделов ──
         known_keywords = [
             "базовый", "средний", "лечение", "обучение",
             "производство", "плотоядных", "травоядных", "всеядных",

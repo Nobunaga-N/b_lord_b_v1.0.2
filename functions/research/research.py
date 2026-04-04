@@ -1054,31 +1054,28 @@ class ResearchFunction(BaseFunction):
         return ds
 
     def _drain_evolution_in_prime(
-            self, ds: dict, event: dict, prime_st: PrimeStorage
+        self, ds: dict, event: dict, prime_st: PrimeStorage
     ):
         """
-        Цикл drain эволюционных ускорений для ДС.
+        Цикл drain эволюционных ускорений для ДС (Point A).
 
-        Бот в поместье (после research_tech → ESC×3).
+        Умная навигация — после завершения эволюции бот остаётся
+        в разделе (section_view), не выходит в поместье:
 
-        Для каждой итерации:
-        1. Открыть эволюцию → найти активную технологию
-        2. Кликнуть по ней → кнопка "Ускорение"
-        3. drain_speedups()
-        4. Если эволюция завершилась → ESC → запустить следующую → continue
-        5. Если набрали очки → парсить таймер → ESC × 3 → break
+        - Та же/другая технология в том же разделе →
+          OCR → клик → «Эволюция» → «Ускорение» → drain
+        - Другой раздел → 1×ESC → sections_list → navigate → drain
+        - ДС выполнен → ESC×2 из section_view → поместье
+        - Не завершена → парсить таймер → обновить БД →
+          ESC×3 (speedup→section→sections) → поместье
 
-        ✅ FIX #5: Обновляет БД после завершения эволюции
-        ✅ FIX #6: Запускает новую эволюцию если слот свободен
-        ✅ FIX #10: Передаёт timers в calculate_plan
-
-        ВАЖНО: universal НИКОГДА не тратится на эволюцию
-        (обеспечивается speedup_calculator через UNIVERSAL_RULES).
+        Позиции бота (bot_location):
+        'estate'         — поместье
+        'sections_list'  — окно эволюции, список разделов
+        'section_view'   — внутри раздела, видны технологии
         """
         from functions.prime_times.speedup_applier import _parse_remaining_timer
-        from utils.ocr_engine import OCREngine
-        from utils.adb_controller import tap
-
+        from datetime import timedelta
         import os
 
         emu_id = self.emulator.get('id')
@@ -1093,27 +1090,31 @@ class ResearchFunction(BaseFunction):
             BASE_DIR, 'data', 'templates', 'prime_times', 'button_speedup.png'
         )
 
+        bot_location = 'estate'
+        current_section = None
+
         while ds['spent_minutes'] < ds['target_minutes']:
-            # Проверка времени ДС
             if not is_safe_to_start(min_minutes=5):
                 if ds['spent_minutes'] <= 0:
-                    logger.info(f"[{emu_name}] Prime: мало времени до конца ДС")
-                break
+                    break
 
-            # ═══════════════════════════════════════════
-            # ✅ FIX #6: Проверяем/запускаем эволюцию
-            # ═══════════════════════════════════════════
-            if not self.db.is_slot_busy(emu_id):
+            # ═══════════════════════════════════════════════════
+            # ФАЗА 1: Обеспечить активную эволюцию + открыть
+            #          окно ускорений
+            # ═══════════════════════════════════════════════════
+            has_active = self.db.is_slot_busy(emu_id)
+
+            if not has_active:
+                # ── Слот свободен → запустить новую эволюцию ──
                 next_tech = self.db.get_next_tech_to_research(emu_id)
                 if next_tech is None:
                     logger.info(
-                        f"[{emu_name}] Prime: нет технологий для исследования"
+                        f"[{emu_name}] Нет технологий для исследования"
                     )
                     break
 
                 tech_name = next_tech['tech_name']
                 section_name = next_tech['section_name']
-                swipe_config = self.db.get_swipe_config(section_name)
                 swipe_group = next_tech.get('swipe_group', 0)
 
                 logger.info(
@@ -1121,105 +1122,209 @@ class ResearchFunction(BaseFunction):
                     f"{tech_name} ({section_name})"
                 )
 
-                # research_tech: открывает эволюцию, ставит, ESC×3
-                status, timer_sec = self.upgrade.research_tech(
-                    self.emulator,
-                    tech_name=tech_name,
-                    section_name=section_name,
-                    swipe_config=swipe_config,
-                    swipe_group=swipe_group,
+                # — Навигация к разделу (зависит от позиции бота) —
+                # Всегда проходим через sections_list чтобы
+                # сбросить скролл раздела в начало.
+                if bot_location == 'estate':
+                    if not self.upgrade.open_evolution_window(self.emulator):
+                        logger.error(
+                            f"[{emu_name}] ❌ Не удалось открыть эволюцию"
+                        )
+                        break
+                    bot_location = 'sections_list'
+
+                if bot_location == 'section_view':
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    bot_location = 'sections_list'
+
+                if bot_location == 'sections_list':
+                    if not self.upgrade.navigate_to_section(
+                            self.emulator, section_name
+                    ):
+                        logger.error(
+                            f"[{emu_name}] ❌ Навигация к {section_name}"
+                        )
+                        press_key(self.emulator, "ESC")
+                        time.sleep(0.5)
+                        bot_location = 'estate'
+                        break
+                    bot_location = 'section_view'
+                    current_section = section_name
+
+                # bot_location == 'section_view', current_section correct
+
+                # Свайпы если нужно
+                swipe_config = self.db.get_swipe_config(section_name)
+                self.upgrade.perform_swipes(
+                    self.emulator, swipe_config, swipe_group
                 )
 
-                if status != 'started':
+                # Найти технологию → клик
+                tech_coords = self.upgrade.find_tech_on_screen(
+                    self.emulator, tech_name
+                )
+                if not tech_coords:
                     logger.warning(
-                        f"[{emu_name}] Prime: не удалось запустить "
-                        f"эволюцию {tech_name} (status={status})"
+                        f"[{emu_name}] ⚠️ Технология не найдена: "
+                        f"{tech_name}"
                     )
+                    self._close_evo_windows(2)
+                    bot_location = 'estate'
+                    break
+
+                tap(self.emulator, x=tech_coords[0], y=tech_coords[1])
+                time.sleep(2.0)
+
+                # Кнопка «Эволюция» → запуск исследования
+                result_status, timer_sec = (
+                    self.upgrade._handle_tech_window(self.emulator)
+                )
+                if result_status != 'started':
+                    logger.warning(
+                        f"[{emu_name}] Не удалось запустить "
+                        f"{tech_name}: {result_status}"
+                    )
+                    # _handle_tech_window мог нажать ESC внутри
+                    self._close_evo_windows(3)
+                    bot_location = 'estate'
                     break
 
                 if timer_sec:
                     self.db.start_research(
                         emu_id, tech_name, section_name, timer_sec
                     )
-                # Бот в поместье после research_tech (ESC×3 внутри)
 
-            # ═══════════════════════════════════════════
-            # Открываем эволюцию и ищем активную технологию
-            # (используем существующие методы EvolutionUpgrade)
-            # ═══════════════════════════════════════════
-            if not self.upgrade.open_evolution_window(self.emulator):
-                logger.error(f"[{emu_name}] ❌ Не удалось открыть окно эволюции")
-                break
-
-            # Получаем активную технологию из БД
-            active_tech = self._get_active_tech(emu_id)
-            if active_tech is None:
-                logger.error(f"[{emu_name}] ❌ Нет активной эволюции в БД")
-                press_key(self.emulator, "ESC")
-                time.sleep(0.5)
-                break
-
-            section_name = active_tech['section_name']
-            tech_name = active_tech['tech_name']
-            swipe_group = active_tech.get('swipe_group', 0)
-
-            # Навигация к разделу
-            if not self.upgrade.navigate_to_section(self.emulator, section_name):
-                logger.error(
-                    f"[{emu_name}] ❌ Навигация к разделу {section_name}"
+                # Бот в окне технологии (tech_detail) с таймером.
+                # Ищем кнопку «Ускорение»
+                time.sleep(1.0)
+                speedup_btn = find_image(
+                    self.emulator, speedup_btn_path, threshold=0.8
                 )
-                self._close_evo_windows(3)
-                break
+                if not speedup_btn:
+                    logger.warning(
+                        f"[{emu_name}] Кнопка 'Ускорение' не найдена "
+                        f"после старта"
+                    )
+                    # tech_detail → section → sections → estate
+                    self._close_evo_windows(3)
+                    bot_location = 'estate'
+                    break
 
-            # Свайпы если нужно
-            swipe_config = self.db.get_swipe_config(section_name)
-            self.upgrade.perform_swipes(
-                self.emulator, swipe_config, swipe_group
-            )
-
-            # Находим технологию на экране
-            tech_coords = self.upgrade.find_tech_on_screen(
-                self.emulator, tech_name
-            )
-            if not tech_coords:
-                logger.warning(
-                    f"[{emu_name}] ⚠️ Технология {tech_name} не найдена"
+                tap(
+                    self.emulator,
+                    x=speedup_btn[0], y=speedup_btn[1]
                 )
-                self._close_evo_windows(3)
-                break
+                time.sleep(1.5)
+                # → Бот в окне ускорений
 
-            # Кликаем по технологии
-            tap(self.emulator, x=tech_coords[0], y=tech_coords[1])
-            time.sleep(2.0)
+            else:
+                # ── Активная эволюция уже есть → открыть ускорения ──
+                active_tech = self._get_active_tech(emu_id)
+                if active_tech is None:
+                    logger.error(
+                        f"[{emu_name}] ❌ Нет активной эволюции в БД"
+                    )
+                    break
 
-            # Кнопка "Ускорение" → окно ускорений
-            speedup_btn = find_image(
-                self.emulator, speedup_btn_path, threshold=0.8
-            )
-            if not speedup_btn:
-                logger.warning(
-                    f"[{emu_name}] Prime: кнопка 'Ускорение' не найдена"
+                section_name = active_tech['section_name']
+                tech_name = active_tech['tech_name']
+                swipe_group = active_tech.get('swipe_group', 0)
+
+                # — Навигация —
+                # Всегда через sections_list для сброса скролла.
+                if bot_location == 'estate':
+                    if not self.upgrade.open_evolution_window(
+                            self.emulator
+                    ):
+                        logger.error(
+                            f"[{emu_name}] ❌ Не удалось открыть "
+                            f"эволюцию"
+                        )
+                        break
+                    bot_location = 'sections_list'
+
+                if bot_location == 'section_view':
+                    press_key(self.emulator, "ESC")
+                    time.sleep(0.5)
+                    bot_location = 'sections_list'
+
+                if bot_location == 'sections_list':
+                    if not self.upgrade.navigate_to_section(
+                            self.emulator, section_name
+                    ):
+                        logger.error(
+                            f"[{emu_name}] ❌ Навигация к "
+                            f"{section_name}"
+                        )
+                        press_key(self.emulator, "ESC")
+                        time.sleep(0.5)
+                        bot_location = 'estate'
+                        break
+                    bot_location = 'section_view'
+                    current_section = section_name
+
+                # Свайпы
+                swipe_config = self.db.get_swipe_config(section_name)
+                self.upgrade.perform_swipes(
+                    self.emulator, swipe_config, swipe_group
                 )
-                self._close_evo_windows(4)
-                break
 
-            tap(self.emulator, x=speedup_btn[0], y=speedup_btn[1])
-            time.sleep(1.5)
+                # Найти технологию → клик
+                tech_coords = self.upgrade.find_tech_on_screen(
+                    self.emulator, tech_name
+                )
+                if not tech_coords:
+                    logger.warning(
+                        f"[{emu_name}] ⚠️ Технология не найдена: "
+                        f"{tech_name}"
+                    )
+                    self._close_evo_windows(2)
+                    bot_location = 'estate'
+                    break
 
-            # Парсим таймер
+                tap(self.emulator, x=tech_coords[0], y=tech_coords[1])
+                time.sleep(2.0)
+
+                # Кнопка «Ускорение»
+                speedup_btn = find_image(
+                    self.emulator, speedup_btn_path, threshold=0.8
+                )
+                if not speedup_btn:
+                    logger.warning(
+                        f"[{emu_name}] Кнопка 'Ускорение' не найдена"
+                    )
+                    # tech_detail → section → sections → estate
+                    self._close_evo_windows(3)
+                    bot_location = 'estate'
+                    break
+
+                tap(
+                    self.emulator,
+                    x=speedup_btn[0], y=speedup_btn[1]
+                )
+                time.sleep(1.5)
+                # → Бот в окне ускорений
+
+            # ═══════════════════════════════════════════════════
+            # ФАЗА 2: Drain ускорений
+            # ═══════════════════════════════════════════════════
             evo_timer_sec = _parse_remaining_timer(
                 self.emulator, ocr, 'evolution'
             )
-
             if not evo_timer_sec or evo_timer_sec <= 0:
                 logger.warning(
-                    f"[{emu_name}] Prime: не удалось спарсить таймер эволюции"
+                    f"[{emu_name}] Не удалось спарсить таймер эволюции"
                 )
-                self._close_evo_windows(4)
+                # speedup(→section) → sections → estate
+                self._close_evo_windows(3)
+                bot_location = 'estate'
                 break
 
             evo_timer_min = max(1, math.ceil(evo_timer_sec / 60))
-            remaining_ds_min = int(ds['target_minutes'] - ds['spent_minutes'])
+            remaining_ds_min = int(
+                ds['target_minutes'] - ds['spent_minutes']
+            )
             batch_target = min(remaining_ds_min, evo_timer_min)
 
             logger.info(
@@ -1230,8 +1335,6 @@ class ResearchFunction(BaseFunction):
             )
 
             inventory = bp_storage.get_inventory(emu_id)
-
-            # ✅ FIX #10: Передаём timers
             timers = {'evolution': evo_timer_sec}
 
             plan = calculate_plan(
@@ -1242,14 +1345,16 @@ class ResearchFunction(BaseFunction):
                 has_buildings=True,
                 target_shell=ds['target_shell'],
                 skip_threshold=True,
-                timers=timers,  # ← FIX #10
+                timers=timers,
             )
 
             if plan.is_skip:
                 logger.info(
-                    f"[{emu_name}] Prime: план пустой — {plan.skip_reason}"
+                    f"[{emu_name}] Prime: план пустой — "
+                    f"{plan.skip_reason}"
                 )
                 self._close_evo_windows(4)
+                bot_location = 'estate'
                 break
 
             # Drain
@@ -1266,25 +1371,79 @@ class ResearchFunction(BaseFunction):
                 f"итого {ds['spent_minutes']:.0f}/{ds['target_minutes']}"
             )
 
+            # ═══════════════════════════════════════════════════
+            # ФАЗА 3: Обработка результата
+            # ═══════════════════════════════════════════════════
             if result.building_completed:
-                # Эволюция завершилась
-                # (building_completed — это generic поле DrainResult,
-                #  означает "процесс завершён", не "здание построено")
+                # Эволюция завершилась → бот в section_view
                 logger.info(f"[{emu_name}] Prime: эволюция завершилась!")
 
-                # ✅ FIX #5: Обновить БД (уровень + освободить слот)
-                # finish_time ещё в будущем, но ускорение завершило
+                # Обновить БД: уровень +1, слот свободен
                 self.db._complete_research(emu_id)
 
-                press_key(self.emulator, "ESC")  # крестик
-                time.sleep(0.5)
-                self._close_evo_windows(2)
-                time.sleep(1.0)
-                continue  # → следующая итерация (FIX #6 запустит новую)
+                bot_location = 'section_view'
+                # current_section остаётся
 
-            # Не завершилась → закрываем
-            self._close_evo_windows(4)
-            break
+                # Цель ДС достигнута → выходим
+                if ds['spent_minutes'] >= ds['target_minutes']:
+                    # section → sections → estate
+                    self._close_evo_windows(2)
+                    bot_location = 'estate'
+                    break
+
+                time.sleep(1.0)
+                continue  # → следующая итерация (из section_view)
+
+            else:
+                # Эволюция НЕ завершилась → бот в окне ускорений
+                # Парсим оставшееся время и обновляем БД
+                remaining_sec = _parse_remaining_timer(
+                    self.emulator, ocr, 'evolution'
+                )
+                if remaining_sec and remaining_sec > 0:
+                    new_finish = (
+                            datetime.now()
+                            + timedelta(seconds=remaining_sec)
+                    )
+                    try:
+                        with self.db.db_lock:
+                            self.db.conn.execute("""
+                                    UPDATE evolution_slot
+                                    SET finish_time = ?
+                                    WHERE emulator_id = ? AND is_busy = 1
+                                """, (new_finish.isoformat(), emu_id))
+                            self.db.conn.execute("""
+                                    UPDATE evolutions
+                                    SET timer_finish = ?
+                                    WHERE id = (
+                                        SELECT tech_id
+                                        FROM evolution_slot
+                                        WHERE emulator_id = ?
+                                          AND is_busy = 1
+                                    )
+                                """, (new_finish.isoformat(), emu_id))
+                            self.db.conn.commit()
+                        logger.debug(
+                            f"[{emu_name}] Обновлён таймер эволюции: "
+                            f"{remaining_sec}с → {new_finish:%H:%M:%S}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"[{emu_name}] Ошибка обновления таймера: {e}"
+                        )
+
+                # speedup(→section) → sections → estate
+                self._close_evo_windows(3)
+                bot_location = 'estate'
+                break
+
+        # ═══════════════════════════════════════════════════
+        # CLEANUP: гарантируем что бот в поместье
+        # ═══════════════════════════════════════════════════
+        if bot_location == 'section_view':
+            self._close_evo_windows(2)
+        elif bot_location == 'sections_list':
+            self._close_evo_windows(1)
 
         # Финализация
         if ds['spent_minutes'] >= ds['target_minutes']:
